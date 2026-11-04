@@ -468,6 +468,10 @@ typedef struct {
     uint16_t pin_nz[2];              /* neprazdnych kodu posledniho histogramu z pinu */
     int16_t  pin_dev[2];             /* jeho nejvetsi odchylka osminy taktu od 1/8 [promile] */
     uint32_t pin_rej;                /* odmitnute histogramy z pinu (kanal pak dostal novou tabulku z ring oscilatoru) */
+    /* v0.43.3 (P1 bod 1, validace auditu dat 2026-11-03): histogram se souctem != 2^LOG2 se precte znovu; kdyz nesedi
+     * ani pak, STM spusti novy sber (drive FPGA cekala dal se stejnym histogramem a kanal zustal bez nove tabulky) */
+    uint32_t sum_bad;                /* precteni histogramu se spatnym souctem */
+    uint32_t sum_resample;           /* z toho vyzadany novy sber (soucet nesedel ani po opakovanem cteni) */
 } fpga_tdccal_info_t;
 bool fpga_freq_tdccal_poll(void);   /* @return true = probehl beh kalibrace (uspesne i ne) */
 void fpga_freq_tdccal_info(fpga_tdccal_info_t *o);
@@ -713,6 +717,8 @@ typedef struct {
     int8_t   pps_d;                    /* jemny - hruby [takty] */
     uint8_t  narrow;                   /* v0.40.0: uzka hlavicka (FW 0x0507, CAPS bit22) */
     uint32_t wrap_restarts;            /* restartu FPGA poznanych pri rozbalovani 16b poli */
+    uint32_t seq_gapn;                 /* v0.43.3: oken navic v SEQ podle cisla segmentu (zmeskana okna nad +2/+1) */
+    uint32_t gen_drops;                /* v0.43.3: preruseni oken kvuli zapisu generatoru Si5356 (`gen`) */
     uint32_t wins_b, lsq_b;            /* v0.42.3: mereni s druhym kanalem / z toho s LSQ delkou okna B */
     uint32_t segrej[2];                /* v0.42.5: oken A/B s LSQ odmitnutou kontrolou teziste segmentu (dvoubodove) */
     uint32_t x0_fix[2], x0_odd[2];     /* v0.42.7: X0 A/B opravenych o 64*k hran / mimo predpoved bez opravy */

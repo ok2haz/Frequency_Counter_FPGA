@@ -605,6 +605,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     if (r->n && c->have_prev) {
         if ((r->flags & FPGA_V3_R_INVALID) || pl != c->pl_prev) { c->per_ref = 0.0; c->clean = 0u; }
         else {
+            int odd = 0;
             const uint16_t sg = (uint16_t)(r->seg_idx - c->seg_mk);
             uint64_t dx = (r->x0 - c->x_prev_raw) & MASK40;
             const uint64_t dt = (r->t0 - c->t_prev_raw) & MASK48;
@@ -633,10 +634,12 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
                         rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;
                         dx = (uint64_t)((int64_t)dx - dv) & MASK40;
                         g->x0_fix[ch]++; g->x0_dev[ch] = (int32_t)dv; dv_now = dv;
-                    } else { g->x0_odd[ch]++; c->clean = 0u; }
+                    } else { g->x0_odd[ch]++; c->clean = 0u; odd = 1; }
                 }
             }
-            c->per_ref = dx ? (double)dt / (double)dx : 0.0;
+            /* v0.43.3 (P1 bod 3): perioda jen z platneho paru -- par mimo predpoved bez opravy (vadne X0 tohoto nebo
+             * predchoziho zaznamu) by zkazil predpoved dalsiho; 0 = neznama, dalsi par ji znovu urci */
+            c->per_ref = (dx && !odd) ? (double)dt / (double)dx : 0.0;
         }
     }
     if (r->n) {

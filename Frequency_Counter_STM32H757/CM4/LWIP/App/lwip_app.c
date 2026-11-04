@@ -332,7 +332,9 @@ static uint16_t  s_ap_cm7_cnt;
 static uint16_t  s_ap_last[APUSH_EV_REAL];
 static uint16_t  s_ap_cnt[APUSH_EV_N];
 static uint16_t  s_ap_test_seen;
-static uint32_t  s_ap_t0, s_ap_next_ms;
+/* v0.43.3 (L-0254): odstup dalsiho pokusu jako "od kdy + jak dlouho" (uplynuly cas bez znamenka). Drive `next_ms` a
+ * `(int32_t)(now - next) >= 0`: alarm prisly > 24,8 d po poslednim pokusu cekal az ~24,8 d. */
+static uint32_t  s_ap_t0, s_ap_wait_from, s_ap_wait_ms;
 static char      s_ap_req[320];
 static int       s_ap_len;
 static uint16_t  s_ap_sent, s_ap_failed;
@@ -362,14 +364,14 @@ static void ap_finish(uint8_t res)
         s_ap_pending &= (uint16_t)~(1u << s_ap_ev);
         s_ap_sent++;
         s_ap_tries = 0u;
-        s_ap_next_ms = HAL_GetTick();                       /* dalsi cekajici udalost hned */
+        s_ap_wait_from = HAL_GetTick(); s_ap_wait_ms = 0u;  /* dalsi cekajici udalost hned */
     } else {
         if (++s_ap_tries >= APUSH_TRIES) {                  /* vycerpano -> zahodit, nezdrzovat dalsi */
             s_ap_pending &= (uint16_t)~(1u << s_ap_ev);
             s_ap_failed++;
             s_ap_tries = 0u;
         }
-        s_ap_next_ms = HAL_GetTick() + APUSH_RETRY_MS;
+        s_ap_wait_from = HAL_GetTick(); s_ap_wait_ms = APUSH_RETRY_MS;
     }
     ap_publish(res);
 }
@@ -496,11 +498,11 @@ void lwip_app_push_tick(const ipc_snapshot_t *snap, uint32_t now)
     }
 
     /* dalsi udalost */
-    if (!s_ap_busy && s_ap_pending && (int32_t)(now - s_ap_next_ms) >= 0) {
+    if (!s_ap_busy && s_ap_pending && (uint32_t)(now - s_ap_wait_from) >= s_ap_wait_ms) {
         int valid = (ip[0] | ip[1] | ip[2] | ip[3]) != 0u && port != 0u && path[0] == '/';
         if (!netif_is_link_up(&s_netif) || ip4_addr_isany_val(*netif_ip4_addr(&s_netif))) {
             ap_publish(APUSH_RES_NONET);
-            s_ap_next_ms = now + APUSH_RETRY_MS;
+            s_ap_wait_from = now; s_ap_wait_ms = APUSH_RETRY_MS;
         } else if (valid) {
             unsigned ev = 0u;
             while (ev < APUSH_EV_N && !(s_ap_pending & (1u << ev))) ev++;

@@ -467,7 +467,6 @@ bool flightrec_report(void)
 static errlog_rec_t      s_el_ring[ERRLOG_RING_N];
 static volatile uint32_t s_el_head_i, s_el_tail_i;      /* index do RAM ringu */
 static volatile uint32_t s_el_dropped;                  /* ring byl plny */
-static uint32_t          s_el_cool_next[ERRLOG_KIND_MAX + 1u];
 /* Narust prodlevy (STATUS #296): ~90 % logu byl jeden opakujici se zaznam `FPGA ztrata linku` kazdou minutu, ktery
  * vytlacoval vzacne udalosti (BOOT, CRASH, REF). Kdyz se druh emituje znovu drive nez za dvojnasobek aktualni prodlevy,
  * prodleva se zdvojnasobi (60 s -> 120 s -> ... -> 30 min); po klidu se vraci na 60 s. Opakovani se dal scitaji do pole `repeat`. */
@@ -629,7 +628,9 @@ bool errlog_put(uint8_t kind, uint8_t sub, uint32_t a, uint32_t b, const char *t
     __disable_irq();                       /* kratka sekce — smi bezet i z ISR */
 
     bool emit = false;
-    if ((int32_t)(now - s_el_cool_next[kind]) >= 0) {
+    /* v0.43.3: uplynuly cas od posledniho zapisu (bez znamenka). Drive `(int32_t)(now - cool_next) >= 0`: po > 24,8 d bez
+     * udalosti daneho druhu se cool_next ocitl "v budoucnosti" a dalsi chyba se nezapsala az do ~24,8 d (L-0254). */
+    if (s_el_last_emit[kind] == 0u || (uint32_t)(now - s_el_last_emit[kind]) >= s_el_cool_len[kind]) {
         uint32_t len = s_el_cool_len[kind];
         if (len == 0u || s_el_last_emit[kind] == 0u || (uint32_t)(now - s_el_last_emit[kind]) >= 2u * len)
             len = ERRLOG_COOLDOWN_MS;                                          /* klid -> zpet na zaklad */
@@ -637,7 +638,6 @@ bool errlog_put(uint8_t kind, uint8_t sub, uint32_t a, uint32_t b, const char *t
             len = (2u * len > ERRLOG_COOLDOWN_MAX) ? ERRLOG_COOLDOWN_MAX : 2u * len;   /* trvale opakovani */
         s_el_cool_len[kind]   = len;
         s_el_last_emit[kind]  = now ? now : 1u;
-        s_el_cool_next[kind]  = now + len;
         uint32_t nxt = (s_el_head_i + 1u) % ERRLOG_RING_N;
         if (nxt == s_el_tail_i) {
             s_el_dropped++;                /* ring plny — `tick` nestiha */
@@ -905,7 +905,7 @@ void errlog_boot_record(void)
     for (; i < ERRLOG_TAG_LEN && g_reset_text[i]; i++) tag[i] = (char)g_reset_text[i];
     tag[i] = '\0';
     /* Rate-limit se pri startu obchazi zamerne: boot je vzdy zajimavy. */
-    s_el_cool_next[ERRLOG_K_BOOT] = HAL_GetTick();
+    s_el_last_emit[ERRLOG_K_BOOT] = 0u;
     (void)errlog_put(ERRLOG_K_BOOT, g_display_init_step, RCC->RSR, 0u, tag);
 
     if (g_crash_text[0]) {
@@ -925,7 +925,7 @@ void errlog_boot_record(void)
         uint8_t     ckind = crash_split((const char *)g_crash_text, &rest);
         for (; k < ERRLOG_TAG_LEN && rest[k]; k++) ct[k] = rest[k];
         ct[k] = '\0';
-        s_el_cool_next[ERRLOG_K_CRASH] = HAL_GetTick();
+        s_el_last_emit[ERRLOG_K_CRASH] = 0u;
         (void)errlog_put(ERRLOG_K_CRASH, ckind, g_crash_cfsr, g_crash_bfar, ct);
     }
 }

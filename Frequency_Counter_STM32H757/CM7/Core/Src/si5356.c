@@ -111,6 +111,7 @@ static bool wr_masked(I2C_HandleTypeDef *h, uint8_t reg, uint8_t val, uint8_t ma
 #define GEN_OEB(d)       (uint8_t)(1u << (d))            /* reg 230 bit0..3 */
 #define GEN_R_IN_MS      0xC0u                           /* RxDIV_IN = 110 (vlastni MS) */
 
+volatile uint32_t g_si_gen_epoch;                   /* v0.43.3: pocet hran zapisu generatoru (liche = probiha) */
 volatile si5356_gen_t g_si_gen[SI5356_GEN_N] = {
     { 50000000u,  0u, 1u, 0u, SI5356_GEN_OK },     /* CLK2/3 */
     { 150000000u, 0u, 1u, 0u, SI5356_GEN_OK },     /* CLK4/5 */
@@ -261,7 +262,11 @@ void si5356_gen_service(I2C_HandleTypeDef *hi2c)
         g_si_gen[ch].pend = 0u;          /* nova zadost behem zapisu ji nastavi znovu */
         si5356_ms_t probe;
         if (!si5356_gen_calc_frac(f, mhz, &probe)) { g_si_gen[ch].state = SI5356_GEN_ERR_RANGE; continue; }
+        g_si_gen_epoch++;                /* liche = zapis probiha (vystup OEB vypnut) -> FpgaTask zahodi okna */
+        __DMB();
         g_si_gen[ch].state = si5356_gen_apply(hi2c, ch, f, mhz, on) ? SI5356_GEN_OK : SI5356_GEN_ERR_I2C;
+        __DMB();
+        g_si_gen_epoch++;
     }
 }
 

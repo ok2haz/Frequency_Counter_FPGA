@@ -14,6 +14,7 @@
 #include "watchdog.h"    /* watchdog_kick_fpga — behem kalibrace TDC (~0,6 s) */
 #include "fpga_crc.h"    /* optimalizace 6: kontrola CRC prijateho ramce (SW tabulka, volitelne HW jednotka FPGA_CRC_USE_HW) */
 #include "fpga_v3.h"     /* protokol v3 (krok 4c): ramec 1024 B, prijem zaznamu, okna, emulator */
+#include "si5356.h"      /* v0.43.3: g_si_gen_epoch -- zapis generatoru (`gen`) zneplatni okna */
 /* Optimalizace 6: datova faze SPI pres DMA. 0 = blokujici HAL_SPI_TransmitReceive jako dosud. 1 az po konfiguraci CubeMX
  * (DMA streamy SPI2, NVIC, sekce FPGA_DMA_SECTION, callbacky) -- 2026-10-20_CRC_DMA_zadani_CLI.md. */
 #ifndef FPGA_SPI_USE_DMA
@@ -964,6 +965,10 @@ static uint32_t s3_lsq_b = 0u;        /* z toho s LSQ delkou okna B */
 static uint32_t s3_segrej[2];         /* v0.42.5: oken A/B, kde LSQ odmitla kontrola teziste segmentu (-> dvoubodove) */
 static uint32_t s3_wseq = 0u;        /* poradi okna = `sequence` pro konzumenty; mezera v oknech = dira v SEQ */
 static uint8_t  s3_brk = 1u;         /* pred dalsim oknem je preruseni */
+static uint32_t s3_wseg_prev, s3_wseg_k;   /* v0.43.3 (P1 bod 4): seg_first a K predchoziho okna (skutecna dira v SEQ) */
+static uint8_t  s3_wseg_ok;
+static uint32_t s3_wseg_gapn;        /* oken navic v SEQ proti puvodnimu +2/+1 (zmeskana okna) */
+static uint32_t s3_gen_drops;        /* v0.43.3: preruseni kvuli zapisu generatoru (`gen`) */
 static uint8_t  s3_chan = 0u, s3_gate = 2u;
 static uint32_t s3_last_win_ms = 0u;
 static uint8_t  s3_lost = 0u;
@@ -1100,6 +1105,7 @@ static void s3_reset(void)
 {
     fpga_v3_link_init(&s3_link);
     fpga_v3_wrap_init(&s3_wrap);
+    s3_wseg_ok = 0u;                 /* cislovani segmentu FPGA muze zacit znovu */
     s3_regroup();
     s3_last_win_ms = HAL_GetTick();
 }
@@ -1178,7 +1184,20 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, const fpga_v3_win_t *wb, fpga
     memset(m, 0, sizeof *m);
     s3_hdr_to_meas(&s3_h, m);
     const uint32_t clk = m->clk_mhz;
-    s3_wseq += s3_brk ? 2u : 1u;                                   /* preruseni = dira v SEQ -> fpga_stat_break, fazovy zaznam */
+    /* preruseni = dira v SEQ -> fpga_stat_break, fazovy zaznam. v0.43.3 (P1 bod 4): dira = SKUTECNY pocet oken podle cisla
+     * segmentu z FPGA (seg_first mod 2^16, okno = K segmentu), aspon 2 pri preruseni (fpga_stat_break na tom stoji);
+     * bez predchoziho okna nebo pri zmene K plati puvodni +2 / +1. */
+    {
+        uint32_t inc = s3_brk ? 2u : 1u;
+        const uint32_t K = s3_k();
+        if (s3_wseg_ok && K && K == s3_wseg_k) {
+            const uint32_t ds = (w->seg_first - s3_wseg_prev) & 0xFFFFu;
+            const uint32_t nw = (ds + K / 2u) / K;                 /* oken od predchoziho (zaokrouhleno) */
+            if (nw > inc && nw < 0x8000u / K) { inc = nw; s3_wseg_gapn += nw - (s3_brk ? 2u : 1u); }
+        }
+        s3_wseg_prev = w->seg_first; s3_wseg_k = K; s3_wseg_ok = (K != 0u);
+        s3_wseq += inc;
+    }
     s3_brk = 0u;
     m->sequence = s3_wseq;
     m->measurement_status = 0x03u;
@@ -1459,6 +1478,19 @@ int fpga_sim_v3_active(void) { return s_sim_on && s_sim_v3; }
 /* Jedna transakce v3 ve FpgaTasku: ACK + prijem; vrati true, kdyz je k dispozici okno vybraneho kanalu */
 static bool poll_v3(fpga_meas_t *out)
 {
+    {   /* v0.43.3 (P1 bod 3): zapis generatoru Si5356 (`gen`) vypne vystup -> okna z teto doby zahodit (i ta ve fronte) */
+        static uint32_t s_gen_seen, s_gen_ms;
+        static uint8_t  s_gen_hold;
+        const uint32_t e = g_si_gen_epoch;
+        if (e != s_gen_seen || (e & 1u)) {
+            if (!s_gen_hold) s3_gen_drops++;
+            s_gen_seen = e; s_gen_hold = 1u; s_gen_ms = HAL_GetTick();
+        }
+        if (s_gen_hold) {
+            if ((uint32_t)(HAL_GetTick() - s_gen_ms) < 2u * fpga_gate_idx_ms(s3_gate) + 100u) s3_regroup();
+            else s_gen_hold = 0u;
+        }
+    }
     if (s3_qr == s3_qw && (uint32_t)(HAL_GetTick() - s3_xfer_ms) >= s3_poll_ms) {
         const uint32_t t_gap = HAL_GetTick() - s3_xfer_ms;       /* v0.40.7: odstup od zacatku predchozi transakce */
         s3_xfer_ms = HAL_GetTick();
@@ -3001,7 +3033,7 @@ static bool tdccal_run_v3(uint8_t ch, bool pin)
         /* 2) tabulka */
         const uint64_t tot = fpga_tdccal_lut(s_ch_h[ch], nc, FPGA_TDC_CAL_LOG2, dual, s_ch_l[ch]);
         fpga_tdccal_stats(s_ch_h[ch], nc, &s_cal_stats[ch]);
-        if (tot != (1ull << FPGA_TDC_CAL_LOG2)) { err = 1u; break; }
+        if (tot != (1ull << FPGA_TDC_CAL_LOG2)) { err = 1u; s_cal_info.sum_bad++; continue; }   /* znovu precist (chyba prenosu) */
         /* 3) zacatek zapisu, 4) davky LUT_WRITE */
         if (!v3_cfg(FPGA_V3_CFG_LUT, 0u, 0u)) { err = 3u; continue; }
         uint16_t sum = 0u; bool wr_ok = true;
@@ -3042,6 +3074,12 @@ static bool tdccal_run_v3(uint8_t ch, bool pin)
     s_cal_info.fails++;
     s_cal_info.last_err = err;
     s_cal_info.last_ms = HAL_GetTick() - t_start;
+    if (err == 1u) {
+        /* soucet nesedel ve vsech pokusech -> vadny je histogram ve FPGA, ne prenos: novy sber z ring oscilatoru (stejne jako
+         * odmitnuty histogram z pinu vyse). Bez toho FPGA ceka dal a kazde dalsi kolo cte tentyz histogram. */
+        s_cal_info.sum_resample++;
+        (void)v3_cfg(FPGA_V3_CFG_CAL, (uint8_t)(FPGA_V3_CAL_START | (1u << (ch + 1u))), 0u);
+    }
     return true;
 }
 static bool tdccal_poll_v3(void)
@@ -3291,6 +3329,8 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
         o->narrow = s3_h.narrow;
     }
     o->wrap_restarts = s3_wrap.restarts;
+    o->seq_gapn = s3_wseg_gapn;
+    o->gen_drops = s3_gen_drops;
     o->wins_b = s3_wins_b; o->lsq_b = s3_lsq_b;
     o->segrej[0] = s3_segrej[0]; o->segrej[1] = s3_segrej[1];
     for (int c = 0; c < 2; c++) { o->x0_fix[c] = s3_grp.x0_fix[c]; o->x0_odd[c] = s3_grp.x0_odd[c]; o->x0_dev[c] = s3_grp.x0_dev[c]; }

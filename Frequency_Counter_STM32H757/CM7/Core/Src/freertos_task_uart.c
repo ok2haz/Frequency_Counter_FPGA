@@ -2791,9 +2791,9 @@ void UartTask_run(void *argument)
 				  printf("  FW 0x%04X CAPS 0x%08lX, REC_HEAD %lu REC_FIRST %lu, v kruhu %u, FLAGS 0x%02X, RX chyb CRC %u delka %u\n",
 				         (unsigned)vi.fw, (unsigned long)vi.caps, (unsigned long)vi.rec_head, (unsigned long)vi.rec_first,
 				         (unsigned)vi.ring_fill, (unsigned)vi.flags, (unsigned)vi.rx_crc_err, (unsigned)vi.rx_len_err);
-				  printf("  hlavicka %s, restartu FPGA pri rozbalovani %lu\n",
+				  printf("  hlavicka %s, restartu FPGA pri rozbalovani %lu, zmeskanych oken v SEQ (nad +2/+1) %lu, preruseni kvuli `gen` %lu\n",
 				         vi.narrow ? "UZKA (CAPS bit22: 16b SEQ/REC/PSEQ rozbaluje STM, 1PPS predchozi z historie STM)" : "siroka",
-				         (unsigned long)vi.wrap_restarts);
+				         (unsigned long)vi.wrap_restarts, (unsigned long)vi.seq_gapn, (unsigned long)vi.gen_drops);
 				  printf("  TDC A 0x%02X B 0x%02X (bit0 platna, bit2 sber, bit4 banka), ceka na tabulku 0x%X\n",
 				         (unsigned)vi.tdc[0], (unsigned)vi.tdc[1], (unsigned)vi.cal_wait);
 				  printf("  1PPS: %s, PCLK %s, epocha %u, jemny - hruby %d taktu%s (CAPS bit17 %s)\n",
@@ -4364,6 +4364,8 @@ void UartTask_run(void *argument)
 							           (unsigned long)ci.retries, (unsigned long)ci.last_ms, (unsigned)ci.naddr,
 							           ci.src[0] ? "pin" : "RO", ci.src[1] ? "pin" : "RO",
 							           (m.lut_wait & 3u) ? "  <== FPGA CEKA na tabulku od STM" : "");
+								    printf("  TDC HISTOGRAM: spatny soucet %lu, z toho novy sber %lu\n",
+								           (unsigned long)ci.sum_bad, (unsigned long)ci.sum_resample);
 							  }
 							  {
 							    uint32_t mp = 0u, mn = 0u;

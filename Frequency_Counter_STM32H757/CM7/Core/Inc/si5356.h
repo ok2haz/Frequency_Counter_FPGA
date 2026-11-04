@@ -131,6 +131,10 @@ typedef struct {
 /** Stav a zadosti generatoru. UI/UART zapisuji pres si5356_gen_request, zapis do cipu
  *  dela VYHRADNE SensorsTask (vlastnik I2C1) pres si5356_gen_service. */
 extern volatile si5356_gen_t g_si_gen[SI5356_GEN_N];
+/* v0.43.3 (P1 bod 3, validace auditu dat 2026-11-03): `gen` vypne vystup (OEB) na dobu zapisu -> skutecny vypadek signalu
+ * na vstupu citace. SensorsTask zvedne citac pred zapisem a po nem (liche = probiha); FpgaTask (poll_v3) pri zmene zahodi
+ * rozpracovana okna a dalsi po dobu 2 hradel + 100 ms (zaznamy z FPGA chodi se zpozdenim). */
+extern volatile uint32_t g_si_gen_epoch;
 
 /** Parametry MultiSynthu: f_ms = VCO/(a+b/c) = f_out * 2^rexp. */
 typedef struct { uint8_t rexp; uint32_t p1, p2, p3; } si5356_ms_t;

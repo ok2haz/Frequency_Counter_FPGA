@@ -100,7 +100,8 @@ void StartFpgaTask(void *argument)
   uint32_t fails = 0;
   uint8_t  lost  = 0;
   float    tdc_cal_t = -1000.0f;    /* teplota [°C] posledni kalibrace TDC; < -500 = jeste nemame referenci */
-  uint32_t tdc_cal_next_ms = 0;     /* HAL_GetTick, od kdy smi dalsi rekalibrace (rate-limit) */
+  uint32_t tdc_cal_last_ms = 0;     /* HAL_GetTick posledni teplotni rekalibrace (rate-limit) */
+  uint8_t  tdc_cal_any     = 0u;    /* 1 = uz probehla aspon jedna (jinak rate-limit neplati) */
   uint64_t uhz_prev = 0u;           /* hi-res kmitocet posledniho PRIJATEHO okna [µHz] — spike reject (cesta A) */
   uint32_t reject_run = 0u;         /* kolik oken za sebou zamitnuto (pojistka proti zablokovani na realne zmene) */
   uint8_t  chan_prev  = 0xFFu;      /* kanal predchoziho zpracovaneho okna (FW >= 0x041E) */
@@ -278,7 +279,9 @@ void StartFpgaTask(void *argument)
       if (tdc_cal_t < -500.0f) {
         tdc_cal_t = t;                           /* prvni platna teplota = reference boot kalibrace */
         g_tdc_cal_temp_c10 = (int16_t)(t * 10.0f);
-      } else if (now_ms >= tdc_cal_next_ms) {
+      } else if (!tdc_cal_any || (uint32_t)(now_ms - tdc_cal_last_ms) >= TDC_RECAL_MIN_MS) {
+        /* uplynuly cas (bez znamenka) misto `now >= next`: to po preteceni HAL_GetTick (49,7 d) rekalibraci zablokovalo
+         * nebo pustilo predcasne (validace auditu dat 2026-11-03, P1 bod 2) */
         float d = t - tdc_cal_t; if (d < 0.0f) d = -d;
         if (d >= TDC_RECAL_DELTA_C && fpga_freq_tdc_cal_start()) {
           /* bez %f (nano.specs) -> teploty jako cele.desetiny */
@@ -287,7 +290,8 @@ void StartFpgaTask(void *argument)
           printf("TDC: teplotni rekalibrace, FPGA %d.%d -> %d.%d C\n", o0, o1, n0, n1);
           tdc_cal_t          = t;
           g_tdc_cal_temp_c10 = (int16_t)(t * 10.0f);
-          tdc_cal_next_ms    = now_ms + TDC_RECAL_MIN_MS;
+          tdc_cal_last_ms    = now_ms;
+          tdc_cal_any        = 1u;
           g_tdc_recal_count++;
         }
       }
@@ -298,11 +302,14 @@ void StartFpgaTask(void *argument)
      * Proto STM pozada o novou kalibraci, nejvyse 1x za 15 s. */
     {
       fpga_meas_t cm;
-      static uint32_t s_calfail_next_ms;
+      static uint32_t s_calfail_last_ms;
+      static uint8_t  s_calfail_any;
       if (fpga_freq_get_last(&cm) && (cm.tdc_status & FPGA_TDC_CAL_FAIL)) {
         uint32_t n_ms = HAL_GetTick();
-        if ((int32_t)(n_ms - s_calfail_next_ms) >= 0) {
-          s_calfail_next_ms = n_ms + 15000u;
+        /* uplynuly cas od posledniho pokusu: `(int32_t)(n - next) >= 0` se po > 24,8 d bez selhani zablokuje (P1 bod 2) */
+        if (!s_calfail_any || (uint32_t)(n_ms - s_calfail_last_ms) >= 15000u) {
+          s_calfail_last_ms = n_ms;
+          s_calfail_any = 1u;
           if (fpga_freq_tdc_cal_start()) { printf("TDC: kalibrace selhala, spoustim znovu\n"); g_tdc_recal_count++; }
         }
       }
