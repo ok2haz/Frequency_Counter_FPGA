@@ -5849,3 +5849,26 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 ## Archiv (neplatné lekce)
 
 *(prázdné)*
+
+### L-0254 — Rate-limit „další povolený čas“, který se posouvá jen při události, se po 24,8 dne klidu zablokuje
+
+- **Datum:** 2026-11-04
+- **Oblast:** RTOS / časování (`freertos_task_fpga.c`, `flightrec.c`, CM4 `lwip_app.c`)
+- **Symptom:** zatím žádný (latentní, validace auditu dat 2026-11-03 P1 bod 2). Teplotní rekalibrace TDC by se po
+  přetečení `HAL_GetTick` (49,7 d) zablokovala nebo pustila předčasně; chyba v errlogu nebo push alarmu, která přijde
+  víc než ~24,8 d po předchozí téhož druhu, by se nezapsala/neodeslala až ~24,8 d.
+- **Příčina:** podmínka `now >= next` (přetečení) nebo `(int32_t)(now - next) >= 0`, kde `next = poslední + prodleva` se
+  nastavuje JEN při události. Znaménkový rozdíl platí jen do 2^31 ms; bez události se `next` ocitne „v budoucnosti“.
+  U periodických plánovačů (next se posouvá každou periodu) to nevadí.
+- **Oprava:** uplynulý čas bez znaménka od poslední události: `!any || (uint32_t)(now - last) >= prodleva`
+  (`freertos_task_fpga.c` rekalibrace TDC a opakování po CAL_FAIL, `flightrec.c` `errlog_put`, CM4 `lwip_app.c` push).
+  Současně v0.43.3: kalibrace TDC v3 při špatném součtu histogramu čte znovu a pak vyžádá nový sběr
+  (`fpga_freq.c` `tdccal_run_v3`), `gen` zneplatní okna (`g_si_gen_epoch`), `per_ref` jen z platného páru X0
+  (`fpga_v3.c`), díra v SEQ podle čísla segmentu.
+- **Pravidlo:** Rate-limit událostí piš jako „od kdy + jak dlouho“ a porovnávej uplynulý čas bez znaménka, nikdy
+  „další povolený okamžik“ — ten patří jen do plánovače, který ho posouvá každou periodu.
+- **Detekce:** `grep -nE "\(int32_t\)\(\s*\w+\s*-\s*\w*next" CM7 CM4` a u každé shody ověřit, že se `next` posouvá
+  periodicky (2026-11-04: zbylé shody — mDNS, link, httpd, datalog_sd, flightrec vzorkování, emulátor, VBAT, autorepeat
+  dotyku — jsou periodické).
+- **Commit:** `924bf72`
+- **Stav:** aktivní, ⬜ neověřeno na HW

@@ -89,6 +89,7 @@ diferencí 63 ns² po opravě sawtooth (σ ≈ √(63/6) ≈ 3,2 ns); údaj „~
 ## 3. Návrh oprav a pokusů (podle priority; nic neprovedeno, čeká na souhlas)
 
 ### P1 — opravy firmwaru, malé a jednoznačné (STM)
+> **Provedeno 2026-11-04 v v0.43.3 (`924bf72`, L-0254), ⬜ neověřeno na HW:** bod 1 – součet 2²⁰ kontrolovala kalibrace už dřív, ale při nesouhlasu se jen vzdala a FPGA čekala dál se stejným histogramem; nově 3× čtení a pak nový sběr (`status` → `TDC HISTOGRAM`); dvojí kalibrace s porovnáním neprovedena. Bod 2 – uplynulý čas bez znaménka (i opakování po CAL_FAIL, cooldown errlogu, push alarmů CM4). Bod 3 – `g_si_gen_epoch`, okna se zahazují po dobu zápisu + 2 hradla + 100 ms (`fpga v3` → `preruseni kvuli gen`); `per_ref` jen z platného páru. Bod 4 – díra podle `seg_first` / K, aspoň +2 při přerušení (`fpga v3` → `zmeskanych oken v SEQ`).
 1. **`tdc hist` / kalibrace: kontrola součtu 2²⁰** po sběru; při nesouhlasu kalibraci nepřijmout a zopakovat
    (noční `hist_0` je skutečný důkaz). Volitelně 2× kalibrace a přijetí při rozdílu < 20 ps rms.
 2. **`tdc_cal_next_ms`**: porovnávat `(int32_t)(now_ms - tdc_cal_next_ms) >= 0`.
