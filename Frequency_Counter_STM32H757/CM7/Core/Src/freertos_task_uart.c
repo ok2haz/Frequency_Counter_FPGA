@@ -2392,6 +2392,26 @@ void UartTask_run(void *argument)
 				  printf("GPS TP: %s, pulz s fixem %lu ms, posun %ld ms (vychozi 100 ms / 0, nepersistuje se; odeslani do ~1 s)\n",
 				         act ? "ZAP" : "VYP (GPSDO bez 1PPS)", (unsigned long)(len / 1000u), (long)(gps_tp_delay_get() / 1000000));
 			  }
+			  else if (strcmp(RxBuffer, "gps ver") == 0) {
+				  /* Typ modulu z UBX-MON-VER (STATUS #351): pravy casovaci modul (M8T/F9T) ma FWVER=TIM. */
+				  gps_rxinfo_t r;
+				  gps_rxinfo_get(&r);
+				  if (!r.have) printf("GPS VER: modul zatim neodpovedel na UBX-MON-VER (dotaz 1x/min)\n");
+				  else printf("GPS VER: SW %s | HW %s | FW %s | MOD %s | PROT %s -> %s\n", r.sw, r.hw,
+				              r.fw[0] ? r.fw : "-", r.mod[0] ? r.mod : "-", r.prot[0] ? r.prot : "-",
+				              r.timing ? "CASOVACI prijimac" : "navigacni prijimac (bez rezimu pevne polohy)");
+				  char fbuf[200];
+				  gps_fixed_format(fbuf, sizeof fbuf);
+				  printf("GPS: %s\n", fbuf);
+			  }
+			  else if (strcmp(RxBuffer, "gps fixed") == 0 || strcmp(RxBuffer, "gps fixed on") == 0 ||
+			           strcmp(RxBuffer, "gps fixed off") == 0) {
+				  /* Pevna poloha casovaciho prijimace (UBX-CFG-TMODE2 timeMode 2) z ulozeneho self-survey; nepersistuje se. */
+				  if (RxBuffer[9] == ' ') gps_fixed_enable(RxBuffer[11] == 'n');
+				  char fbuf[200];
+				  gps_fixed_format(fbuf, sizeof fbuf);
+				  printf("GPS: %s (zmena se uplatni do ~10 ms, odpoved modulu `gps ack` TMODE2)\n", fbuf);
+			  }
 			  else if (strcmp(RxBuffer, "gps glonass") == 0) {
 				  /* Zapne GPS+SBAS+QZSS+GLONASS (UBX-CFG-GNSS). Best-effort — NEO-7M
 				   * muze NAKnout; parser GLGSV zvlada tak jako tak. Overit pres

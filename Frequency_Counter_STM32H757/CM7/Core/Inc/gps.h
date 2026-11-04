@@ -69,6 +69,8 @@ typedef struct {
   uint32_t fixes;       /* pocet platnych fixu — diag */
   gps_sat_t sats[GPS_MAX_SATS];  /* druzice v dosahu (PRN + C/N0), z GSV */
   uint8_t   sat_count;           /* pocet platnych polozek v sats[] */
+  uint8_t   geoid_ok;            /* 1 = geoid_m prisel (GGA pole 11 neprazdne pri fixu) */
+  float     geoid_m;             /* GGA: vyska geoidu nad elipsoidem [m]; elipsoidicka vyska = alt_m + geoid_m */
 } gps_data_t;
 
 /* Inicializace: prepne USART1 na 9600 8N1 (regen-safe, nezavisle na .ioc),
@@ -169,5 +171,28 @@ typedef struct {
 bool gps_timtp_get(gps_timtp_t *last, gps_timtp_t *prev);
 /* UBX-CFG-MSG: zapne TIM-TP 1x za navigacni epochu (posila gps_init a gps_tick 1x/min spolu s TP5). */
 void gps_config_timtp(void);
+
+/* ── Casovaci prijimac (NEO-M8T / LEA-M8T / ZED-F9T), STATUS #351 ─────────────────────────────
+ * Typ modulu se zjisti z UBX-MON-VER (dotaz pri startu a 1x/min, dokud odpoved neprijde). Casovaci firmware
+ * = rozsireni "FWVER=TIM ..." (pravy M8T; preznaceny M8N tam ma SPG). Jen na nem se pouziva rezim PEVNE POLOHY
+ * (UBX-CFG-TMODE2 timeMode 2, ECEF): poloha z ulozeneho self-survey (okno SURVEY, syscfg), elipsoidicka vyska =
+ * GGA vyska + geoid. Posila se 1x/min (konfigurace zije v RAM modulu) a hned po novem survey; behem survey-in
+ * v modulu (START v okne SURVEY / `gps survey on`) se neposila, aby ho neprerusila. NEO-7M: nic z toho se
+ * neposila, chovani beze zmeny. Prubeh survey-in modulu = UBX-TIM-SVIN (dotaz 1x/min, dokud bezi). */
+typedef struct {
+  uint8_t  have;        /* 1 = MON-VER prisla */
+  uint8_t  timing;      /* 1 = casovaci firmware (FWVER=TIM...) */
+  char     sw[31];      /* swVersion */
+  char     hw[11];      /* hwVersion (00070000 = u-blox 7, 00080000 = M8, 00190000 = F9) */
+  char     fw[24];      /* rozsireni FWVER= (bez predpony) */
+  char     mod[20];     /* rozsireni MOD= (bez predpony), u starsich modulu prazdne */
+  char     prot[12];    /* rozsireni PROTVER= (bez predpony) */
+} gps_rxinfo_t;
+void gps_rxinfo_get(gps_rxinfo_t *out);
+
+/* Pevna poloha (jen casovaci prijimac): en = 1 povolit (vychozi), 0 = vypnout (posle timeMode 0). Nepersistuje se. */
+void gps_fixed_enable(bool en);
+/* Stav pevne polohy a survey-in modulu pro UART `gps fixed` / `gps ver`. */
+void gps_fixed_format(char *buf, int n);
 
 #endif /* INC_GPS_H_ */

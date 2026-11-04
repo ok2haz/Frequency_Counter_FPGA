@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 /* ── Aktualni stav (zapisuje GpsTask pres parser, cte se pres gps_get) ──── */
 static gps_data_t s_gps;
@@ -162,7 +163,8 @@ static void parse_rmc(char **f, int nf)
   taskEXIT_CRITICAL();
 }
 
-/* $xxGGA: 1=time 2=lat 3=N/S 4=lon 5=E/W 6=quality 7=numSat 8=HDOP 9=alt */
+/* $xxGGA: 1=time 2=lat 3=N/S 4=lon 5=E/W 6=quality 7=numSat 8=HDOP 9=alt 10=M 11=geoid sep. 12=M
+ * Geoid je potreba pro pevnou polohu casovaciho prijimace (elipsoidicka vyska = alt + geoid, STATUS #351). */
 static void parse_gga(char **f, int nf)
 {
   if (nf < 10) return;
@@ -170,12 +172,15 @@ static void parse_gga(char **f, int nf)
   uint8_t ns = (uint8_t)atoi_simple(f[7]);
   float   hd = atof_simple(f[8]);
   float   alt = atof_simple(f[9]);
+  int     geo_ok = (nf >= 12 && f[11][0] != '\0');
+  float   geo = geo_ok ? atof_simple(f[11]) : 0.0f;
 
   taskENTER_CRITICAL();
   s_gps.fix_quality = q;
   s_gps.num_sat = ns;
   s_gps.hdop = hd;
   if (q > 0) s_gps.alt_m = alt;
+  if (q > 0 && geo_ok) { s_gps.geoid_m = geo; s_gps.geoid_ok = 1u; }
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
@@ -488,10 +493,16 @@ void gps_config_timepulse(void)
 _Static_assert(GPS_TP_LEN_LOCK_US < 1000000u / GPS_TP_FREQ_HZ, "pulz 1PPS musi byt kratsi nez perioda");
 _Static_assert(GPS_TP_LEN_NOFIX_US < 1000000u / GPS_TP_FREQ_NOFIX_HZ, "pulz bez fixu musi byt kratsi nez perioda");
 
+/* Pevna poloha casovaciho prijimace (STATUS #351): survey-in v modulu bezi -> pevnou polohu neposilat
+ * (prepsala by ho). Nastavuje gps_survey_in_cmd, nuluje gps_survey_disable_cmd (oboji ze kterehokoli tasku). */
+static volatile uint8_t s_svin_busy;
+static volatile uint8_t s_fixed_kick;      /* po skonceni survey / zmene povoleni poslat hned, ne az za minutu */
+
 /* UBX-CFG-TMODE2 (0x06 0x3D, 28 B): timeMode 0=disabled 1=survey-in. Pro survey-in
  * naseto svinMinDur [s] (off 20) + svinAccLimit [mm] (off 24), zbytek 0. */
 void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm)
 {
+  s_svin_busy = 1u;
   uint8_t pl[28] = {0};
   pl[0] = 1;                                   /* timeMode = survey-in */
   pl[20] = (uint8_t)min_dur_s; pl[21] = (uint8_t)(min_dur_s >> 8);
@@ -504,6 +515,8 @@ void gps_survey_disable_cmd(void)
 {
   uint8_t pl[28] = {0};                        /* timeMode = 0 (disabled) */
   ubx_send(0x06, 0x3D, pl, 28);
+  s_svin_busy = 0u;
+  s_fixed_kick = 1u;                           /* casovaci prijimac: pevnou polohu z noveho survey hned */
 }
 
 /* UBX-CFG-NAV5 (0x06 0x24, 36 B): dynModel (off 2) = 0 Portable / 2 Stationary / 4 Automotive / ...
@@ -568,6 +581,7 @@ void gps_init(void)
    * se za behu posila i z UiTasku (SURVEY) a UartTasku (`gps glonass`). */
   gps_config_timepulse();
   gps_config_timtp();
+  ubx_send(0x0A, 0x04, NULL, 0);   /* UBX-MON-VER dotaz: typ modulu (STATUS #351); bez odpovedi znovu 1x/min */
   s_tp_last_ms = HAL_GetTick();
 
   /* RX v IT rezimu. */
@@ -583,15 +597,20 @@ void gps_init(void)
  * (RSY v `gpsraw` tedy roste ~1x/min — normalni).
  * ⚠️ HYPOTEZA k overeni osciloskopem: modul po (i shodne) TP5 nesmi vynechat
  * ani zkratit pulz 1PPS. Volat VYHRADNE z defaultTasku (drain GPS). */
+static void rx_timing_tick(int minute);
+
 void gps_tick(void)
 {
   uint32_t now = HAL_GetTick();
   /* Zmena delky/faktoru kabelu z UI se uplatni hned, ne az za minutu. */
   if (s_tp_resend_req) { s_tp_resend_req = 0u; s_tp_last_ms = now - GPS_TP_RESEND_MS; }
-  if ((uint32_t)(now - s_tp_last_ms) < GPS_TP_RESEND_MS) return;
-  s_tp_last_ms = now;
-  gps_config_timepulse();
-  gps_config_timtp();   /* STATUS #305: konfigurace zije jen v RAM modulu, stejne jako TP5 */
+  int minute = ((uint32_t)(now - s_tp_last_ms) >= GPS_TP_RESEND_MS);
+  if (minute) {
+    s_tp_last_ms = now;
+    gps_config_timepulse();
+    gps_config_timtp();   /* STATUS #305: konfigurace zije jen v RAM modulu, stejne jako TP5 */
+  }
+  rx_timing_tick(minute);   /* STATUS #351: typ modulu, pevna poloha casovaciho prijimace */
 }
 
 /* UBX-CFG-MSG (0x06 0x01, 3 B): msgClass, msgID, rate na AKTUALNIM portu (UART1). TIM-TP = 0x0D 0x01. */
@@ -605,7 +624,7 @@ void gps_config_timtp(void)
  * Binarni ramec B5 62 | cls id | len(LE) | payload | CK_A CK_B se prolina s NMEA. Bajty uvnitr ramce
  * se do NMEA radku NEPOSILAJI (jinak by binarni payload s '$', '\r', '\n' rozbil rozepsanou vetu).
  * Zpracuje se jen TIM-TP (16 B); ostatni (ACK/NAK na nase CFG) se jen spocitaji. */
-#define UBX_PL_MAX 40u
+#define UBX_PL_MAX 256u   /* MON-VER = 40 + 30 B na rozsireni (M8T ~6 rozsireni = 220 B); delsi ramec se jen spocita jako vadny */
 static uint8_t     s_ubx_st;                 /* 0 = mimo ramec, 1 = B5, 2 = cls, 3 = id, 4 = lenL, 5 = lenH, 6 = payload, 7 = CK_A, 8 = CK_B */
 static uint8_t     s_ubx_cls, s_ubx_id, s_ubx_cka;
 static uint16_t    s_ubx_len, s_ubx_pos;
@@ -657,9 +676,60 @@ void gps_ack_format(char *buf, int n)
   }
 }
 
+/* ── Casovaci prijimac (STATUS #351) ─────────────────────────────────────────────────────────── */
+static gps_rxinfo_t s_rx;                  /* zapis jen defaultTask (ubx_frame_done), cteni pres gps_rxinfo_get */
+
+/* Zkopiruje pevne dlouhy retezec z UBX (nemusi koncit NUL) a vzdy ukonci. */
+static void ubx_str(char *dst, size_t dn, const uint8_t *src, size_t sn)
+{
+  size_t i = 0;
+  for (; i + 1 < dn && i < sn && src[i] != 0; i++) dst[i] = (char)src[i];
+  dst[i] = '\0';
+}
+
+/* UBX-MON-VER (0x0A 0x04): swVersion[30], hwVersion[10], N x extension[30] ("FWVER=TIM 1.10", "PROTVER=22.00",
+ * "MOD=NEO-M8T", ...). Casovaci firmware se pozna podle FWVER=TIM. */
+static void monver_parse(const uint8_t *p, uint16_t len)
+{
+  if (len < 40u || ((len - 40u) % 30u) != 0u) return;
+  gps_rxinfo_t r;
+  memset(&r, 0, sizeof r);
+  ubx_str(r.sw, sizeof r.sw, p, 30);
+  ubx_str(r.hw, sizeof r.hw, p + 30, 10);
+  for (uint16_t o = 40; o + 30u <= len; o += 30u) {
+    char e[31];
+    ubx_str(e, sizeof e, p + o, 30);
+    /* Zamerne oriznuti na velikost pole (ubx_str, bez varovani -Wformat-truncation). */
+    if      (strncmp(e, "FWVER=", 6) == 0)   ubx_str(r.fw, sizeof r.fw, (const uint8_t *)e + 6, 24);
+    else if (strncmp(e, "MOD=", 4) == 0)     ubx_str(r.mod, sizeof r.mod, (const uint8_t *)e + 4, 26);
+    else if (strncmp(e, "PROTVER=", 8) == 0) ubx_str(r.prot, sizeof r.prot, (const uint8_t *)e + 8, 22);
+  }
+  r.timing = (uint8_t)(strncmp(r.fw, "TIM", 3) == 0);
+  r.have = 1u;
+  taskENTER_CRITICAL();
+  s_rx = r;
+  taskEXIT_CRITICAL();
+}
+
+/* UBX-TIM-SVIN (0x0D 0x04, 28 B): prubeh survey-in v modulu. */
+static struct { uint8_t have, valid, active; uint32_t dur_s, obs, mean_v_mm2; } s_svin;
+
+static void svin_parse(const uint8_t *p)
+{
+  uint32_t dur = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+  uint32_t mv  = (uint32_t)p[16] | ((uint32_t)p[17] << 8) | ((uint32_t)p[18] << 16) | ((uint32_t)p[19] << 24);
+  uint32_t obs = (uint32_t)p[20] | ((uint32_t)p[21] << 8) | ((uint32_t)p[22] << 16) | ((uint32_t)p[23] << 24);
+  taskENTER_CRITICAL();
+  s_svin.dur_s = dur; s_svin.mean_v_mm2 = mv; s_svin.obs = obs;
+  s_svin.valid = p[24]; s_svin.active = p[25]; s_svin.have = 1u;
+  taskEXIT_CRITICAL();
+}
+
 static void ubx_frame_done(void)
 {
   s_ubx_rx_ok++;
+  if (s_ubx_cls == 0x0A && s_ubx_id == 0x04) monver_parse(s_ubx_pl, s_ubx_len);
+  if (s_ubx_cls == 0x0D && s_ubx_id == 0x04 && s_ubx_len == 28u) svin_parse(s_ubx_pl);
   if (s_ubx_cls == 0x05 && (s_ubx_id == 0x00 || s_ubx_id == 0x01) && s_ubx_len == 2u)
     ubx_ack_note(s_ubx_pl[0], s_ubx_pl[1], (uint8_t)(s_ubx_id == 0x01));
   if (s_ubx_cls == 0x0D && s_ubx_id == 0x01 && s_ubx_len == 16u) {
@@ -713,6 +783,132 @@ bool gps_timtp_get(gps_timtp_t *last, gps_timtp_t *prev)
   if (h && prev) *prev = s_tp_prev;
   taskEXIT_CRITICAL();
   return h != 0u;
+}
+
+void gps_rxinfo_get(gps_rxinfo_t *out)
+{
+  taskENTER_CRITICAL();
+  *out = s_rx;
+  taskEXIT_CRITICAL();
+}
+
+/* ── Pevna poloha casovaciho prijimace (STATUS #351) ─────────────────────────────────────────────
+ * Vysledek self-survey (app_gpsdo.c survey_stop, syscfg) -> ECEF -> UBX-CFG-TMODE2 timeMode 2. Prijimac pak polohu
+ * nepocita a z kazde druzice odhaduje jen cas: odpadne sum polohy, ktery se jinak preleva do 1PPS.
+ * 🔴 Vyska: NMEA GGA dava vysku nad GEOIDEM (MSL), TMODE2 chce polohu v WGS84 -> elipsoidicka vyska = alt + geoid
+ * (GGA pole 11). Bez geoidu by v CR chybelo ~45 m vysky = casova chyba desitek ns, ktera se meni se souhvezdim;
+ * proto se bez geoidu neposila nic. Posila se ECEF (flags.lla = 0), aby nebylo nutne spolehat na to, jak modul
+ * vyklada vysku v rezimu LLA. */
+extern volatile uint8_t  g_survey_valid;
+extern volatile uint32_t g_survey_n;
+extern volatile double   g_survey_lat, g_survey_lon;
+extern volatile float    g_survey_alt, g_survey_spread;
+
+enum { FX_NOT_TIMING = 0, FX_OFF, FX_NO_SURVEY, FX_SVIN, FX_NO_GEOID, FX_SENT };
+static const char *const FX_TXT[] = {
+  "neni casovaci prijimac", "vypnuto (`gps fixed on`)", "chybi ulozeny self-survey (okno SURVEY)",
+  "bezi survey-in v modulu", "ceka na geoid z GGA", "odeslano" };
+static volatile uint8_t  s_fixed_en = 1u;
+static volatile uint8_t  s_fixed_off_req;
+static uint8_t  s_fx_state;
+static uint32_t s_fx_n_sent;                 /* g_survey_n posledniho odeslani (zmena = novy survey -> poslat hned) */
+static uint32_t s_fx_cnt;                    /* pocet odeslani */
+static uint32_t s_fx_last_ms;
+static int32_t  s_fx_ecef_cm[3];
+static uint32_t s_fx_acc_mm;
+
+void gps_fixed_enable(bool en)
+{
+  s_fixed_en = en ? 1u : 0u;
+  if (!en) s_fixed_off_req = 1u;
+  s_fixed_kick = 1u;
+}
+
+/* WGS84 geodeticke -> ECEF [m]. */
+static void lla_to_ecef(double lat_deg, double lon_deg, double h_m, double *x, double *y, double *z)
+{
+  const double a = 6378137.0, f = 1.0 / 298.257223563, e2 = f * (2.0 - f);
+  const double d2r = 3.14159265358979323846 / 180.0;
+  double la = lat_deg * d2r, lo = lon_deg * d2r;
+  double s = sin(la), c = cos(la);
+  double N = a / sqrt(1.0 - e2 * s * s);
+  *x = (N + h_m) * c * cos(lo);
+  *y = (N + h_m) * c * sin(lo);
+  *z = (N * (1.0 - e2) + h_m) * s;
+}
+
+static void fixed_send(void)
+{
+  double lat, lon; float alt, spr; uint32_t n; float geo;
+  taskENTER_CRITICAL();
+  lat = g_survey_lat; lon = g_survey_lon; alt = g_survey_alt; spr = g_survey_spread; n = g_survey_n;
+  geo = s_gps.geoid_m;
+  taskEXIT_CRITICAL();
+  double x, y, z;
+  lla_to_ecef(lat, lon, (double)alt + (double)geo, &x, &y, &z);
+  int32_t cm[3] = { (int32_t)lround(x * 100.0), (int32_t)lround(y * 100.0), (int32_t)lround(z * 100.0) };
+  /* fixedPosAcc: spread je sigma JEDNOTLIVYCH fixu (F-0162), prumer je lepsi -> konzervativni horni odhad,
+   * omezeny na 1..100 m. */
+  float acc = spr * 1000.0f;
+  if (!(acc >= 1000.0f)) acc = 1000.0f;
+  if (acc > 100000.0f) acc = 100000.0f;
+  uint8_t pl[28] = {0};
+  pl[0] = 2;                                   /* timeMode = fixed */
+  /* pl[2..3] flags = 0 -> ECEF */
+  put_le32(&pl[4],  (uint32_t)cm[0]);
+  put_le32(&pl[8],  (uint32_t)cm[1]);
+  put_le32(&pl[12], (uint32_t)cm[2]);
+  put_le32(&pl[16], (uint32_t)acc);
+  if (ubx_send(0x06, 0x3D, pl, 28)) {
+    s_fx_n_sent = n; s_fx_cnt++; s_fx_last_ms = HAL_GetTick();
+    s_fx_ecef_cm[0] = cm[0]; s_fx_ecef_cm[1] = cm[1]; s_fx_ecef_cm[2] = cm[2]; s_fx_acc_mm = (uint32_t)acc;
+  }
+}
+
+/* Vola gps_tick (defaultTask). minute = uplynula minuta od posledniho TP5. */
+static void rx_timing_tick(int minute)
+{
+  taskENTER_CRITICAL();
+  uint8_t have = s_rx.have, timing = s_rx.timing;
+  taskEXIT_CRITICAL();
+  if (minute && !have) ubx_send(0x0A, 0x04, NULL, 0);          /* MON-VER, dokud neprisla odpoved */
+  if (!timing) { s_fx_state = FX_NOT_TIMING; s_fixed_kick = 0u; s_fixed_off_req = 0u; return; }
+  if (minute && s_svin_busy) ubx_send(0x0D, 0x04, NULL, 0);     /* TIM-SVIN: prubeh survey-in modulu */
+
+  if (s_fixed_off_req) {                                         /* `gps fixed off` -> timeMode 0 */
+    s_fixed_off_req = 0u;
+    uint8_t pl[28] = {0};
+    ubx_send(0x06, 0x3D, pl, 28);
+  }
+  uint8_t st;
+  if (!s_fixed_en)          st = FX_OFF;
+  else if (s_svin_busy)     st = FX_SVIN;
+  else if (!g_survey_valid) st = FX_NO_SURVEY;
+  else if (!s_gps.geoid_ok) st = FX_NO_GEOID;
+  else                      st = FX_SENT;
+  int kick = s_fixed_kick;
+  s_fixed_kick = 0u;
+  if (st == FX_SENT && (minute || kick || s_fx_cnt == 0u || s_fx_n_sent != g_survey_n)) fixed_send();
+  s_fx_state = st;
+}
+
+void gps_fixed_format(char *buf, int n)
+{
+  gps_rxinfo_t r;
+  gps_rxinfo_get(&r);
+  int pos = snprintf(buf, (size_t)n, "pevna poloha: %s", FX_TXT[s_fx_state < 6u ? s_fx_state : 0u]);
+  if (r.timing && s_fx_cnt && pos < n)
+    pos += snprintf(buf + pos, (size_t)(n - pos), ", %lux, naposled pred %lu s, ECEF %ld %ld %ld cm, acc %lu mm",
+                    (unsigned long)s_fx_cnt, (unsigned long)((HAL_GetTick() - s_fx_last_ms) / 1000u),
+                    (long)s_fx_ecef_cm[0], (long)s_fx_ecef_cm[1], (long)s_fx_ecef_cm[2], (unsigned long)s_fx_acc_mm);
+  taskENTER_CRITICAL();
+  uint8_t sh = s_svin.have, sv = s_svin.valid, sa = s_svin.active;
+  uint32_t sd = s_svin.dur_s, so = s_svin.obs, smv = s_svin.mean_v_mm2;
+  taskEXIT_CRITICAL();
+  if (sh && pos < n)
+    snprintf(buf + pos, (size_t)(n - pos), " | survey-in modulu: %s%s, %lu s, %lu pozic, sigma %lu mm",
+             sa ? "bezi" : "stoji", sv ? ", platny" : "", (unsigned long)sd, (unsigned long)so,
+             (unsigned long)lround(sqrt((double)smv)));
 }
 
 void gps_feed_char(char c)
@@ -850,6 +1046,13 @@ bool gps_selftest(void)
     m = gsv_merge(&st, out, GPS_MAX_SATS);
     ok &= (m == 2 && out[0].prn == 7 &&
            out[1].prn == 68 && out[1].constel == GPS_CONSTEL_GLONASS);
+  }
+
+  /* WGS84 -> ECEF pro pevnou polohu (STATUS #351): 50 N, 14 E, h 300 m (vektor z nezavisleho vypoctu v Pythonu). */
+  {
+    double x, y, z;
+    lla_to_ecef(50.0, 14.0, 300.0, &x, &y, &z);
+    ok &= (fabs(x - 3986030.080) < 0.01 && fabs(y - 993828.919) < 0.01 && fabs(z - 4863018.851) < 0.01);
   }
 
   printf("gps: parser selftest %s\n", ok ? "OK" : "FAIL");
