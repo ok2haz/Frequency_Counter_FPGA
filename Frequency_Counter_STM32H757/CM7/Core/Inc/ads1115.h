@@ -50,4 +50,15 @@ static inline int32_t ads1115_raw_to_mv(int16_t raw, ads1115_pga_t pga)
     return ((int32_t)raw * ads1115_pga_fs_mv(pga)) / 32768;
 }
 
+/** Totez, ale ve float mV (BEZ celociselneho orezu). Integer verze zahazovala vse pod 1 mV na pinu ADC, coz je
+ *  pri PGA +-2,048 V (LSB 0,0625 mV) 16 kroku najednou a po vynasobeni delicem (AIN0 x2,5, AIN1 x21) hrube kroky
+ *  vysledku. Od 2026-10-11 pouziva SensorsTask tuhle verzi. */
+static inline float ads1115_raw_to_mv_f(int16_t raw, ads1115_pga_t pga)
+{
+    return (float)raw * (float)ads1115_pga_fs_mv(pga) / 32768.0f;
+}
+
+/** raw je na dorazu (priblizne +32767): vstup je nad rozsahem PGA a hodnota by se tise orizla. */
+#define ADS1115_RAW_SATURATED(raw) ((raw) >= 32760)
+
 #endif /* ADS1115_H */

@@ -1,0 +1,11 @@
+  OK    selftest HW = SW (emulator) -> HW zapnuto
+  OK    HW vypocet = SW
+  OK    kontrola platneho ramce
+  OK    kontrola vadneho ramce -> false
+  OK    zamek obsazen -> SW cesta
+  OK    HW vadna (emulace): platny ramec presto prijat (SW pojistka)
+  OK    nesoulad HW/SW -> HW trvale vypnuto, zapocitano
+  OK    po vypnuti vse SW
+  OK    vadna HW pri startu -> selftest neprojde, HW vypnuto
+  OK    pred schedulerem (bez zamku) HW funguje
+VYSLEDEK CRC: VSE PROSLO

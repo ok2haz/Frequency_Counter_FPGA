@@ -10,11 +10,38 @@
 
 #include <stdbool.h>
 
+/* 🔴 2026-10-02: AD8307 (RF log-detektor) na teto desce FYZICKY NENI OSAZEN —
+ * overeno kicad-cli exportem netlistu FPGA_Module_2_1 (zadny AD8307 v zadnem
+ * z 5 listu schematu). AIN1 (SENS_ADS1, viz sensor_stat.h) meri VBUS, ne
+ * vystup logaritmickeho detektoru. Vsechna mista, ktera z tohoto kanalu
+ * pocitaji dBm (`mp_ad8307_dbm` nad `ad8307_slope_mv_db`/`ad8307_intercept_dbm`
+ * nize), MUSI tento priznak respektovat a hlasit "nedostupne" (NaN/SCPI
+ * 9.91E37/prazdny bar), ne pocitat verohodne vypadajici cislo ze spatneho
+ * vstupu — stejna politika jako F-0165 u neplatne strmosti. */
+#define RF_LEVEL_HW_PRESENT 0
+
 typedef struct {
-    float ad8307_slope_mv_db;    /* mV / dB (typicky 25.0, datasheet AD8307) */
-    float ad8307_intercept_dbm;  /* dBm pri 0 V (typicky -84.0) */
-    float gain_12v;              /* multiplikator ADS mV -> skutecne mV, 12V vetev */
-    float gain_5v;                /* multiplikator ADS mV -> skutecne mV, 5V vetev */
+    float ad8307_slope_mv_db;    /* mV / dB (typicky 25.0, datasheet AD8307).
+                                     Viz RF_LEVEL_HW_PRESENT vyse — na teto desce
+                                     se nepouziva (HW neni osazen), pole zustava
+                                     kvuli stabilite formatu CALIB blobu. */
+    float ad8307_intercept_dbm;  /* dBm pri 0 V (typicky -84.0), totez omezeni */
+    /* 🔴 2026-10-02: nazvy poli jsou HISTORICKE, neodpovidaji uz realne
+     * fyzicke vetvi (overeno netlistem FPGA_Module_2_1) - prejmenovani je
+     * samostatny zasah, viz calib.c. `gain_12v` je dnes AIN2 = +3V3,
+     * `gain_5v` je dnes AIN3 = +5V pres jiny delic nez puvodne. */
+    float gain_12v;              /* multiplikator ADS mV -> skutecne mV, AIN2 = +3V3 vetev */
+    float gain_5v;                /* multiplikator ADS mV -> skutecne mV, AIN3 = +5V vetev */
+    /* 2026-10-11: ladici napeti OCXO (AIN0) a VBUS (AIN1) dostaly EDITOVATELNY gain jako ostatni vetve
+     * (dosud pevne z hodnot rezistoru, tj. nesly zkalibrovat podle multimetru). Ulozeny blob "CAL2". */
+    float gain_vc;                /* multiplikator ADS mV -> skutecne mV, AIN0 = OCXO Vc (R51/R52, ~2,5) */
+    float gain_vbus;              /* multiplikator ADS mV -> skutecne mV, AIN1 = VBUS (R53/R54, ~21,04) */
+    /* 2026-10-18 (STATUS #322): korekce VBAT na NAPETI BATERIE [mV] = ubytek diody D3 (B0520LW). ADC3 meri napeti na pinu VBAT, baterie je
+     * o ubytek diody vyssi. Naměřeno 2026-10-18: baterie 3,046 V, pin (multimetr) 2,971 V => dioda 75,6 mV = vychozi hodnota.
+     * ⚠️ Chyba ADC (cetl 2,988 V, tj. o 17 mV VIC nez multimetr na tomtez pinu) se do korekce ZAMERNE nezapocitava: je to jina veličina
+     * (zesileni/offset ADC3 + VREFBUF, ne dioda), muze se menit s teplotou a jedno srovnani s multimetrem ji nerozlisi na offset/zisk.
+     * Dusledek: zobrazena baterie je o ~17 mV (0,6 %) VYSSI nez multimetr (3,064 vs 3,046 V). Vyladit na multimetr = snizit na 58,6 mV. Blob "CAL3". */
+    float vbat_corr_mv;
 } calib_t;
 
 /* Live hodnoty. Cte SensorsTask (gain_12v/gain_5v, prepocet ADS -> skutecne
@@ -33,5 +60,10 @@ void calib_load(void);
  *  ms). Volat jen na explicitni pozadavek uzivatele (tlacitko ULOZIT), NE
  *  periodicky (opotrebeni flash). @return true = zapis OK. */
 bool calib_save(void);
+
+/** 1 = CALIB store ve W25Q je pouzitelny. 0 = `calib_load()` ho nepripravil ->
+ *  `g_calib` drzi datasheetove vychozi hodnoty a mereni RF/napeti je nekalibrovane,
+ *  bez jakekoli stopy (audit F-0098). */
+int calib_store_ready(void);
 
 #endif /* CALIB_H */

@@ -1,0 +1,6 @@
+T5 sigma_x=0.4 ns: odhad 0.425 ns (pomer 1.062)
+T5 sigma_x=2.0 ns: odhad 2.024 ns (pomer 1.012)
+T5 sigma_x=5.0 ns: odhad 5.452 ns (pomer 1.090)
+T6 gp_ref_core: stara u=5.518152e-03 drift=2.584001e-02 | nova u=5.518152e-03 drift=2.584001e-02
+T6b faze +-0,3 ns: stara u=0.000e+00 (zaokrouhleno na ns), nova u=2.973e-04
+VYSLEDEK GPSDO: VSE PROSLO

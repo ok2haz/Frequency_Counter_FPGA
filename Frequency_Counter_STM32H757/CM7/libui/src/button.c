@@ -11,6 +11,9 @@
 
 typedef struct { prim_color_t fill, border, ink; } btn_style_t;
 
+static ui_button_observer_t s_btn_obs;
+void ui_button_set_observer(ui_button_observer_t obs) { s_btn_obs = obs; }
+
 static btn_style_t style_of(ui_button_variant_t v)
 {
     switch (v) {
@@ -35,6 +38,7 @@ void ui_button_render(const ui_button_t *btn)
      * corners past the rounded shape), then border. */
     prim_fill_rect_rounded(btn->rect, UI_DIM_BUTTON_RADIUS, st.fill, PRIM_BLEND_OVER);
     prim_stroke_rect_rounded(btn->rect, UI_DIM_BUTTON_RADIUS, 1, st.border);
+    if (s_btn_obs) s_btn_obs(&btn->rect);
 
     int16_t cx = (int16_t)(btn->rect.x + btn->rect.w / 2);
     if (btn->value == NULL) {

@@ -116,7 +116,7 @@ Diagnostika · Nastavení · System Health · Čítač · Holdover · Datalog ·
 ## 4. GPS okno + GLONASS (A0 — napsáno bez HW, ověřit přednostně)
 
 - [ ] GNSS pilulka → GPS okno, živé (~2×/s)
-- [ ] FIX řádek + **TP 100 kHz** (s fixem) / **10 Hz** (bez fixu)
+- [ ] FIX řádek + **TP 1PPS** (s fixem) / **10 Hz** (bez fixu) — a osciloskopem na R50 / FPGA PIN33 po power-cyklu: s fixem 1 Hz, bez fixu 10 Hz (F-0218)
 - [ ] Karta Družice: **tap přepíná bargraf C/N0 ↔ polární sky plot**
 - [ ] **PRN nese prefix souhvězdí**: `G05` GPS, `R68` GLONASS, `E12` Galileo, `C07` BeiDou
 - [ ] UART `gps glonass` → pak musí přibýt `R..` družice (⚠️ NEO-7M může NAKnout — pak jen GPS, není to chyba)

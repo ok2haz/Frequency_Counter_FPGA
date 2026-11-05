@@ -70,7 +70,7 @@ extern uint32_t SystemCoreClock;
 #define configUSE_SB_COMPLETED_CALLBACK          ( valueNotSetted )
 #define configUSE_MINI_LIST_ITEM                ( valueNotSetted )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)32768)
+#define configTOTAL_HEAP_SIZE                    ((size_t)49152)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configHEAP_CLEAR_MEMORY_ON_FREE          0
 #define configUSE_TRACE_FACILITY                 1
@@ -159,7 +159,11 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 /* Normal assert() semantics without relying on the provision of an assert.h
 header file. */
 /* USER CODE BEGIN 1 */
-#define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* ⚠️ Bez `rtc_crash_assert` byl selhany assert TICHY: `for(;;)` -> IWDG reset,
+ * ktery `status` hlasil jen jako „watchdog" (viz audit error handleru
+ * 2026-09-07). Ted se do crash black-boxu ulozi cislo radku. */
+extern void rtc_crash_assert(unsigned long line);
+#define configASSERT( x ) if ((x) == 0) {rtc_crash_assert(__LINE__); taskDISABLE_INTERRUPTS(); for( ;; );}
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS

@@ -121,7 +121,21 @@ bool tc358762_init(DSI_HandleTypeDef *hdsi)
     if (!tc_write(hdsi, TC_LCDCTRL, 0x00100050)) return false;
     printf("tc358762: LCDCTRL = 0x00100050 (RGB888 bit OFF - RGB565 vstup)\n");
 
-    /* SYSCTRL - LCDC enable */
+    /* SYSCTRL = 0x040F — LCDC enable + volba hodin.
+     * >> POCTIVE: tahle hodnota je JEDINA v souboru, ktera NENI rozebrana
+     * (audit F-0130). Vedle ni je `LCDCTRL` rozepsany bit po bitu (vcetne toho,
+     * PROC se od hodnoty z Linuxu odecita bit RGB888) a LCD timing dolozeny
+     * aritmetikou modeline (800+1+2+47 = 850, 480+7+2+21 = 510) — u `SYSCTRL`
+     * takovy rozklad nemame.
+     * Hodnota je PREJATA z referencniho driveru (odkaz v hlavicce souboru:
+     * raspberrypi/linux rpi-6.6.y, drivers/gpu/drm/bridge/tc358762.c, kde stoji
+     * jako `LCD_CTRL`/`SYSTEM_CTRL` sekvence) a na HW prokazatelne funguje.
+     * Z datasheetu TC358762 je znamy jen vyznam nizkych bitu (LCDC enable
+     * a vyber hodinoveho zdroje); rozklad zbytku dohledatelny nebyl.
+     * >> „Nevime, prejato z RPi" je lepsi udaj nez mlceni: pristi ctenar tak vi,
+     * ze tady NENI co odvozovat, a nebude tu hodnotu menit podle vlastni domnenky.
+     * Kdyby se menil vstupni format nebo hodiny, zacni u referencniho driveru,
+     * ne u tohoto radku. */
     if (!tc_write(hdsi, TC_SYSCTRL, 0x040F)) return false;
 
     HAL_Delay(100);

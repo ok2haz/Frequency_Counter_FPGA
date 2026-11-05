@@ -1,0 +1,27 @@
+=== errlog PRED ZACATKEM (total 5028) ===
+22:13:17  up 0  k=1  power-  duvod=power-, bring-up krok 0
+22:12:55  up 0  k=2  240000  HardFault 240000
+22:12:55  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+21:14:41  up 171  k=6  signal  ztrata signalu, CRC chyb celkem=0
+21:11:51  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+21:11:51  up 0  k=10  CM4  CM4 zaseklo, pocet=1
+21:11:51  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+20:39:39  up 3697  k=6  signal  ztrata signalu, CRC chyb celkem=0
+20:39:30  up 3687  k=11  kanal  kanal A -> B
+20:32:26  up 3263  k=6  signal  ztrata signalu, CRC chyb celkem=0
+20:25:25  up 2843  k=6  signal  ztrata signalu, CRC chyb celkem=0
+19:38:03  up 0  k=2  240000  HardFault 240000
+
+=== errlog PO KONCI (total 5028, pred: 5028) ===
+22:13:17  up 0  k=1  power-  duvod=power-, bring-up krok 0
+22:12:55  up 0  k=2  240000  HardFault 240000
+22:12:55  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+21:14:41  up 171  k=6  signal  ztrata signalu, CRC chyb celkem=0
+21:11:51  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+21:11:51  up 0  k=10  CM4  CM4 zaseklo, pocet=1
+21:11:51  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+20:39:39  up 3697  k=6  signal  ztrata signalu, CRC chyb celkem=0
+20:39:30  up 3687  k=11  kanal  kanal A -> B
+20:32:26  up 3263  k=6  signal  ztrata signalu, CRC chyb celkem=0
+20:25:25  up 2843  k=6  signal  ztrata signalu, CRC chyb celkem=0
+19:38:03  up 0  k=2  240000  HardFault 240000

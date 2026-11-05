@@ -139,7 +139,12 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 /* USER CODE BEGIN 1 */
 /* I2C1 na FPGA desce: TMP117 0x49/0x4A, ADS1115 0x48, Si5356A 0x70/0x71.
  * Piny PB8=SCL, PB9=SDA (AF4). Self-contained (GPIO+clock zde), aby to prezilo
- * CubeMX regeneraci. ~100 kHz (Timing jako I2C4, stejny kernel 120 MHz). */
+ * CubeMX regeneraci. Kernel 120 MHz.
+ * 2026-10-11: I2C1 400 kHz (Timing 0x30700E3B, tentyz jako overeny bod TMP117 na I2C4, kernel 120 MHz). Drive 0x70303AEE (~50 kHz, sdileno
+ * s I2C4, kde je ATtiny s kolenem 75-100 kHz); I2C1 ATtiny nema. Zarizeni na sbernici (TMP117, ADS1115, AD5693R, Si5356) umi 400 kHz.
+ * Otestovano na desce: 60 kHz, 200 kHz i 400 kHz (po 4-14 min): TMP117 0x49, Si5356 a ADS1115 AIN0/2/3 bez jedine chyby cteni.
+ * Jedina pull-up dvojice je na desce FPGA (R64/R65 2k2; na desce STM zadny), cas nabehu zatim NEZMEREN osciloskopem -- 400 kHz je pri
+ * 2k2 a ~150 pF na hrane (tr ~300 ns). Kdyby se objevily chyby, vratit 200 kHz (0x70300E3B). */
 I2C_HandleTypeDef hi2c1;
 
 void MX_I2C1_Init(void)
@@ -163,7 +168,7 @@ void MX_I2C1_Init(void)
   HAL_GPIO_Init(GPIOB, &gpio);
 
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x70303AEE;
+  hi2c1.Init.Timing = 0x30700E3B;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -176,6 +181,60 @@ void MX_I2C1_Init(void)
   }
   HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE);
   HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0);
+}
+
+/* ── I2C4: TRI provozni rychlosti, jedna per zarizeni (2026-09-13) ─────────
+ * ATTINY na desce ma CPU 1 MHz a jako bit-bang I2C slave nestiha nad ~75 kHz
+ * (zmereno 2026-09-10/12, docs/audit/2026-09-10_i2c.md — cista tabulka az do
+ * 100 kHz, koleno mezi 75 a 100 kHz, ATTINY tam NACKuje 2,3-8 %; FT5x06 a
+ * TMP117 na 100 kHz cista nula). Bezpecna rezerva pro ATTINY = 50 kHz
+ * (I2C4.Timing v .ioc, generovano vyse v MX_I2C4_Init — TAM se to nemeni).
+ * FT5x06 (dotyk) a TMP117 (teplota) jsou skutecne I2C periferie, ne bit-bang
+ * slave — ATTINY limit na ne neplati, kazde bezi na SVE vlastni rychlosti:
+ *   - FT5x06 (0x38) na 75 kHz — v pasmu cistych, DUVERYHODNYCH dat (0,00 %
+ *     chyb i pri 100 kHz), takze neni hypoteza — je to primo zmereny bod.
+ *   - TMP117 (0x48) na 400 kHz — ⚠️ HYPOTEZA, NE zmerene cislo: cista tabulka
+ *     v auditu sahaji jen do 100 kHz, vse >=125 kHz je oznaceno jako
+ *     kontaminovane zavesenou sbernici (vada MERICIHO NASTROJE
+ *     `i2cspeed`/TODO #244, ne cipu — viz "Co tim porad neni zodpovezeno"
+ *     v audit dokumentu). Overit pred plnou duverou: `i2cspeed` s MALYM N
+ *     (~25) na krok 400 kHz, cistene na TMP117 samotnem (bez soucasne
+ *     aktivni ATTINY zateze). ⬜ neovereno na HW.
+ * Konstanty `I2C4_TIMING_*` jsou v i2c.h (verejne, potrebuje main.c i oba
+ * tasky) — hodnoty z tabulky I2CSP_STEP (freertos_task_uart.c), aby byly
+ * shodne s tim, co uz `i2cspeed` overuje. */
+
+/* Prepne TIMINGR I2C4 na pozadovanou rychlost — ale JEN kdyz uz na ni neni
+ * (touch i TMP117/ATTINY chteji ruznou rychlost, ale v ramci jednoho
+ * zarizeni po sobe jdouci volani stejnou — takze skoro vzdy no-op).
+ *
+ * 🔴🔴 ZAMERNE **NE** `HAL_I2C_DeInit`+`HAL_I2C_Init` (byval vzor, pouzity
+ * do 2026-09-13 a totozny s `i2c4_recover()`/`i2csp_set_timing"
+ * v freertos_task_uart.c) — DeInit/Init pres `MspDeInit`/`MspInit`
+ * PREKONFIGURUJE GPIO SCL/SDA (AF -> neco -> AF). ATTINY je bit-bang I2C
+ * slave a presne tenhle typ hranoveho prechodu na sbernici je znama
+ * pojistka-lamajici udalost (viz komentar u `s_bl_settle` v
+ * freertos_task_ui.c: "zapis jasu tesne nasledovany START-em touch cteni
+ * mu rozhodi slave automat -> drzi SDA -> mrtva I2C4 az do power-cyklu").
+ * Boot bring-up (main.c) dela presne tuhle sekvenci BEZ zadne klidove
+ * mezery: zapis jasu do ATTINY (50 kHz) -> `i2c4_speed_select` (drivejsi
+ * DeInit/Init) -> `ft5x06_probe` — a je silne podezreni, ze prave to
+ * zpusobilo "po power-cyklu nejde dotyk" (2026-09-13, hlaseno z HW).
+ *
+ * TIMINGR smi RM0399 menit jen s PE=0 — proto se pouziva **jen** to:
+ * PE=0 (nesaha na GPIO, jen bit v CR1) -> zapis TIMINGR -> PE=1. Zadna
+ * GPIO hrana, zadne MspInit, zadny prostor pro to, aby si to ATTINY
+ * vylozil jako START jineho mastera.
+ * ⚠️ Volat VZDY pod `i2c4MutexHandle` — `hi2c4` neni thread-safe. */
+void i2c4_speed_select(uint32_t timing)
+{
+    if (hi2c4.Init.Timing == timing) {
+        return;
+    }
+    __HAL_I2C_DISABLE(&hi2c4);
+    hi2c4.Instance->TIMINGR = timing;
+    hi2c4.Init.Timing = timing;
+    __HAL_I2C_ENABLE(&hi2c4);
 }
 /* USER CODE END 1 */
 

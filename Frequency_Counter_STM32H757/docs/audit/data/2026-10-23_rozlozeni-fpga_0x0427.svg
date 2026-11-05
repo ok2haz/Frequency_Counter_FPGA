@@ -1,0 +1,375 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="676" height="494" viewBox="0 0 676 494" font-family="sans-serif">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="58" y="20" font-size="14" font-weight="600" fill="#2c2c2a">GW1NR-9, FW 0x0427 (v2, P&amp;R 2026-10-21 21:39): bunky na nejhorsich cestach</text>
+<rect x="58" y="46" width="598" height="336" fill="none" stroke="#b4b2a9" stroke-width="0.6"/>
+<rect x="58" y="154" width="598" height="12" fill="#888780" opacity="0.16"/>
+<text x="653" y="160.0" font-size="9" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">BSRAM</text>
+<rect x="58" y="262" width="598" height="12" fill="#888780" opacity="0.16"/>
+<text x="653" y="268.0" font-size="9" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">DSP</text>
+<rect x="58" y="370" width="598" height="12" fill="#888780" opacity="0.16"/>
+<text x="653" y="376.0" font-size="9" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">BSRAM</text>
+<text x="64.5" y="40" font-size="10" fill="#5f5e5a" text-anchor="middle">C1</text>
+<text x="181.5" y="40" font-size="10" fill="#5f5e5a" text-anchor="middle">C10</text>
+<text x="311.5" y="40" font-size="10" fill="#5f5e5a" text-anchor="middle">C20</text>
+<text x="441.5" y="40" font-size="10" fill="#5f5e5a" text-anchor="middle">C30</text>
+<text x="571.5" y="40" font-size="10" fill="#5f5e5a" text-anchor="middle">C40</text>
+<text x="649.5" y="40" font-size="10" fill="#5f5e5a" text-anchor="middle">C46</text>
+<text x="52" y="52.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R1</text>
+<text x="52" y="100.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R5</text>
+<text x="52" y="160.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R10</text>
+<text x="52" y="220.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R15</text>
+<text x="52" y="268.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R19</text>
+<text x="52" y="352.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R26</text>
+<text x="52" y="364.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R27</text>
+<text x="52" y="376.0" font-size="10" fill="#5f5e5a" text-anchor="end" dominant-baseline="central">R28</text>
+<rect x="370.5" y="202.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R14C25 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="370.5" y="214.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R15C25 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="383.5" y="214.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R15C26 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="383.5" y="202.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R14C26 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="357.5" y="214.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.49"><title>R15C24 ostatni (aplikace, PHY, top): 2 bunek</title></rect>
+<rect x="370.5" y="190.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.61"><title>R13C25 ostatni (aplikace, PHY, top): 3 bunek</title></rect>
+<rect x="383.5" y="178.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R12C26 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="357.5" y="178.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.95"><title>R12C24 ostatni (aplikace, PHY, top): 7 bunek</title></rect>
+<rect x="344.5" y="178.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R12C23 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="357.5" y="166.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.73"><title>R11C24 ostatni (aplikace, PHY, top): 4 bunek</title></rect>
+<rect x="448.5" y="178.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.49"><title>R12C31 ostatni (aplikace, PHY, top): 2 bunek</title></rect>
+<rect x="422.5" y="178.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.37"><title>R12C29 ostatni (aplikace, PHY, top): 1 bunek</title></rect>
+<rect x="409.5" y="178.5" width="12" height="11" rx="1.5" fill="#888780" opacity="0.95"><title>R12C28 ostatni (aplikace, PHY, top): 6 bunek</title></rect>
+<rect x="396.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.37"><title>R11C27 mereni (okna/segmenty/kruh): 1 bunek</title></rect>
+<rect x="487.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.85"><title>R11C34 mereni (okna/segmenty/kruh): 5 bunek</title></rect>
+<rect x="500.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.95"><title>R11C35 mereni (okna/segmenty/kruh): 6 bunek</title></rect>
+<rect x="513.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.95"><title>R11C36 mereni (okna/segmenty/kruh): 6 bunek</title></rect>
+<rect x="526.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.95"><title>R11C37 mereni (okna/segmenty/kruh): 6 bunek</title></rect>
+<rect x="539.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.95"><title>R11C38 mereni (okna/segmenty/kruh): 6 bunek</title></rect>
+<rect x="552.5" y="166.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.49"><title>R11C39 mereni (okna/segmenty/kruh): 2 bunek</title></rect>
+<rect x="500.5" y="118.5" width="12" height="11" rx="1.5" fill="#D85A30" opacity="0.37"><title>R7C35 mereni (okna/segmenty/kruh): 1 bunek</title></rect>
+<rect x="630.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C45 TDC B: 6 bunek</title></rect>
+<rect x="136.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R22C7 TDC B: 2 bunek</title></rect>
+<rect x="617.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C44 TDC B: 6 bunek</title></rect>
+<rect x="136.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R24C7 TDC B: 3 bunek</title></rect>
+<rect x="175.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R22C10 TDC B: 2 bunek</title></rect>
+<rect x="123.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R23C6 TDC B: 1 bunek</title></rect>
+<rect x="565.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C40 TDC B: 6 bunek</title></rect>
+<rect x="214.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R22C13 TDC B: 2 bunek</title></rect>
+<rect x="578.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C41 TDC B: 6 bunek</title></rect>
+<rect x="201.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R22C12 TDC B: 4 bunek</title></rect>
+<rect x="175.5" y="274.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R20C10 TDC B: 2 bunek</title></rect>
+<rect x="162.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R24C9 TDC B: 4 bunek</title></rect>
+<rect x="591.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C42 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R24C11 TDC B: 6 bunek</title></rect>
+<rect x="227.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C14 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C11 TDC B: 6 bunek</title></rect>
+<rect x="175.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C10 TDC B: 6 bunek</title></rect>
+<rect x="240.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R25C15 TDC B: 3 bunek</title></rect>
+<rect x="604.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C43 TDC B: 6 bunek</title></rect>
+<rect x="175.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R24C10 TDC B: 3 bunek</title></rect>
+<rect x="162.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R21C9 TDC B: 2 bunek</title></rect>
+<rect x="201.5" y="274.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R20C12 TDC B: 4 bunek</title></rect>
+<rect x="643.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R27C46 TDC B: 5 bunek</title></rect>
+<rect x="214.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C13 TDC B: 6 bunek</title></rect>
+<rect x="253.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R25C16 TDC B: 5 bunek</title></rect>
+<rect x="526.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C37 TDC B: 6 bunek</title></rect>
+<rect x="201.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C12 TDC B: 6 bunek</title></rect>
+<rect x="552.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C39 TDC B: 6 bunek</title></rect>
+<rect x="474.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C33 TDC B: 6 bunek</title></rect>
+<rect x="487.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C34 TDC B: 6 bunek</title></rect>
+<rect x="435.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C30 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R23C11 TDC B: 5 bunek</title></rect>
+<rect x="279.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R24C18 TDC B: 6 bunek</title></rect>
+<rect x="279.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R23C18 TDC B: 5 bunek</title></rect>
+<rect x="266.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C17 TDC B: 6 bunek</title></rect>
+<rect x="136.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C7 TDC B: 6 bunek</title></rect>
+<rect x="513.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C36 TDC B: 6 bunek</title></rect>
+<rect x="201.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R21C12 TDC B: 6 bunek</title></rect>
+<rect x="500.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C35 TDC B: 6 bunek</title></rect>
+<rect x="201.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R23C12 TDC B: 3 bunek</title></rect>
+<rect x="448.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C31 TDC B: 6 bunek</title></rect>
+<rect x="175.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R23C10 TDC B: 4 bunek</title></rect>
+<rect x="461.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C32 TDC B: 6 bunek</title></rect>
+<rect x="162.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C9 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R21C11 TDC B: 5 bunek</title></rect>
+<rect x="539.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C38 TDC B: 6 bunek</title></rect>
+<rect x="214.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R21C13 TDC B: 4 bunek</title></rect>
+<rect x="123.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R24C6 TDC B: 3 bunek</title></rect>
+<rect x="227.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R22C14 TDC B: 2 bunek</title></rect>
+<rect x="188.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R22C11 TDC B: 6 bunek</title></rect>
+<rect x="214.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R24C13 TDC B: 6 bunek</title></rect>
+<rect x="201.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R24C12 TDC B: 5 bunek</title></rect>
+<rect x="240.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R24C15 TDC B: 2 bunek</title></rect>
+<rect x="292.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R23C19 TDC B: 4 bunek</title></rect>
+<rect x="396.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C27 TDC B: 6 bunek</title></rect>
+<rect x="149.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R24C8 TDC B: 5 bunek</title></rect>
+<rect x="422.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C29 TDC B: 6 bunek</title></rect>
+<rect x="253.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R24C16 TDC B: 3 bunek</title></rect>
+<rect x="292.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R24C19 TDC B: 6 bunek</title></rect>
+<rect x="123.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C6 TDC B: 6 bunek</title></rect>
+<rect x="162.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R23C9 TDC B: 2 bunek</title></rect>
+<rect x="409.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C28 TDC B: 6 bunek</title></rect>
+<rect x="227.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R24C14 TDC B: 6 bunek</title></rect>
+<rect x="214.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R23C13 TDC B: 5 bunek</title></rect>
+<rect x="370.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C25 TDC B: 6 bunek</title></rect>
+<rect x="175.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R21C10 TDC B: 4 bunek</title></rect>
+<rect x="292.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R25C19 TDC B: 4 bunek</title></rect>
+<rect x="383.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C26 TDC B: 6 bunek</title></rect>
+<rect x="279.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C18 TDC B: 6 bunek</title></rect>
+<rect x="253.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R22C16 TDC B: 4 bunek</title></rect>
+<rect x="344.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C23 TDC B: 6 bunek</title></rect>
+<rect x="214.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C13 TDC B: 6 bunek</title></rect>
+<rect x="266.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.73"><title>R24C17 TDC B: 4 bunek</title></rect>
+<rect x="227.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R23C14 TDC B: 2 bunek</title></rect>
+<rect x="331.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C22 TDC B: 6 bunek</title></rect>
+<rect x="318.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C21 TDC B: 6 bunek</title></rect>
+<rect x="357.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C24 TDC B: 6 bunek</title></rect>
+<rect x="266.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C17 TDC B: 6 bunek</title></rect>
+<rect x="305.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C20 TDC B: 6 bunek</title></rect>
+<rect x="149.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R21C8 TDC B: 2 bunek</title></rect>
+<rect x="149.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R23C8 TDC B: 2 bunek</title></rect>
+<rect x="240.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R23C15 TDC B: 2 bunek</title></rect>
+<rect x="292.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C19 TDC B: 6 bunek</title></rect>
+<rect x="253.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C16 TDC B: 6 bunek</title></rect>
+<rect x="227.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C14 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="274.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R20C11 TDC B: 1 bunek</title></rect>
+<rect x="240.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R22C15 TDC B: 6 bunek</title></rect>
+<rect x="175.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C10 TDC B: 6 bunek</title></rect>
+<rect x="162.5" y="250.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R18C9 TDC B: 2 bunek</title></rect>
+<rect x="279.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C18 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C11 TDC B: 6 bunek</title></rect>
+<rect x="188.5" y="250.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R18C11 TDC B: 1 bunek</title></rect>
+<rect x="149.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C8 TDC B: 6 bunek</title></rect>
+<rect x="279.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R22C18 TDC B: 2 bunek</title></rect>
+<rect x="240.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C15 TDC B: 6 bunek</title></rect>
+<rect x="71.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R27C2 TDC B: 5 bunek</title></rect>
+<rect x="84.5" y="274.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R20C3 TDC B: 2 bunek</title></rect>
+<rect x="201.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C12 TDC B: 6 bunek</title></rect>
+<rect x="149.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C8 TDC B: 6 bunek</title></rect>
+<rect x="214.5" y="274.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R20C13 TDC B: 1 bunek</title></rect>
+<rect x="149.5" y="142.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R9C8 TDC B: 1 bunek</title></rect>
+<rect x="149.5" y="298.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R22C8 TDC B: 2 bunek</title></rect>
+<rect x="123.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C6 TDC B: 6 bunek</title></rect>
+<rect x="175.5" y="238.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R17C10 TDC B: 2 bunek</title></rect>
+<rect x="136.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C7 TDC B: 6 bunek</title></rect>
+<rect x="162.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C9 TDC B: 6 bunek</title></rect>
+<rect x="240.5" y="286.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R21C15 TDC B: 2 bunek</title></rect>
+<rect x="84.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C3 TDC B: 6 bunek</title></rect>
+<rect x="84.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R25C3 TDC B: 6 bunek</title></rect>
+<rect x="84.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R24C3 TDC B: 2 bunek</title></rect>
+<rect x="110.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C5 TDC B: 6 bunek</title></rect>
+<rect x="110.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R23C5 TDC B: 2 bunek</title></rect>
+<rect x="149.5" y="238.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R17C8 TDC B: 1 bunek</title></rect>
+<rect x="253.5" y="310.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R23C16 TDC B: 1 bunek</title></rect>
+<rect x="97.5" y="358.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.95"><title>R27C4 TDC B: 6 bunek</title></rect>
+<rect x="97.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.85"><title>R25C4 TDC B: 5 bunek</title></rect>
+<rect x="110.5" y="334.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.61"><title>R25C5 TDC B: 3 bunek</title></rect>
+<rect x="97.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.37"><title>R24C4 TDC B: 1 bunek</title></rect>
+<rect x="71.5" y="322.5" width="12" height="11" rx="1.5" fill="#1D9E75" opacity="0.49"><title>R24C2 TDC B: 2 bunek</title></rect>
+<rect x="110.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R11C5 TDC A: 1 bunek</title></rect>
+<rect x="149.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R15C8 TDC A: 2 bunek</title></rect>
+<rect x="487.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R13C34 TDC A: 1 bunek</title></rect>
+<rect x="279.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C18 TDC A: 1 bunek</title></rect>
+<rect x="448.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C31 TDC A: 1 bunek</title></rect>
+<rect x="279.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C18 TDC A: 2 bunek</title></rect>
+<rect x="422.5" y="250.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R18C29 TDC A: 2 bunek</title></rect>
+<rect x="175.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R13C10 TDC A: 3 bunek</title></rect>
+<rect x="448.5" y="238.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R17C31 TDC A: 3 bunek</title></rect>
+<rect x="175.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R15C10 TDC A: 4 bunek</title></rect>
+<rect x="487.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R9C34 TDC A: 2 bunek</title></rect>
+<rect x="435.5" y="238.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R17C30 TDC A: 1 bunek</title></rect>
+<rect x="201.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C12 TDC A: 1 bunek</title></rect>
+<rect x="201.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R14C12 TDC A: 2 bunek</title></rect>
+<rect x="188.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R16C11 TDC A: 5 bunek</title></rect>
+<rect x="149.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R14C8 TDC A: 2 bunek</title></rect>
+<rect x="188.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C11 TDC A: 1 bunek</title></rect>
+<rect x="214.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R14C13 TDC A: 1 bunek</title></rect>
+<rect x="214.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R13C13 TDC A: 5 bunek</title></rect>
+<rect x="461.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C32 TDC A: 1 bunek</title></rect>
+<rect x="253.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R16C16 TDC A: 2 bunek</title></rect>
+<rect x="487.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C34 TDC A: 1 bunek</title></rect>
+<rect x="474.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R13C33 TDC A: 1 bunek</title></rect>
+<rect x="214.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R16C13 TDC A: 5 bunek</title></rect>
+<rect x="435.5" y="250.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R18C30 TDC A: 1 bunek</title></rect>
+<rect x="370.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R12C25 TDC A: 1 bunek</title></rect>
+<rect x="422.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R15C29 TDC A: 1 bunek</title></rect>
+<rect x="630.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C45 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R14C15 TDC A: 6 bunek</title></rect>
+<rect x="591.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C42 TDC A: 6 bunek</title></rect>
+<rect x="201.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R13C12 TDC A: 4 bunek</title></rect>
+<rect x="201.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R11C12 TDC A: 2 bunek</title></rect>
+<rect x="617.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C44 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R16C15 TDC A: 6 bunek</title></rect>
+<rect x="461.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C32 TDC A: 6 bunek</title></rect>
+<rect x="188.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R8C11 TDC A: 1 bunek</title></rect>
+<rect x="604.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C43 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R13C15 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R14C14 TDC A: 2 bunek</title></rect>
+<rect x="526.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C37 TDC A: 6 bunek</title></rect>
+<rect x="201.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R12C12 TDC A: 2 bunek</title></rect>
+<rect x="513.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C36 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R11C15 TDC A: 4 bunek</title></rect>
+<rect x="565.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C40 TDC A: 6 bunek</title></rect>
+<rect x="643.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R26C46 TDC A: 5 bunek</title></rect>
+<rect x="253.5" y="274.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R20C16 TDC A: 2 bunek</title></rect>
+<rect x="253.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R12C16 TDC A: 2 bunek</title></rect>
+<rect x="253.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C16 TDC A: 2 bunek</title></rect>
+<rect x="500.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C35 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R11C14 TDC A: 2 bunek</title></rect>
+<rect x="487.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C34 TDC A: 6 bunek</title></rect>
+<rect x="318.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R11C21 TDC A: 4 bunek</title></rect>
+<rect x="292.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R12C19 TDC A: 2 bunek</title></rect>
+<rect x="578.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C41 TDC A: 6 bunek</title></rect>
+<rect x="552.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C39 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C14 TDC A: 2 bunek</title></rect>
+<rect x="227.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R8C14 TDC A: 6 bunek</title></rect>
+<rect x="539.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C38 TDC A: 6 bunek</title></rect>
+<rect x="266.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R16C17 TDC A: 4 bunek</title></rect>
+<rect x="201.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R16C12 TDC A: 6 bunek</title></rect>
+<rect x="474.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C33 TDC A: 6 bunek</title></rect>
+<rect x="448.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C31 TDC A: 6 bunek</title></rect>
+<rect x="266.5" y="118.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R7C17 TDC A: 6 bunek</title></rect>
+<rect x="435.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C30 TDC A: 6 bunek</title></rect>
+<rect x="253.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R15C16 TDC A: 4 bunek</title></rect>
+<rect x="188.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R11C11 TDC A: 1 bunek</title></rect>
+<rect x="396.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C27 TDC A: 6 bunek</title></rect>
+<rect x="214.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R6C13 TDC A: 2 bunek</title></rect>
+<rect x="188.5" y="238.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R17C11 TDC A: 5 bunek</title></rect>
+<rect x="214.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R8C13 TDC A: 6 bunek</title></rect>
+<rect x="253.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R6C16 TDC A: 5 bunek</title></rect>
+<rect x="240.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R8C15 TDC A: 5 bunek</title></rect>
+<rect x="409.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C28 TDC A: 6 bunek</title></rect>
+<rect x="266.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R6C17 TDC A: 3 bunek</title></rect>
+<rect x="240.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R6C15 TDC A: 4 bunek</title></rect>
+<rect x="227.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R16C14 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="274.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R20C14 TDC A: 4 bunek</title></rect>
+<rect x="422.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C29 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R9C14 TDC A: 6 bunek</title></rect>
+<rect x="214.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R9C13 TDC A: 2 bunek</title></rect>
+<rect x="227.5" y="286.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R21C14 TDC A: 6 bunek</title></rect>
+<rect x="292.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C19 TDC A: 2 bunek</title></rect>
+<rect x="279.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R16C18 TDC A: 3 bunek</title></rect>
+<rect x="383.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C26 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R9C15 TDC A: 6 bunek</title></rect>
+<rect x="370.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C25 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="118.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R7C14 TDC A: 6 bunek</title></rect>
+<rect x="305.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R12C20 TDC A: 2 bunek</title></rect>
+<rect x="253.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R8C16 TDC A: 3 bunek</title></rect>
+<rect x="292.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R9C19 TDC A: 4 bunek</title></rect>
+<rect x="201.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R9C12 TDC A: 2 bunek</title></rect>
+<rect x="357.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C24 TDC A: 6 bunek</title></rect>
+<rect x="305.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R6C20 TDC A: 2 bunek</title></rect>
+<rect x="331.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C22 TDC A: 6 bunek</title></rect>
+<rect x="305.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C20 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="118.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R7C15 TDC A: 4 bunek</title></rect>
+<rect x="318.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C21 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R6C14 TDC A: 4 bunek</title></rect>
+<rect x="344.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C23 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="94.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R5C14 TDC A: 1 bunek</title></rect>
+<rect x="71.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R26C2 TDC A: 5 bunek</title></rect>
+<rect x="266.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C17 TDC A: 2 bunek</title></rect>
+<rect x="292.5" y="238.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R17C19 TDC A: 2 bunek</title></rect>
+<rect x="214.5" y="286.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R21C13 TDC A: 2 bunek</title></rect>
+<rect x="266.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C17 TDC A: 6 bunek</title></rect>
+<rect x="240.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C15 TDC A: 6 bunek</title></rect>
+<rect x="279.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C18 TDC A: 6 bunek</title></rect>
+<rect x="201.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C12 TDC A: 6 bunek</title></rect>
+<rect x="162.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R11C9 TDC A: 2 bunek</title></rect>
+<rect x="253.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C16 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C14 TDC A: 6 bunek</title></rect>
+<rect x="84.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C3 TDC A: 6 bunek</title></rect>
+<rect x="97.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R8C4 TDC A: 3 bunek</title></rect>
+<rect x="84.5" y="130.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.61"><title>R8C3 TDC A: 3 bunek</title></rect>
+<rect x="240.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R15C15 TDC A: 4 bunek</title></rect>
+<rect x="292.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C19 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R15C14 TDC A: 2 bunek</title></rect>
+<rect x="162.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C9 TDC A: 2 bunek</title></rect>
+<rect x="214.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C13 TDC A: 6 bunek</title></rect>
+<rect x="175.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R12C10 TDC A: 2 bunek</title></rect>
+<rect x="162.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R9C9 TDC A: 1 bunek</title></rect>
+<rect x="149.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R11C8 TDC A: 2 bunek</title></rect>
+<rect x="253.5" y="118.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R7C16 TDC A: 2 bunek</title></rect>
+<rect x="84.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R12C3 TDC A: 1 bunek</title></rect>
+<rect x="97.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C4 TDC A: 6 bunek</title></rect>
+<rect x="97.5" y="106.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R6C4 TDC A: 1 bunek</title></rect>
+<rect x="240.5" y="286.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R21C15 TDC A: 2 bunek</title></rect>
+<rect x="162.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R15C9 TDC A: 2 bunek</title></rect>
+<rect x="162.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C9 TDC A: 6 bunek</title></rect>
+<rect x="123.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C6 TDC A: 6 bunek</title></rect>
+<rect x="123.5" y="178.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R12C6 TDC A: 2 bunek</title></rect>
+<rect x="253.5" y="238.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R17C16 TDC A: 2 bunek</title></rect>
+<rect x="266.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R9C17 TDC A: 1 bunek</title></rect>
+<rect x="175.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C10 TDC A: 6 bunek</title></rect>
+<rect x="136.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R14C7 TDC A: 1 bunek</title></rect>
+<rect x="110.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C5 TDC A: 6 bunek</title></rect>
+<rect x="123.5" y="166.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R11C6 TDC A: 2 bunek</title></rect>
+<rect x="97.5" y="142.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R9C4 TDC A: 4 bunek</title></rect>
+<rect x="201.5" y="250.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R18C12 TDC A: 6 bunek</title></rect>
+<rect x="162.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R16C9 TDC A: 4 bunek</title></rect>
+<rect x="188.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C11 TDC A: 6 bunek</title></rect>
+<rect x="123.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R16C6 TDC A: 4 bunek</title></rect>
+<rect x="84.5" y="190.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R13C3 TDC A: 2 bunek</title></rect>
+<rect x="149.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C8 TDC A: 6 bunek</title></rect>
+<rect x="110.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R14C5 TDC A: 2 bunek</title></rect>
+<rect x="240.5" y="250.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R18C15 TDC A: 2 bunek</title></rect>
+<rect x="136.5" y="346.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R26C7 TDC A: 6 bunek</title></rect>
+<rect x="136.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.95"><title>R16C7 TDC A: 6 bunek</title></rect>
+<rect x="227.5" y="238.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R17C14 TDC A: 1 bunek</title></rect>
+<rect x="162.5" y="202.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R14C9 TDC A: 1 bunek</title></rect>
+<rect x="149.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.85"><title>R16C8 TDC A: 5 bunek</title></rect>
+<rect x="175.5" y="226.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.73"><title>R16C10 TDC A: 4 bunek</title></rect>
+<rect x="110.5" y="214.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.49"><title>R15C5 TDC A: 2 bunek</title></rect>
+<rect x="149.5" y="94.5" width="12" height="11" rx="1.5" fill="#7F77DD" opacity="0.37"><title>R5C8 TDC A: 1 bunek</title></rect>
+<rect x="71.5" y="58.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R2C2 vedeni vytizeno 100 %</title></rect>
+<rect x="84.5" y="58.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R2C3 vedeni vytizeno 100 %</title></rect>
+<rect x="136.5" y="58.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R2C7 vedeni vytizeno 100 %</title></rect>
+<rect x="162.5" y="58.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R2C9 vedeni vytizeno 100 %</title></rect>
+<rect x="175.5" y="58.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R2C10 vedeni vytizeno 100 %</title></rect>
+<rect x="591.5" y="58.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R2C42 vedeni vytizeno 100 %</title></rect>
+<rect x="253.5" y="82.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R4C16 vedeni vytizeno 100 %</title></rect>
+<rect x="565.5" y="310.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R23C40 vedeni vytizeno 100 %</title></rect>
+<rect x="578.5" y="310.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R23C41 vedeni vytizeno 100 %</title></rect>
+<rect x="500.5" y="310.5" width="12" height="11" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"><title>R23C35 vedeni vytizeno 100 %</title></rect>
+<polyline points="116.5,172.0 207.5,208.0 428.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.832 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_15_s0</title></polyline>
+<polyline points="116.5,172.0 181.5,196.0 376.5,184.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.822 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_39_s0</title></polyline>
+<polyline points="116.5,172.0 181.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.817 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 220.5,232.0 441.5,256.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.775 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_45_s0</title></polyline>
+<polyline points="454.5,184.0 428.5,184.0 415.5,184.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.761 ns: coh_hold_19_s0 -&gt; coh_hold_1_s0</title></polyline>
+<polyline points="116.5,172.0 207.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.760 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 220.5,196.0 480.5,196.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.672 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_16_s0</title></polyline>
+<polyline points="116.5,172.0 155.5,208.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.669 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 181.5,220.0 493.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.667 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_24_s0</title></polyline>
+<polyline points="116.5,172.0 259.5,232.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.605 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 155.5,220.0 467.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.525 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_33_s0</title></polyline>
+<polyline points="116.5,172.0 220.5,196.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.513 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 220.5,208.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.513 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 194.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.513 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="402.5,172.0 493.5,172.0 506.5,172.0 519.5,172.0 532.5,172.0 545.5,172.0 558.5,172.0 506.5,124.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.361 ns: u_wra/rg.u_rg/dt_r_1_s0 -&gt; u_wra/rg.u_rg/sy_c_s0</title></polyline>
+<polyline points="116.5,172.0 155.5,208.0 493.5,148.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.349 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_27_s0</title></polyline>
+<polyline points="116.5,172.0 207.5,208.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.333 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="376.5,196.0 389.5,184.0 376.5,196.0 363.5,172.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.270 ns: rt_dly_1_s0 -&gt; rt_tot_1_s1</title></polyline>
+<polyline points="116.5,172.0 285.5,196.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.266 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 181.5,196.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.256 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="376.5,196.0 389.5,184.0 376.5,196.0 363.5,184.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.193 ns: rt_dly_1_s0 -&gt; rt_n_0_s1</title></polyline>
+<polyline points="116.5,172.0 194.5,232.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.193 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 207.5,208.0 428.5,256.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.177 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_14_s0</title></polyline>
+<polyline points="116.5,172.0 207.5,220.0 454.5,244.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.120 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_44_s0</title></polyline>
+<polyline points="116.5,172.0 155.5,220.0" fill="none" stroke="#5f5e5a" stroke-width="0.8" opacity="0.55" stroke-linejoin="round" stroke-linecap="round"><title>+1.019 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 285.5,196.0 441.5,244.0" fill="none" stroke="#EF9F27" stroke-width="1.5" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.946 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_41_s0</title></polyline>
+<polyline points="116.5,172.0 181.5,220.0 493.5,148.0" fill="none" stroke="#EF9F27" stroke-width="1.5" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.848 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_25_s0</title></polyline>
+<polyline points="376.5,196.0 389.5,184.0 376.5,196.0 363.5,184.0 350.5,184.0" fill="none" stroke="#EF9F27" stroke-width="1.5" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.800 ns: rt_dly_1_s0 -&gt; rt_run_s0</title></polyline>
+<polyline points="116.5,172.0 181.5,196.0 454.5,244.0" fill="none" stroke="#EF9F27" stroke-width="1.5" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.771 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_43_s0</title></polyline>
+<polyline points="116.5,172.0 285.5,196.0 428.5,256.0" fill="none" stroke="#EF9F27" stroke-width="1.5" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.631 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_40_s0</title></polyline>
+<polyline points="376.5,208.0 376.5,220.0 389.5,220.0 389.5,208.0 363.5,220.0" fill="none" stroke="#EF9F27" stroke-width="1.5" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.599 ns: boot_cnt_2_s0 -&gt; boot_done_s0</title></polyline>
+<polyline points="116.5,172.0 285.5,220.0" fill="none" stroke="#E24B4A" stroke-width="2.0" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.436 ns: u_tdca/lut_q3_15_s0 -&gt; u_wra/add_519_s1</title></polyline>
+<polyline points="116.5,172.0 285.5,220.0 454.5,220.0" fill="none" stroke="#E24B4A" stroke-width="2.0" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.430 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_26_s0</title></polyline>
+<polyline points="116.5,172.0 155.5,220.0 493.5,196.0" fill="none" stroke="#E24B4A" stroke-width="2.0" opacity="0.95" stroke-linejoin="round" stroke-linecap="round"><title>+0.215 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_34_s0</title></polyline>
+<circle cx="116.5" cy="172.0" r="7" fill="none" stroke="#E24B4A" stroke-width="1.6"/>
+<rect x="58" y="395" width="10" height="10" rx="2" fill="#7F77DD"/><text x="72" y="404" font-size="11" fill="#444441">TDC A</text>
+<rect x="122" y="395" width="10" height="10" rx="2" fill="#1D9E75"/><text x="136" y="404" font-size="11" fill="#444441">TDC B</text>
+<rect x="186" y="395" width="10" height="10" rx="2" fill="#D85A30"/><text x="200" y="404" font-size="11" fill="#444441">mereni (okna/segmenty/kruh)</text>
+<rect x="399" y="395" width="10" height="10" rx="2" fill="#888780"/><text x="413" y="404" font-size="11" fill="#444441">ostatni (aplikace, PHY, top)</text>
+<line x1="58" y1="418" x2="76" y2="418" stroke="#E24B4A" stroke-width="2"/><text x="82" y="422" font-size="11" fill="#444441">rezerva &lt; 0,5 ns</text>
+<line x1="210" y1="418" x2="228" y2="418" stroke="#EF9F27" stroke-width="1.5"/><text x="234" y="422" font-size="11" fill="#444441">0,5-1 ns</text>
+<line x1="309" y1="418" x2="327" y2="418" stroke="#5f5e5a" stroke-width="0.8"/><text x="333" y="422" font-size="11" fill="#444441">&gt;= 1 ns</text>
+<rect x="400" y="413" width="10" height="10" fill="none" stroke="#2c2c2a" stroke-width="1.2" stroke-dasharray="2 1.5"/><text x="414" y="422" font-size="11" fill="#444441">vedeni vytizeno (congestion)</text>
+<circle cx="63" cy="436" r="5" fill="none" stroke="#E24B4A" stroke-width="1.5"/><text x="73" y="440" font-size="11" fill="#444441">u_tdca/lut_q3_15_s0: zdroj 36 z 50 nejhorsich cest</text>
+<text x="58" y="458" font-size="11" fill="#5f5e5a">Nejhorsi rezerva +0.215 ns: u_tdca/lut_q3_15_s0 -&gt; u_tdca/ts_ps_34_s0</text>
+<text x="58" y="474" font-size="11" fill="#5f5e5a">50 nejhorsich cest: vedeni 66 % zpozdeni. Kresli se jen bunky na nahlasenych cestach (1180).</text>
+</svg>

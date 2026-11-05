@@ -1,0 +1,10 @@
+# P&R test 110 MHz (2026-10-15): kopie src/ FPGA modulu v scratchpadu, jen top.v CLK_MHZ=110 a timing.sdc 9,0909 ns (uncertainty 0,9 ns beze zmeny), place_option 2, Gowin 1.9.12, gw_sh build.tcl
+# p100 = referencni kopie beze zmeny (100 MHz); p110 + s1..s6 = 110 MHz, kazde jiny BLD_TIME (= jine rozmisteni). Sloupce: Fmax clk_p0_100m, TNS setup + pocet endpointu, nejhorsi cesta (slack vcetne uncertainty 0,9 ns), CLS
+p100 constr/Fmax ('100.000', '115.303') TNS ('0.000', '0') worst ('1.327', 'u_wra/rg.u_rg/ldx_q_7_s0/Q', 'u_wra/rg.u_rg/nq_9_s1/CE') CLS 84%
+p110 constr/Fmax ('110.000', '105.195') TNS ('-0.415', '1') worst ('-0.415', 'u_tdca/arm_r_s1/Q', 'u_wra/trig_a_s0/D') CLS 83%
+s1 constr/Fmax ('110.000', '110.092') TNS ('0.000', '0') worst ('0.008', 'u_wra/rg.u_rg/n_lo_6_s0/Q', 'u_wra/rg.u_rg/n_ge2_s1/D') CLS 84%
+s2 constr/Fmax ('110.000', '111.610') TNS ('0.000', '0') worst ('0.131', 'rt_dly_14_s0/Q', 'rt_tot_0_s1/D') CLS 85%
+s3 constr/Fmax ('110.000', '114.060') TNS ('0.000', '0') worst ('0.324', 'u_wra/ce3_s0/Q', 'u_wra/ccnt_9_s0/D') CLS 83%
+s4 constr/Fmax ('110.000', '116.534') TNS ('0.000', '0') worst ('0.510', 'u_wra/rg.u_rg/ldx_q_7_s0/Q', 'u_wra/rg.u_rg/nq_21_s1/CE') CLS 84%
+s5 constr/Fmax ('110.000', '115.533') TNS ('0.000', '0') worst ('0.435', 'rt_dly_14_s0/Q', 'rt_n_0_s1/D') CLS 84%
+s6 constr/Fmax ('110.000', '113.943') TNS ('0.000', '0') worst ('0.315', 'u_wra/rg.u_rg/ldx_q_7_s0/Q', 'u_wra/rg.u_rg/nq_37_s1/CE') CLS 84%

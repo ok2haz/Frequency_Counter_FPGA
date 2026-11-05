@@ -1,0 +1,5 @@
+faze,blok,start_min,delka_min,skip_min
+2,NS,0,150,15
+2,NA,150,150,15
+2,NS,300,150,15
+2,NA,450,150,15

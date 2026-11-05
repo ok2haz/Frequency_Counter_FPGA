@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 /* ── Aktualni stav (zapisuje GpsTask pres parser, cte se pres gps_get) ──── */
 static gps_data_t s_gps;
@@ -17,6 +18,14 @@ static gps_data_t s_gps;
 /* ── Skladani prijate vety ─────────────────────────────────────────────── */
 static char    s_line[96];
 static uint8_t s_len;
+/* 🔴 1 = radek pretekl -> zahazuj AZ DO konce radku (audit F-0066). Bez tohohle
+ * se `s_len` jen vynulovalo a OCAS prilis dlouheho ramce se zacal skladat jako
+ * samostatna "veta" — spolu s nepovinnym checksumem (F-0065) to byla injekcni
+ * cesta. **Tataz vada, jakou `CM4/LWIP/App/scpi_tcp.c:132-143` opravil uz
+ * 2026-09-06**; sem se oprava tehdy nepreneslа (L-0012). */
+static uint8_t s_drop;
+static uint32_t s_overflows;         /* kolikrat se ramec zahodil — tichy preskok se pocita (L-0017) */
+static uint32_t s_resyncs;           /* kolikrat '$' useknul rozepsany radek (UBX odpoved, smeti) — F-0223 */
 
 /* ── Diagnostika linky STM<->GPS ───────────────────────────────────────── */
 static volatile uint32_t s_raw_bytes;   /* vsechny prijate bajty (i smeti) */
@@ -48,6 +57,12 @@ static float atof_simple(const char *s)
   return v * sign;
 }
 
+/* Dve ASCII cislice -> cislo. ⚠️ NEOVERUJE, ze to cislice jsou (audit F-0072):
+ * `d2("0:")` da 10, tedy hodnotu, kterou zadna kontrola rozsahu neodmitne.
+ * 🔑 Validaci obsahu dela az `gps_time_sane()` v `rtc.c:42-48` (rok 2024-2099,
+ * hour <= 23, min <= 59, sec <= 60) a do RTC pusti jen to, co projde — proto to
+ * neni S3. **Novy volajici na jinem miste tu obranu ale NEMA** a musi si ji
+ * zaridit sam; `nmea_coord_e7` nize si cislice proto overuje explicitne. */
 static uint8_t d2(const char *s) { return (uint8_t)((s[0] - '0') * 10 + (s[1] - '0')); }
 
 static uint8_t hexnib(char c)
@@ -58,24 +73,61 @@ static uint8_t hexnib(char c)
   return 0;
 }
 
-/* "ddmm.mmmm" / "dddmm.mmmm" -> stupne (float), znamenko dle polokoule. */
-static float nmea_coord(const char *s, char hemi)
+/* "ddmm.mmmm" / "dddmm.mmmm" -> stupne x 1e7 (int32), znamenko dle polokoule.
+ * @param max_deg horni mez ve stupnich: 90 pro sirku, 180 pro delku.
+ * @return 0 pri jakemkoli neplatnem vstupu (stejna hodnota jako u vsech ostatnich
+ *         odmitnuti nize — volajici nema co rozlisovat).
+ *
+ * 🔴 Dve zmeny proti puvodni float verzi:
+ *  1. **Celociselne** (audit F-0070) — viz komentar u `lat_e7` v `gps.h`.
+ *  2. **Validuje ROZSAH** (audit F-0067). Drive se kontroloval jen TVAR, takze
+ *     `dlen <= 6` pripoustelo az 999999 stupnu; ta hodnota pak tekla do
+ *     `fmt_scpi_deg6`, kde `(int32_t)(v * 1e6f)` = 9,99e11 **preteklo int32,
+ *     coz je nedefinovane chovani**, ne jen spatne cislo. Zeměpisna sirka pritom
+ *     nikdy neprekroci 90 a delka 180, takze mez je jednoznacna — a resi se
+ *     U ZDROJE, cimz jsou kryti vsichni konzumenti (SCPI, UART, IPC, web) naraz.
+ * ⚠️ Cislice se overuji explicitne: `atoi_simple`/`atof_simple` nectinou vstup
+ *    tise prijmou (viz `d2()` a F-0072). */
+static int32_t nmea_coord_e7(const char *s, char hemi, int32_t max_deg)
 {
-  if (!s || !*s) return 0.0f;
+  if (!s || !*s) return 0;
   const char *dot = strchr(s, '.');
-  if (!dot) return 0.0f;
+  if (!dot) return 0;
   int intlen = (int)(dot - s);
-  if (intlen < 3) return 0.0f;
+  if (intlen < 3) return 0;
   int dlen = intlen - 2;            /* delka casti se stupni (2 cislice = minuty) */
-  if (dlen <= 0 || dlen > 6) return 0.0f;
-  char degbuf[8];
-  memcpy(degbuf, s, (size_t)dlen);
-  degbuf[dlen] = '\0';
-  float deg = (float)atoi_simple(degbuf);
-  float minutes = atof_simple(s + dlen);   /* "mm.mmmm" */
-  float val = deg + minutes / 60.0f;
-  if (hemi == 'S' || hemi == 'W') val = -val;
-  return val;
+  if (dlen <= 0 || dlen > 3) return 0;    /* stupne maji nejvys 3 cislice (180) */
+
+  int32_t deg = 0;
+  for (int i = 0; i < dlen; i++) {
+    if (s[i] < '0' || s[i] > '9') return 0;
+    deg = deg * 10 + (s[i] - '0');
+  }
+  if (deg > max_deg) return 0;
+
+  /* minuty "mm.mmmmm" -> x 1e5 (5 desetin = 1,85 cm, pod rozlisenim prijimace) */
+  const char *m = s + dlen;
+  int32_t min_x1e5 = 0;
+  for (int i = 0; i < 2; i++) {
+    if (m[i] < '0' || m[i] > '9') return 0;
+    min_x1e5 = min_x1e5 * 10 + (m[i] - '0');
+  }
+  m += 2;
+  if (*m != '.') return 0;
+  m++;
+  for (int i = 0; i < 5; i++) {            /* chybejici desetiny = doplnena nula */
+    int d = (*m >= '0' && *m <= '9') ? (*m++ - '0') : 0;
+    min_x1e5 = min_x1e5 * 10 + d;
+  }
+  if (min_x1e5 >= 60 * 100000) return 0;   /* minuty musi byt < 60 */
+
+  /* stupne x 1e7 = deg*1e7 + minuty/60 * 1e7; minuty = min_x1e5/1e5
+   * => prispevek = min_x1e5 * 1e7 / (60 * 1e5) = min_x1e5 * 1e7 / 6e6.
+   * Mezivypocet pres int64: nejhur 5999999 * 1e7 = 6e13. */
+  int32_t e7 = deg * 10000000 + (int32_t)(((int64_t)min_x1e5 * 10000000) / 6000000);
+  if (e7 > max_deg * 10000000) return 0;
+  if (hemi == 'S' || hemi == 'W') e7 = -e7;
+  return e7;
 }
 
 /* Rozdeli vetu (in-place) podle ',' na pole. Vraci pocet poli. */
@@ -98,20 +150,21 @@ static void parse_rmc(char **f, int nf)
   if (strlen(f[1]) >= 6) { hh = d2(f[1]); mm = d2(f[1] + 2); ss = d2(f[1] + 4); }
   uint8_t dd = 0, mo = 0; uint16_t yy = 0;
   if (strlen(f[9]) >= 6) { dd = d2(f[9]); mo = d2(f[9] + 2); yy = (uint16_t)(2000 + d2(f[9] + 4)); }
-  float lat = valid ? nmea_coord(f[3], f[4][0]) : 0.0f;
-  float lon = valid ? nmea_coord(f[5], f[6][0]) : 0.0f;
+  int32_t lat = valid ? nmea_coord_e7(f[3], f[4][0], 90)  : 0;
+  int32_t lon = valid ? nmea_coord_e7(f[5], f[6][0], 180) : 0;
   float spd = atof_simple(f[7]);
 
   taskENTER_CRITICAL();
   s_gps.valid = valid;
   s_gps.hour = hh; s_gps.minute = mm; s_gps.second = ss;
   if (dd) { s_gps.day = dd; s_gps.month = mo; s_gps.year = yy; }
-  if (valid) { s_gps.lat_deg = lat; s_gps.lon_deg = lon; s_gps.speed_kn = spd; s_gps.fixes++; }
+  if (valid) { s_gps.lat_e7 = lat; s_gps.lon_e7 = lon; s_gps.speed_kn = spd; s_gps.fixes++; }
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
 
-/* $xxGGA: 1=time 2=lat 3=N/S 4=lon 5=E/W 6=quality 7=numSat 8=HDOP 9=alt */
+/* $xxGGA: 1=time 2=lat 3=N/S 4=lon 5=E/W 6=quality 7=numSat 8=HDOP 9=alt 10=M 11=geoid sep. 12=M
+ * Geoid je potreba pro pevnou polohu casovaciho prijimace (elipsoidicka vyska = alt + geoid, STATUS #351). */
 static void parse_gga(char **f, int nf)
 {
   if (nf < 10) return;
@@ -119,27 +172,36 @@ static void parse_gga(char **f, int nf)
   uint8_t ns = (uint8_t)atoi_simple(f[7]);
   float   hd = atof_simple(f[8]);
   float   alt = atof_simple(f[9]);
+  int     geo_ok = (nf >= 12 && f[11][0] != '\0');
+  float   geo = geo_ok ? atof_simple(f[11]) : 0.0f;
 
   taskENTER_CRITICAL();
   s_gps.fix_quality = q;
   s_gps.num_sat = ns;
   s_gps.hdop = hd;
   if (q > 0) s_gps.alt_m = alt;
+  if (q > 0 && geo_ok) { s_gps.geoid_m = geo; s_gps.geoid_ok = 1u; }
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
 
-/* $xxGSA: 2=fixMode(1/2/3) ... 15=PDOP 16=HDOP 17=VDOP */
+/* $xxGSA: 2=fixMode(1/2/3) ... 15=PDOP 16=HDOP 17=VDOP
+ * ⚠️ HDOP se odsud ZAMERNE NEBERE (audit F-0071). Plnil ji i `parse_gga` a byly
+ * z toho dve pravdy o jedne velicine (L-0018): ktera vyhrala, zaviselo na poradi
+ * vet v davce, a u multi-GNSS prijimace chodi GSA vickrat za cyklus (per
+ * souhvezdi), takze prepisovala opakovane. Horsi bylo, ze BEZ FIXU je DOP pole
+ * v GSA prazdne a `atof_simple("")` vraci 0.0 -> HDOP 0,00 vypada jako VYBORNA
+ * presnost, ne jako "neznamo".
+ * Jediny zdroj HDOP je tedy `parse_gga` (chodi 1x za cyklus a pri fixu ji ma
+ * vzdy vyplnenou); GSA si nechava `fix_mode` a `pdop`. */
 static void parse_gsa(char **f, int nf)
 {
   if (nf < 18) return;
   uint8_t mode = (uint8_t)atoi_simple(f[2]);
   float pdop = atof_simple(f[15]);
-  float hdop = atof_simple(f[16]);
   taskENTER_CRITICAL();
   s_gps.fix_mode = mode;
   s_gps.pdop = pdop;
-  s_gps.hdop = hdop;
   s_gps.sentences++;
   taskEXIT_CRITICAL();
 }
@@ -246,10 +308,18 @@ static void parse_line(char *l)
 {
   if (l[0] != '$') return;
 
-  /* checksum *HH (XOR mezi '$' a '*') */
+  /* checksum *HH (XOR mezi '$' a '*')
+   * 🔴 POVINNY (audit F-0065). Do 2026-09-12 byla cela kontrola uvnitr `if (star)`,
+   * takze veta BEZ `*HH` prosla bez jakekoli kontroly integrity — a prave to je
+   * pripad, kdy se zahodit MA: NMEA 0183 checksum u `$`-vet vyzaduje a u-blox ho
+   * vzdy posila, takze jeho absence znamena poskozeny nebo cizi ramec (typicky po
+   * ztrate bajtu pri ORE na USART1, kterou `usart.c` resi AbortReceive + re-arm).
+   * ⚠️ UBX ramce nezacinaji '$', takze se sem nedostanou a tahle prisnost je
+   * netrapí. */
   char *star = strchr(l, '*');
-  if (star) {
-    if (star[1] == '\0' || star[2] == '\0') return;   /* useknuty checksum -> zahodit (i guard proti cteni za '\0') */
+  if (star == NULL) return;           /* bez checksumu -> neoverena veta -> zahodit */
+  if (star[1] == '\0' || star[2] == '\0') return;   /* useknuty checksum (i guard proti cteni za '\0') */
+  {
     uint8_t cs = 0;
     for (char *p = l + 1; p < star; p++) cs ^= (uint8_t)*p;
     uint8_t given = (uint8_t)((hexnib(star[1]) << 4) | hexnib(star[2]));
@@ -269,13 +339,31 @@ static void parse_line(char *l)
   else if (strncmp(typ, "GSV", 3) == 0) parse_gsv(talker, f, nf);
 }
 
-/* ── UBX odesilani (STM -> GPS, blokujici; volano jen pri init) ─────────── */
+/* ── UBX odesilani (STM -> GPS, v preruseni) ───────────────────────────── */
+/* 🔑 TX jde pres HAL_UART_Transmit_IT, ne blokujici HAL_UART_Transmit (audit
+ * F-0219/F-0222): ramec 36-44 B trva pri 9600 Bd 37-46 ms a blokujici varianta
+ * to cele aktivne cekala — v UiTasku (SURVEY) i v defaultTasku, ktery ted
+ * posila TP5 1x/min. Volajici se vrati hned po startu prenosu.
+ * ⚠️ Buffer MUSI zit po celou dobu prenosu (HAL do nej jen ukazuje), proto je
+ * staticky a prepise se jen pri gState == READY. Test + kopie + start jsou v
+ * kriticke sekci: volaji tri tasky (defaultTask, UiTask, UartTask) a USART1 IRQ
+ * (priorita 5) je v ni maskovana, takze ani ErrorCode, ktery Transmit_IT nuluje,
+ * nekoliduje s ErrorCallbackem.
+ * ⚠️ HAL 1.11.6: TX (gState) a RX (RxState) jsou nezavisle stavove automaty bez
+ * __HAL_LOCK (stm32h7xx_hal_uart.c HAL_UART_Transmit_IT / HAL_UART_Receive_IT),
+ * takze prenos smi bezet soucasne s RX v preruseni. Pri upgradu HAL overit. */
+#define UBX_TX_WAIT_MS  200u              /* jak dlouho cekat na dobehnuti predchoziho TX */
+static uint8_t  s_ubx_tx[80];
+static uint32_t s_ubx_sent, s_ubx_fail;   /* odeslane / neodeslane UBX ramce (L-0017) */
+
 /* Slozi UBX ramec: B5 62 | cls id | len(LE) | payload | CK_A CK_B (Fletcher
- * pres cls..payload) a odvysila pres USART1 TX (PB14). */
-static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
+ * pres cls..payload) a spusti jeho odvysilani pres USART1 TX (PB14).
+ * Volat jen z tasku pri bezicim scheduleru (ceka pres vTaskDelay).
+ * @return true = prenos spusten. Doruceni modulu to NEDOKAZUJE (ACK se necte). */
+static bool ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
 {
   uint8_t f[80];
-  if (n > 64) return;
+  if (n > 64) return false;
   uint16_t i = 0;
   f[i++] = 0xB5; f[i++] = 0x62;
   f[i++] = cls;  f[i++] = id;
@@ -284,39 +372,137 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
   uint8_t a = 0, b = 0;
   for (uint16_t k = 2; k < i; k++) { a = (uint8_t)(a + f[k]); b = (uint8_t)(b + a); }
   f[i++] = a; f[i++] = b;
-  HAL_UART_Transmit(&huart1, f, i, 100);
+
+  uint32_t t0 = HAL_GetTick();
+  for (;;) {
+    int expired = ((uint32_t)(HAL_GetTick() - t0) >= UBX_TX_WAIT_MS);
+    HAL_StatusTypeDef st = HAL_BUSY;
+    taskENTER_CRITICAL();
+    if (huart1.gState == HAL_UART_STATE_READY) {
+      memcpy(s_ubx_tx, f, i);
+      st = HAL_UART_Transmit_IT(&huart1, s_ubx_tx, i);
+    }
+    int give_up = (st != HAL_OK) && (st != HAL_BUSY || expired);
+    if (st == HAL_OK) s_ubx_sent++;
+    else if (give_up) s_ubx_fail++;
+    taskEXIT_CRITICAL();
+    if (st == HAL_OK) return true;
+    if (give_up) return false;
+    vTaskDelay(1);                    /* predchozi ramec jeste bezi — ustup, nespinuj */
+  }
 }
 
-/* TIMEPULSE kmitocty. S FIXEM = GPSDO PLL reference (musi sedet s delickou OCXO,
- * JP2: 100 kHz / 1 MHz -> pro 1MHz zmen na 1000000). BEZ FIXU = 10 Hz: sama
- * FREKVENCE slouzi desce jako lock-indikator (detektor: 100 kHz -> disciplinuj,
- * 10 Hz -> hold VC OCXO = holdover). NIKDY nevystup 100 kHz z interniho osc modulu. */
-#define GPS_TP_FREQ_HZ        100000u   /* s fixem: GPSDO PLL reference */
-#define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: MANDATORY 10 Hz (hold indikator) */
+/* TIMEPULSE kmitocty (deska FPGA 2.1). Vystup TIMEPULSE vede pres J3 pin2
+ * (GPS_CLK_Out) -> U7 74LVC1G17 -> GPS_CLK_Buff -> R50 -> FPGA PIN33_IOB23A
+ * (GPS_1PPS, carry chain C). Do STM32 1PPS NEVEDE — STM ho uvidi jen pres FPGA.
+ * S FIXEM = 1PPS, nabezna hrana na zacatku UTC sekundy: casova znacka, kterou
+ * FPGA porovna s OCXO (time error pro smycku GPSDO, STATUS #36).
+ * BEZ FIXU = 10 Hz: frekvence zustava indikatorem fix/bez fixu (zadani 2026-10-03).
+ * ⚠️ 100 kHz s fixem patrilo stare desce 2.0 (HW PLL na listu GPSDO); deska 2.1
+ * zadnou PLL nema a FPGA na PIN33 ceka 1PPS. */
+#define GPS_TP_FREQ_HZ        1u        /* s fixem: 1PPS pro FPGA */
+#define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: 10 Hz (indikator bez fixu) */
+/* Delka pulzu v us (isLength = 1). S fixem TYPICKA strida 1PPS: 100 ms high
+ * (10 %, vychozi hodnota u-blox), ne 50 % — zadani uzivatele 2026-10-03.
+ * Bez fixu 50 ms pri 10 Hz = 50 % jako dosud. Casovou znackou je NABEZNA hrana. */
+#define GPS_TP_LEN_LOCK_US    100000u   /* s fixem: pulz 100 ms */
+#define GPS_TP_LEN_NOFIX_US   50000u    /* bez fixu: pulz 50 ms (strida 50 %) */
+#define GPS_TP_RESEND_MS      60000u    /* opakovani TP5 (F-0219): 1x/min, zadani uzivatele */
+static uint32_t s_tp_last_ms;           /* posledni odeslani TP5 (HAL_GetTick) — jen defaultTask */
 
-/* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 100 kHz disciplinovany na
- * GNSS + zarovnany na UTC (alignToTow); freqPeriod (no lock) = 10 Hz. 50% strida. */
+/* Ulozi uint32 little-endian do UBX payloadu. */
+static void put_le32(uint8_t *p, uint32_t v)
+{
+  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+/* Anteni koax: delka [0,1 m] a rychlostni faktor [%] (okno NASTAVENI GPS, persist v syscfg). */
+volatile uint16_t g_gps_cable_dm;
+volatile uint8_t  g_gps_cable_vf;
+static volatile uint8_t s_tp_resend_req;   /* UiTask nastavi po zmene, gps_tick (defaultTask) vynuluje */
+
+int16_t gps_cable_delay_ns(void)
+{
+  uint16_t dm = g_gps_cable_dm;
+  uint8_t  vf = g_gps_cable_vf;
+  if (dm == 0u) return 0;
+  if (dm > GPS_CABLE_DM_MAX) dm = GPS_CABLE_DM_MAX;
+  if (vf < 30u || vf > 100u) vf = GPS_CABLE_VF_DEF;   /* 0 = vychozi; mimo fyzikalni rozsah (VF < 30 % neexistuje) tez */
+  /* t = L / (c·VF), c = 0,299792458 m/ns; L = dm/10 m, VF = vf/100 */
+  double ns = ((double)dm * 0.1) / (0.299792458 * (double)vf * 0.01);
+  return (int16_t)(ns + 0.5);
+}
+
+void gps_cable_changed(void) { s_tp_resend_req = 1u; }
+
+/* Diagnostika (2026-11-03, validace auditu dat): je zdrojem soustavne chyby #348 (cara 1 s zamcena na okna) 1PPS
+ * na PIN33 v bance 2 FPGA? UART `gps tp <ms>|off|def` zmeni delku pulzu s fixem, nebo TIMEPULSE vypne (active = 0).
+ * Nepersistuje se (po resetu vychozi 100 ms); posila se i v minutovem opakovani TP5. Pozor: `off` = GPSDO bez 1PPS
+ * (HOLD). Zapisuje UartTask, cte defaultTask (gps_tick) -- 32b zapis je atomicky. */
+static volatile uint32_t s_tp_len_lock_us = GPS_TP_LEN_LOCK_US;
+static volatile uint8_t  s_tp_active = 1u;
+/* `gps tp z <ms>`: posun 1PPS (userConfigDelay, ns) -- poloha impulzu vuci mrizce oken FPGA. Posouva i fazi pro smycku
+ * GPSDO, proto jen s `gpsdo off`. `gps tp def` vraci 0. */
+static volatile int32_t  s_tp_delay_ns = 0;
+
+void gps_tp_delay(int32_t ns)
+{
+  s_tp_delay_ns = ns;
+  s_tp_resend_req = 1u;
+}
+
+int32_t gps_tp_delay_get(void) { return s_tp_delay_ns; }
+
+void gps_tp_override(int32_t len_us)
+{
+  if (len_us < 0) { s_tp_len_lock_us = GPS_TP_LEN_LOCK_US; s_tp_active = 1u; s_tp_delay_ns = 0; }
+  else if (len_us == 0) { s_tp_active = 0u; }
+  else {
+    if ((uint32_t)len_us >= 1000000u / GPS_TP_FREQ_HZ) len_us = (int32_t)(1000000u / GPS_TP_FREQ_HZ - 1000u);
+    s_tp_len_lock_us = (uint32_t)len_us; s_tp_active = 1u;
+  }
+  s_tp_resend_req = 1u;
+}
+
+void gps_tp_get(uint32_t *len_us, uint8_t *active)
+{
+  *len_us = s_tp_len_lock_us; *active = s_tp_active;
+}
+
+/* UBX-CFG-TP5 (0x06 0x31, 32 B): freqPeriodLock (fix) = 1 Hz disciplinovany na
+ * GNSS + zarovnany na UTC (alignToTow, polarity = nabezna hrana na zacatku
+ * sekundy), pulz 100 ms; freqPeriod (no lock) = 10 Hz, pulz 50 ms.
+ * isFreq = periody v Hz, isLength = delky pulzu v us (ne pomer 2^-32). */
 void gps_config_timepulse(void)
 {
-  uint32_t fl = GPS_TP_FREQ_HZ;         /* s fixem */
-  uint32_t fn = GPS_TP_FREQ_NOFIX_HZ;   /* bez fixu */
   uint8_t pl[32] = {0};
-  pl[0]  = 0;                                  /* tpIdx = 0 (TIMEPULSE) */
-  pl[8]  = (uint8_t)fn; pl[9]  = (uint8_t)(fn >> 8);  /* freqPeriod (no lock) = 10 Hz */
-  pl[10] = (uint8_t)(fn >> 16); pl[11] = (uint8_t)(fn >> 24);
-  pl[12] = (uint8_t)fl; pl[13] = (uint8_t)(fl >> 8);  /* freqPeriodLock (fix) = 100 kHz */
-  pl[14] = (uint8_t)(fl >> 16); pl[15] = (uint8_t)(fl >> 24);
-  pl[19] = 0x80;                               /* pulseLenRatio = 50% (2^31) */
-  pl[23] = 0x80;                               /* pulseLenRatioLock = 50% */
-  /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|alignToTow|polarity = 0x6F */
-  pl[28] = 0x6F;
+  pl[0] = 0;                                     /* tpIdx = 0 (TIMEPULSE) */
+  {                                              /* antCableDelay [ns], int16 LE (off 4); rfGroupDelay (off 6) zustava 0 */
+    int16_t cd = gps_cable_delay_ns();
+    pl[4] = (uint8_t)cd; pl[5] = (uint8_t)((uint16_t)cd >> 8);
+  }
+  put_le32(&pl[8],  GPS_TP_FREQ_NOFIX_HZ);       /* freqPeriod (no lock) = 10 Hz */
+  put_le32(&pl[12], GPS_TP_FREQ_HZ);             /* freqPeriodLock (fix) = 1 Hz */
+  put_le32(&pl[16], GPS_TP_LEN_NOFIX_US);        /* pulseLenRatio (no lock) = 50 ms */
+  put_le32(&pl[20], s_tp_len_lock_us);           /* pulseLenRatioLock (fix) = 100 ms (`gps tp`) */
+  put_le32(&pl[24], (uint32_t)s_tp_delay_ns);    /* userConfigDelay [ns], I4 (`gps tp z`, jinak 0) */
+  /* flags: active|lockGnssFreq|lockedOtherSet|isFreq|isLength|alignToTow|polarity = 0x7F; `gps tp off` = bez active */
+  pl[28] = s_tp_active ? 0x7Fu : 0x7Eu;
   ubx_send(0x06, 0x31, pl, 32);
 }
+_Static_assert(GPS_TP_LEN_LOCK_US < 1000000u / GPS_TP_FREQ_HZ, "pulz 1PPS musi byt kratsi nez perioda");
+_Static_assert(GPS_TP_LEN_NOFIX_US < 1000000u / GPS_TP_FREQ_NOFIX_HZ, "pulz bez fixu musi byt kratsi nez perioda");
+
+/* Pevna poloha casovaciho prijimace (STATUS #351): survey-in v modulu bezi -> pevnou polohu neposilat
+ * (prepsala by ho). Nastavuje gps_survey_in_cmd, nuluje gps_survey_disable_cmd (oboji ze kterehokoli tasku). */
+static volatile uint8_t s_svin_busy;
+static volatile uint8_t s_fixed_kick;      /* po skonceni survey / zmene povoleni poslat hned, ne az za minutu */
 
 /* UBX-CFG-TMODE2 (0x06 0x3D, 28 B): timeMode 0=disabled 1=survey-in. Pro survey-in
  * naseto svinMinDur [s] (off 20) + svinAccLimit [mm] (off 24), zbytek 0. */
 void gps_survey_in_cmd(uint32_t min_dur_s, uint32_t acc_limit_mm)
 {
+  s_svin_busy = 1u;
   uint8_t pl[28] = {0};
   pl[0] = 1;                                   /* timeMode = survey-in */
   pl[20] = (uint8_t)min_dur_s; pl[21] = (uint8_t)(min_dur_s >> 8);
@@ -329,6 +515,24 @@ void gps_survey_disable_cmd(void)
 {
   uint8_t pl[28] = {0};                        /* timeMode = 0 (disabled) */
   ubx_send(0x06, 0x3D, pl, 28);
+  s_svin_busy = 0u;
+  s_fixed_kick = 1u;                           /* casovaci prijimac: pevnou polohu z noveho survey hned */
+}
+
+/* UBX-CFG-NAV5 (0x06 0x24, 36 B): dynModel (off 2) = 0 Portable / 2 Stationary / 4 Automotive / ...
+ * STANDARDNI zprava, kterou podporuji VSECHNY u-blox prijimace (ne jen timing rada) — na rozdil
+ * od CFG-TMODE2 (ta NEO-7M odmita, viz gps_survey_in_cmd). Stationary rekne navigacnimu filtru
+ * "nehybu se", takze neplytva sumem na odhad rychlosti; podle nezavisleho mereni (N8UR, TAPR DCC
+ * 2020) to zlepsuje ADEV 1PPS od tau ~30 s vyse, krátkodobe skoro nic. mask (off 0) = jen bit0
+ * (dyn) -> meni se VYHRADNE dynModel, zbytek parametru (maskValid=0) zustava na hodnote prijimace.
+ * Konfigurace zije jen v RAM modulu (jako TP5), po resetu se ztrati — zadne periodicke obnoveni
+ * (na rozdil od TP5), posila se jen na vyzadani (UART "gps nav5 stationary|auto"). */
+void gps_config_nav5(bool stationary)
+{
+  uint8_t pl[36] = {0};
+  pl[0] = 0x01; pl[1] = 0x00;                 /* mask = bit0 (dyn), zbytek nemenit */
+  pl[2] = stationary ? 2u : 0u;                /* dynModel: 2 Stationary / 0 Portable */
+  ubx_send(0x06, 0x24, pl, 36);
 }
 
 /* Jeden 8B blok CFG-GNSS: gnssId, resTrkCh, maxTrkCh, flags (enable + L1 sigCfg). */
@@ -341,8 +545,10 @@ static void gnss_block(uint8_t *b, uint8_t gnss_id, uint8_t res, uint8_t max, ui
 }
 
 /* UBX-CFG-GNSS (0x06 0x3E): zapne GPS+SBAS+QZSS+GLONASS souběžně. Viz gps.h —
- * best-effort, JEN na explicitní vyžádání (UART "gps glonass"). */
-void gps_config_gnss(void)
+ * best-effort, JEN na explicitní vyžádání (UART "gps glonass").
+ * @return vysledek ubx_send: true = prenos spusten (ACK se necte, prijeti
+ *         modulem to nedokazuje), false = neodeslano (audit F-0227). */
+bool gps_config_gnss_mode(bool glonass)
 {
   uint8_t pl[4 + 4 * 8] = {0};
   pl[0] = 0;      /* msgVer */
@@ -352,9 +558,11 @@ void gps_config_gnss(void)
   gnss_block(&pl[4],  0, 8, 16, 1);   /* GPS L1C/A */
   gnss_block(&pl[12], 1, 1,  3, 1);   /* SBAS */
   gnss_block(&pl[20], 5, 0,  3, 1);   /* QZSS (nutné s GPS) */
-  gnss_block(&pl[28], 6, 8, 14, 1);   /* GLONASS L1OF */
-  ubx_send(0x06, 0x3E, pl, sizeof pl);
+  gnss_block(&pl[28], 6, 8, 14, glonass ? 1u : 0u);   /* GLONASS L1OF: zapnuto / explicitne vypnuto */
+  return ubx_send(0x06, 0x3E, pl, sizeof pl);
 }
+
+bool gps_config_gnss(void) { return gps_config_gnss_mode(true); }
 
 /* ── Verejne API ───────────────────────────────────────────────────────── */
 void gps_init(void)
@@ -364,23 +572,351 @@ void gps_init(void)
   huart1.Init.BaudRate = 9600;
   HAL_UART_Init(&huart1);
 
-  /* TIMEPULSE config (100 kHz GPSDO PLL reference; viz gps_config_timepulse).
-   * Vyzaduje zapojene STM
-   * PB14 (USART1 TX) -> GPS RX. Posila se v RAM modulu (plati do power-cyklu).
-   * ⚠️ MUSI byt PRED HAL_UART_Receive_IT: HAL_UART_Transmit (blokujici) drzi
-   * huart->Lock; kdyby uz bezel RX IT, RxCpltCallback by pri re-armu dostal
-   * HAL_BUSY a RX by NAVZDY umrel (displej zamrzne na "acquiring"). Po TX uz na
-   * USART1 zadny dalsi TX nebezi (printf -> USB) => re-arm RX uz nikdy nekoliduje. */
+  /* TIMEPULSE config (s fixem 1PPS do FPGA, bez fixu 10 Hz; viz gps_config_timepulse).
+   * Vyzaduje zapojene STM PB14 (USART1 TX) -> GPS RX. Konfigurace zije jen v RAM
+   * modulu, proto ji gps_tick() posila znovu 1x/min (audit F-0219).
+   * Poradi TX -> RX tady uz neni nutne (audit F-0221): drivejsi komentar tvrdil, ze
+   * TX drzi huart->Lock a soubezny re-arm RX by umrel — v HAL 1.11.6 ani
+   * HAL_UART_Transmit(_IT), ani HAL_UART_Receive_IT __HAL_LOCK nepouzivaji a UBX
+   * se za behu posila i z UiTasku (SURVEY) a UartTasku (`gps glonass`). */
   gps_config_timepulse();
+  gps_config_timtp();
+  ubx_send(0x0A, 0x04, NULL, 0);   /* UBX-MON-VER dotaz: typ modulu (STATUS #351); bez odpovedi znovu 1x/min */
+  s_tp_last_ms = HAL_GetTick();
 
-  /* Az ted nahodit RX v IT rezimu. */
+  /* RX v IT rezimu. */
   HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+}
+
+/* Periodicka obnova konfigurace TIMEPULSE (audit F-0219). TP5 se posila jen do RAM
+ * modulu a firmware nevi, jestli ji modul prijal (ACK se necte), ani jestli ji
+ * neztratil (modul je napajeny z desky FPGA, muze se resetovat sam). Ramec je
+ * idempotentni, takze ho staci posilat znovu: po ztrate konfigurace plati spravna
+ * hodnota nejpozdeji za minutu.
+ * ⚠️ Kazde poslani vyvola UBX-ACK, ktery gps_feed_char od F-0223 jen spocita
+ * (RSY v `gpsraw` tedy roste ~1x/min — normalni).
+ * ⚠️ HYPOTEZA k overeni osciloskopem: modul po (i shodne) TP5 nesmi vynechat
+ * ani zkratit pulz 1PPS. Volat VYHRADNE z defaultTasku (drain GPS). */
+static void rx_timing_tick(int minute);
+
+void gps_tick(void)
+{
+  uint32_t now = HAL_GetTick();
+  /* Zmena delky/faktoru kabelu z UI se uplatni hned, ne az za minutu. */
+  if (s_tp_resend_req) { s_tp_resend_req = 0u; s_tp_last_ms = now - GPS_TP_RESEND_MS; }
+  int minute = ((uint32_t)(now - s_tp_last_ms) >= GPS_TP_RESEND_MS);
+  if (minute) {
+    s_tp_last_ms = now;
+    gps_config_timepulse();
+    gps_config_timtp();   /* STATUS #305: konfigurace zije jen v RAM modulu, stejne jako TP5 */
+  }
+  rx_timing_tick(minute);   /* STATUS #351: typ modulu, pevna poloha casovaciho prijimace */
+}
+
+/* UBX-CFG-MSG (0x06 0x01, 3 B): msgClass, msgID, rate na AKTUALNIM portu (UART1). TIM-TP = 0x0D 0x01. */
+void gps_config_timtp(void)
+{
+  const uint8_t pl[3] = { 0x0D, 0x01, 1u };
+  ubx_send(0x06, 0x01, pl, 3);
+}
+
+/* ── Prijem UBX (STATUS #305) ─────────────────────────────────────────────────────────────────
+ * Binarni ramec B5 62 | cls id | len(LE) | payload | CK_A CK_B se prolina s NMEA. Bajty uvnitr ramce
+ * se do NMEA radku NEPOSILAJI (jinak by binarni payload s '$', '\r', '\n' rozbil rozepsanou vetu).
+ * Zpracuje se jen TIM-TP (16 B); ostatni (ACK/NAK na nase CFG) se jen spocitaji. */
+#define UBX_PL_MAX 256u   /* MON-VER = 40 + 30 B na rozsireni (M8T ~6 rozsireni = 220 B); delsi ramec se jen spocita jako vadny */
+static uint8_t     s_ubx_st;                 /* 0 = mimo ramec, 1 = B5, 2 = cls, 3 = id, 4 = lenL, 5 = lenH, 6 = payload, 7 = CK_A, 8 = CK_B */
+static uint8_t     s_ubx_cls, s_ubx_id, s_ubx_cka;
+static uint16_t    s_ubx_len, s_ubx_pos;
+static uint8_t     s_ubx_a, s_ubx_b;
+static uint8_t     s_ubx_pl[UBX_PL_MAX];
+static uint32_t    s_ubx_rx_ok, s_ubx_rx_bad; /* prijate UBX ramce se spravnym / spatnym checksumem */
+static gps_timtp_t s_tp_last, s_tp_prev;
+static uint8_t     s_tp_have;
+
+/* Odpoved modulu (UBX-ACK-ACK 0x05 0x01 / ACK-NAK 0x05 0x00, payload = cls, id) na nase CFG zpravy.
+ * Pocita se jen u zprav, jejichz prijeti je pro mereni podstatne; poslani samo prijeti NEDOKAZUJE (ubx_send vraci true uz po
+ * zahajeni prenosu). last: 0 = zatim nic, 1 = posledni odpoved ACK, 2 = NAK. */
+typedef struct { uint8_t cls, id, last; uint16_t ack, nak; const char *name; } ubx_ack_t;
+static ubx_ack_t s_ack_tab[] = {
+  { 0x06, 0x3D, 0, 0, 0, "TMODE2" },   /* survey-in / time mode */
+  { 0x06, 0x3E, 0, 0, 0, "GNSS" },     /* souhvezdi */
+  { 0x06, 0x24, 0, 0, 0, "NAV5" },     /* dynModel (stationary) */
+  { 0x06, 0x31, 0, 0, 0, "TP5" },      /* timepulse (posila se 1x/min) */
+  { 0x06, 0x01, 0, 0, 0, "MSG" },      /* TIM-TP rate (1x/min) */
+};
+
+static void ubx_ack_note(uint8_t cls, uint8_t id, uint8_t is_ack)
+{
+  for (unsigned i = 0; i < sizeof s_ack_tab / sizeof s_ack_tab[0]; i++) {
+    if (s_ack_tab[i].cls == cls && s_ack_tab[i].id == id) {
+      taskENTER_CRITICAL();
+      s_ack_tab[i].last = is_ack ? 1u : 2u;
+      if (is_ack) { if (s_ack_tab[i].ack < 0xFFFFu) s_ack_tab[i].ack++; }
+      else        { if (s_ack_tab[i].nak < 0xFFFFu) s_ack_tab[i].nak++; }
+      taskEXIT_CRITICAL();
+      return;
+    }
+  }
+}
+
+/* Souhrn odpovedi modulu na vybrane CFG zpravy: `<jmeno> ack/nak posledni`. */
+void gps_ack_format(char *buf, int n)
+{
+  static const char *const L[3] = { "-", "ACK", "NAK" };
+  int pos = 0;
+  buf[0] = '\0';
+  for (unsigned i = 0; i < sizeof s_ack_tab / sizeof s_ack_tab[0] && pos < n; i++) {
+    uint8_t last; uint16_t a, k;
+    taskENTER_CRITICAL();
+    last = s_ack_tab[i].last; a = s_ack_tab[i].ack; k = s_ack_tab[i].nak;
+    taskEXIT_CRITICAL();
+    pos += snprintf(buf + pos, (size_t)(n - pos), "%s%s %u/%u %s", i ? " | " : "", s_ack_tab[i].name,
+                    (unsigned)a, (unsigned)k, L[last > 2u ? 0 : last]);
+  }
+}
+
+/* ── Casovaci prijimac (STATUS #351) ─────────────────────────────────────────────────────────── */
+static gps_rxinfo_t s_rx;                  /* zapis jen defaultTask (ubx_frame_done), cteni pres gps_rxinfo_get */
+
+/* Zkopiruje pevne dlouhy retezec z UBX (nemusi koncit NUL) a vzdy ukonci. */
+static void ubx_str(char *dst, size_t dn, const uint8_t *src, size_t sn)
+{
+  size_t i = 0;
+  for (; i + 1 < dn && i < sn && src[i] != 0; i++) dst[i] = (char)src[i];
+  dst[i] = '\0';
+}
+
+/* UBX-MON-VER (0x0A 0x04): swVersion[30], hwVersion[10], N x extension[30] ("FWVER=TIM 1.10", "PROTVER=22.00",
+ * "MOD=NEO-M8T", ...). Casovaci firmware se pozna podle FWVER=TIM. */
+static void monver_parse(const uint8_t *p, uint16_t len)
+{
+  if (len < 40u || ((len - 40u) % 30u) != 0u) return;
+  gps_rxinfo_t r;
+  memset(&r, 0, sizeof r);
+  ubx_str(r.sw, sizeof r.sw, p, 30);
+  ubx_str(r.hw, sizeof r.hw, p + 30, 10);
+  for (uint16_t o = 40; o + 30u <= len; o += 30u) {
+    char e[31];
+    ubx_str(e, sizeof e, p + o, 30);
+    /* Zamerne oriznuti na velikost pole (ubx_str, bez varovani -Wformat-truncation). */
+    if      (strncmp(e, "FWVER=", 6) == 0)   ubx_str(r.fw, sizeof r.fw, (const uint8_t *)e + 6, 24);
+    else if (strncmp(e, "MOD=", 4) == 0)     ubx_str(r.mod, sizeof r.mod, (const uint8_t *)e + 4, 26);
+    else if (strncmp(e, "PROTVER=", 8) == 0) ubx_str(r.prot, sizeof r.prot, (const uint8_t *)e + 8, 22);
+  }
+  r.timing = (uint8_t)(strncmp(r.fw, "TIM", 3) == 0);
+  r.have = 1u;
+  taskENTER_CRITICAL();
+  s_rx = r;
+  taskEXIT_CRITICAL();
+}
+
+/* UBX-TIM-SVIN (0x0D 0x04, 28 B): prubeh survey-in v modulu. */
+static struct { uint8_t have, valid, active; uint32_t dur_s, obs, mean_v_mm2; } s_svin;
+
+static void svin_parse(const uint8_t *p)
+{
+  uint32_t dur = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+  uint32_t mv  = (uint32_t)p[16] | ((uint32_t)p[17] << 8) | ((uint32_t)p[18] << 16) | ((uint32_t)p[19] << 24);
+  uint32_t obs = (uint32_t)p[20] | ((uint32_t)p[21] << 8) | ((uint32_t)p[22] << 16) | ((uint32_t)p[23] << 24);
+  taskENTER_CRITICAL();
+  s_svin.dur_s = dur; s_svin.mean_v_mm2 = mv; s_svin.obs = obs;
+  s_svin.valid = p[24]; s_svin.active = p[25]; s_svin.have = 1u;
+  taskEXIT_CRITICAL();
+}
+
+static void ubx_frame_done(void)
+{
+  s_ubx_rx_ok++;
+  if (s_ubx_cls == 0x0A && s_ubx_id == 0x04) monver_parse(s_ubx_pl, s_ubx_len);
+  if (s_ubx_cls == 0x0D && s_ubx_id == 0x04 && s_ubx_len == 28u) svin_parse(s_ubx_pl);
+  if (s_ubx_cls == 0x05 && (s_ubx_id == 0x00 || s_ubx_id == 0x01) && s_ubx_len == 2u)
+    ubx_ack_note(s_ubx_pl[0], s_ubx_pl[1], (uint8_t)(s_ubx_id == 0x01));
+  if (s_ubx_cls == 0x0D && s_ubx_id == 0x01 && s_ubx_len == 16u) {
+    const uint8_t *p = s_ubx_pl;
+    gps_timtp_t e;
+    e.tow_ms = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    e.q_ps   = (int32_t)((uint32_t)p[8] | ((uint32_t)p[9] << 8) | ((uint32_t)p[10] << 16) | ((uint32_t)p[11] << 24));
+    e.rx_ms  = HAL_GetTick();
+    e.n      = s_tp_last.n + 1u;
+    taskENTER_CRITICAL();
+    s_tp_prev = s_tp_last; s_tp_last = e; s_tp_have = 1u;
+    taskEXIT_CRITICAL();
+  }
+}
+
+/* @return 1 = bajt patri UBX ramci (NMEA ho nesmi videt). */
+static int ubx_feed(uint8_t b)
+{
+  switch (s_ubx_st) {
+  case 0: if (b == 0xB5) { s_ubx_st = 1; return 1; } return 0;
+  case 1: if (b == 0x62) { s_ubx_st = 2; s_ubx_a = 0; s_ubx_b = 0; return 1; }
+          s_ubx_st = 0; return 0;              /* B5 bez 62 -> smeti, bajt patri NMEA */
+  default: break;
+  }
+  if (s_ubx_st <= 6) { s_ubx_a = (uint8_t)(s_ubx_a + b); s_ubx_b = (uint8_t)(s_ubx_b + s_ubx_a); }
+  switch (s_ubx_st) {
+  case 2: s_ubx_cls = b; s_ubx_st = 3; break;
+  case 3: s_ubx_id  = b; s_ubx_st = 4; break;
+  case 4: s_ubx_len = b; s_ubx_st = 5; break;
+  case 5: s_ubx_len |= (uint16_t)((uint16_t)b << 8); s_ubx_pos = 0;
+          s_ubx_st = (s_ubx_len > 512u) ? 0 : (s_ubx_len ? 6 : 7);   /* nesmyslna delka = smeti */
+          break;
+  case 6: if (s_ubx_pos < UBX_PL_MAX) s_ubx_pl[s_ubx_pos] = b;
+          if (++s_ubx_pos >= s_ubx_len) s_ubx_st = 7;
+          break;
+  case 7: s_ubx_cka = b; s_ubx_st = 8; break;
+  case 8: if (s_ubx_cka == s_ubx_a && b == s_ubx_b && s_ubx_len <= UBX_PL_MAX) ubx_frame_done();
+          else s_ubx_rx_bad++;
+          s_ubx_st = 0;
+          break;
+  default: s_ubx_st = 0; break;
+  }
+  return 1;
+}
+
+bool gps_timtp_get(gps_timtp_t *last, gps_timtp_t *prev)
+{
+  taskENTER_CRITICAL();
+  uint8_t h = s_tp_have;
+  if (h && last) *last = s_tp_last;
+  if (h && prev) *prev = s_tp_prev;
+  taskEXIT_CRITICAL();
+  return h != 0u;
+}
+
+void gps_rxinfo_get(gps_rxinfo_t *out)
+{
+  taskENTER_CRITICAL();
+  *out = s_rx;
+  taskEXIT_CRITICAL();
+}
+
+/* ── Pevna poloha casovaciho prijimace (STATUS #351) ─────────────────────────────────────────────
+ * Vysledek self-survey (app_gpsdo.c survey_stop, syscfg) -> ECEF -> UBX-CFG-TMODE2 timeMode 2. Prijimac pak polohu
+ * nepocita a z kazde druzice odhaduje jen cas: odpadne sum polohy, ktery se jinak preleva do 1PPS.
+ * 🔴 Vyska: NMEA GGA dava vysku nad GEOIDEM (MSL), TMODE2 chce polohu v WGS84 -> elipsoidicka vyska = alt + geoid
+ * (GGA pole 11). Bez geoidu by v CR chybelo ~45 m vysky = casova chyba desitek ns, ktera se meni se souhvezdim;
+ * proto se bez geoidu neposila nic. Posila se ECEF (flags.lla = 0), aby nebylo nutne spolehat na to, jak modul
+ * vyklada vysku v rezimu LLA. */
+extern volatile uint8_t  g_survey_valid;
+extern volatile uint32_t g_survey_n;
+extern volatile double   g_survey_lat, g_survey_lon;
+extern volatile float    g_survey_alt, g_survey_spread;
+
+enum { FX_NOT_TIMING = 0, FX_OFF, FX_NO_SURVEY, FX_SVIN, FX_NO_GEOID, FX_SENT };
+static const char *const FX_TXT[] = {
+  "neni casovaci prijimac", "vypnuto (`gps fixed on`)", "chybi ulozeny self-survey (okno SURVEY)",
+  "bezi survey-in v modulu", "ceka na geoid z GGA", "odeslano" };
+static volatile uint8_t  s_fixed_en = 1u;
+static volatile uint8_t  s_fixed_off_req;
+static uint8_t  s_fx_state;
+static uint32_t s_fx_n_sent;                 /* g_survey_n posledniho odeslani (zmena = novy survey -> poslat hned) */
+static uint32_t s_fx_cnt;                    /* pocet odeslani */
+static uint32_t s_fx_last_ms;
+static int32_t  s_fx_ecef_cm[3];
+static uint32_t s_fx_acc_mm;
+
+void gps_fixed_enable(bool en)
+{
+  s_fixed_en = en ? 1u : 0u;
+  if (!en) s_fixed_off_req = 1u;
+  s_fixed_kick = 1u;
+}
+
+/* WGS84 geodeticke -> ECEF [m]. */
+static void lla_to_ecef(double lat_deg, double lon_deg, double h_m, double *x, double *y, double *z)
+{
+  const double a = 6378137.0, f = 1.0 / 298.257223563, e2 = f * (2.0 - f);
+  const double d2r = 3.14159265358979323846 / 180.0;
+  double la = lat_deg * d2r, lo = lon_deg * d2r;
+  double s = sin(la), c = cos(la);
+  double N = a / sqrt(1.0 - e2 * s * s);
+  *x = (N + h_m) * c * cos(lo);
+  *y = (N + h_m) * c * sin(lo);
+  *z = (N * (1.0 - e2) + h_m) * s;
+}
+
+static void fixed_send(void)
+{
+  double lat, lon; float alt, spr; uint32_t n; float geo;
+  taskENTER_CRITICAL();
+  lat = g_survey_lat; lon = g_survey_lon; alt = g_survey_alt; spr = g_survey_spread; n = g_survey_n;
+  geo = s_gps.geoid_m;
+  taskEXIT_CRITICAL();
+  double x, y, z;
+  lla_to_ecef(lat, lon, (double)alt + (double)geo, &x, &y, &z);
+  int32_t cm[3] = { (int32_t)lround(x * 100.0), (int32_t)lround(y * 100.0), (int32_t)lround(z * 100.0) };
+  /* fixedPosAcc: spread je sigma JEDNOTLIVYCH fixu (F-0162), prumer je lepsi -> konzervativni horni odhad,
+   * omezeny na 1..100 m. */
+  float acc = spr * 1000.0f;
+  if (!(acc >= 1000.0f)) acc = 1000.0f;
+  if (acc > 100000.0f) acc = 100000.0f;
+  uint8_t pl[28] = {0};
+  pl[0] = 2;                                   /* timeMode = fixed */
+  /* pl[2..3] flags = 0 -> ECEF */
+  put_le32(&pl[4],  (uint32_t)cm[0]);
+  put_le32(&pl[8],  (uint32_t)cm[1]);
+  put_le32(&pl[12], (uint32_t)cm[2]);
+  put_le32(&pl[16], (uint32_t)acc);
+  if (ubx_send(0x06, 0x3D, pl, 28)) {
+    s_fx_n_sent = n; s_fx_cnt++; s_fx_last_ms = HAL_GetTick();
+    s_fx_ecef_cm[0] = cm[0]; s_fx_ecef_cm[1] = cm[1]; s_fx_ecef_cm[2] = cm[2]; s_fx_acc_mm = (uint32_t)acc;
+  }
+}
+
+/* Vola gps_tick (defaultTask). minute = uplynula minuta od posledniho TP5. */
+static void rx_timing_tick(int minute)
+{
+  taskENTER_CRITICAL();
+  uint8_t have = s_rx.have, timing = s_rx.timing;
+  taskEXIT_CRITICAL();
+  if (minute && !have) ubx_send(0x0A, 0x04, NULL, 0);          /* MON-VER, dokud neprisla odpoved */
+  if (!timing) { s_fx_state = FX_NOT_TIMING; s_fixed_kick = 0u; s_fixed_off_req = 0u; return; }
+  if (minute && s_svin_busy) ubx_send(0x0D, 0x04, NULL, 0);     /* TIM-SVIN: prubeh survey-in modulu */
+
+  if (s_fixed_off_req) {                                         /* `gps fixed off` -> timeMode 0 */
+    s_fixed_off_req = 0u;
+    uint8_t pl[28] = {0};
+    ubx_send(0x06, 0x3D, pl, 28);
+  }
+  uint8_t st;
+  if (!s_fixed_en)          st = FX_OFF;
+  else if (s_svin_busy)     st = FX_SVIN;
+  else if (!g_survey_valid) st = FX_NO_SURVEY;
+  else if (!s_gps.geoid_ok) st = FX_NO_GEOID;
+  else                      st = FX_SENT;
+  int kick = s_fixed_kick;
+  s_fixed_kick = 0u;
+  if (st == FX_SENT && (minute || kick || s_fx_cnt == 0u || s_fx_n_sent != g_survey_n)) fixed_send();
+  s_fx_state = st;
+}
+
+void gps_fixed_format(char *buf, int n)
+{
+  gps_rxinfo_t r;
+  gps_rxinfo_get(&r);
+  int pos = snprintf(buf, (size_t)n, "pevna poloha: %s", FX_TXT[s_fx_state < 6u ? s_fx_state : 0u]);
+  if (r.timing && s_fx_cnt && pos < n)
+    pos += snprintf(buf + pos, (size_t)(n - pos), ", %lux, naposled pred %lu s, ECEF %ld %ld %ld cm, acc %lu mm",
+                    (unsigned long)s_fx_cnt, (unsigned long)((HAL_GetTick() - s_fx_last_ms) / 1000u),
+                    (long)s_fx_ecef_cm[0], (long)s_fx_ecef_cm[1], (long)s_fx_ecef_cm[2], (unsigned long)s_fx_acc_mm);
+  taskENTER_CRITICAL();
+  uint8_t sh = s_svin.have, sv = s_svin.valid, sa = s_svin.active;
+  uint32_t sd = s_svin.dur_s, so = s_svin.obs, smv = s_svin.mean_v_mm2;
+  taskEXIT_CRITICAL();
+  if (sh && pos < n)
+    snprintf(buf + pos, (size_t)(n - pos), " | survey-in modulu: %s%s, %lu s, %lu pozic, sigma %lu mm",
+             sa ? "bezi" : "stoji", sv ? ", platny" : "", (unsigned long)sd, (unsigned long)so,
+             (unsigned long)lround(sqrt((double)smv)));
 }
 
 void gps_feed_char(char c)
 {
   s_raw_bytes++;                       /* dukaz, ze z GPS vubec neco chodi */
+  if (ubx_feed((uint8_t)c)) return;    /* binarni UBX (TIM-TP, ACK) -- do NMEA radku nepatri */
   if (c == '\r' || c == '\n') {
+    if (s_drop) { s_drop = 0; s_len = 0; return; }   /* konec zahazovaneho ramce */
     if (s_len > 0) {
       s_line[s_len] = '\0';
       /* zachyt syrovy radek PRED parsem (parse_line meni s_line in-place) */
@@ -393,8 +929,20 @@ void gps_feed_char(char c)
     }
     return;
   }
-  if (s_len < sizeof(s_line) - 1) s_line[s_len++] = c;
-  else s_len = 0;                     /* preteceni -> reset (vadny ramec) */
+  /* '$' = zacatek NMEA vety -> zacni radek znovu (audit F-0223). Binarni odpoved
+   * UBX (ACK/NAK na nas UBX-CFG-*) nekonci "\r\n", takze by se prilepila PRED
+   * nasledujici vetu, radek by nezacinal '$' a parse_line by zahodil i tu vetu.
+   * Zahozeny zacatek se pocita (L-0017). */
+  if (c == '$') {
+    if (s_len > 0 || s_drop) { if (s_resyncs < 0xFFFFFFFFu) s_resyncs++; }
+    s_len = 0;
+    s_drop = 0;
+  }
+  if (s_drop) return;                 /* uvnitr prilis dlouheho ramce — zahazuj */
+  if (s_len < sizeof(s_line) - 1) { s_line[s_len++] = c; return; }
+  s_drop = 1;                         /* preteceni -> zahazuj az do konce radku */
+  s_len  = 0;
+  if (s_overflows < 0xFFFFFFFFu) s_overflows++;
 }
 
 void gps_get(gps_data_t *out)
@@ -404,12 +952,14 @@ void gps_get(gps_data_t *out)
   taskEXIT_CRITICAL();
 }
 
-static void fmt_coord(float v, char pos, char neg, char *out, int n)
+/* stupne x 1e7 -> "50.1285066N" (7 desetin, bez %f). Zadny float cast, takze
+ * ani zadne UB pri poskozene hodnote (audit F-0067). */
+static void fmt_coord(int32_t e7, char pos, char neg, char *out, int n)
 {
-  char h = (v >= 0.0f) ? pos : neg;
-  if (v < 0.0f) v = -v;
-  int32_t ud = (int32_t)(v * 1000000.0f + 0.5f);   /* mikro-stupne */
-  snprintf(out, (size_t)n, "%ld.%06ld%c", (long)(ud / 1000000), (long)(ud % 1000000), h);
+  char h = (e7 >= 0) ? pos : neg;
+  uint32_t a = (uint32_t)(e7 < 0 ? -(int64_t)e7 : (int64_t)e7);
+  snprintf(out, (size_t)n, "%lu.%07lu%c",
+           (unsigned long)(a / 10000000u), (unsigned long)(a % 10000000u), h);
 }
 
 void gps_format_status(char *buf, int n)
@@ -422,8 +972,8 @@ void gps_format_status(char *buf, int n)
     return;
   }
   char la[16], lo[16];
-  fmt_coord(g.lat_deg, 'N', 'S', la, sizeof la);
-  fmt_coord(g.lon_deg, 'E', 'W', lo, sizeof lo);
+  fmt_coord(g.lat_e7, 'N', 'S', la, sizeof la);
+  fmt_coord(g.lon_e7, 'E', 'W', lo, sizeof lo);
   snprintf(buf, (size_t)n, "FIX:%u SAT:%02u %04u-%02u-%02u %02u:%02u:%02u %s %s ALT:%dm",
            g.fix_quality, g.num_sat, g.year, g.month, g.day,
            g.hour, g.minute, g.second, la, lo, (int)g.alt_m);
@@ -435,11 +985,17 @@ void gps_format_status(char *buf, int n)
 bool gps_selftest(void)
 {
   int ok = 1;
-  float lat = nmea_coord("5007.7104", 'N');      /* 50° + 7.7104' = 50.128507° */
-  ok &= (lat > 50.1284f && lat < 50.1287f);
-  float lon = nmea_coord("01430.5000", 'W');     /* -(14° + 30.5') = -14.508333° */
-  ok &= (lon < -14.5082f && lon > -14.5085f);
-  ok &= (nmea_coord("123", 'N') == 0.0f);        /* bez tecky -> 0 (odmitnuto) */
+  int32_t lat = nmea_coord_e7("5007.7104", 'N', 90);   /* 50° + 7.7104' = 50.1285066° */
+  ok &= (lat > 501285050 && lat < 501285080);
+  int32_t lon = nmea_coord_e7("01430.5000", 'W', 180); /* -(14° + 30.5') = -14.5083333° */
+  ok &= (lon < -145083320 && lon > -145083350);
+  ok &= (nmea_coord_e7("123", 'N', 90) == 0);         /* bez tecky -> 0 (odmitnuto) */
+  /* Rozsah se VALIDUJE (F-0067): zemepisna sirka nad 90 se odmita, tataz hodnota
+   * jako delka projde. Bez toho pretekal `(int32_t)(v * 1e6f)` ve `fmt_scpi_deg6`. */
+  ok &= (nmea_coord_e7("9930.0000", 'N', 90) == 0);   /* 99° > 90 -> odmitnuto */
+  ok &= (nmea_coord_e7("09930.0000", 'E', 180) != 0); /* 99° < 180 -> platne */
+  ok &= (nmea_coord_e7("5099.0000", 'N', 90) == 0);   /* minuty >= 60 -> odmitnuto */
+  ok &= (nmea_coord_e7("50x7.7104", 'N', 90) == 0);   /* necislice -> odmitnuto */
   ok &= (atoi_simple("-123") == -123);
   ok &= (atoi_simple("047") == 47);
   float f = atof_simple("12.75");
@@ -492,6 +1048,13 @@ bool gps_selftest(void)
            out[1].prn == 68 && out[1].constel == GPS_CONSTEL_GLONASS);
   }
 
+  /* WGS84 -> ECEF pro pevnou polohu (STATUS #351): 50 N, 14 E, h 300 m (vektor z nezavisleho vypoctu v Pythonu). */
+  {
+    double x, y, z;
+    lla_to_ecef(50.0, 14.0, 300.0, &x, &y, &z);
+    ok &= (fabs(x - 3986030.080) < 0.01 && fabs(y - 993828.919) < 0.01 && fabs(z - 4863018.851) < 0.01);
+  }
+
   printf("gps: parser selftest %s\n", ok ? "OK" : "FAIL");
   return ok != 0;
 }
@@ -506,6 +1069,9 @@ void gps_format_raw(char *buf, int n)
   raw  = s_raw_bytes;
   sent = s_gps.sentences;
   taskEXIT_CRITICAL();
-  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu last=[%s]",
-           (unsigned long)raw, (unsigned long)sent, last[0] ? last : "(zatim nic)");
+  snprintf(buf, (size_t)n, "RAW:%lu SENT:%lu OVF:%lu RSY:%lu UBX:%lu/%lu RX:%lu/%lu TIMTP:%lu last=[%s]",
+           (unsigned long)raw, (unsigned long)sent, (unsigned long)s_overflows,
+           (unsigned long)s_resyncs, (unsigned long)s_ubx_sent, (unsigned long)s_ubx_fail,
+           (unsigned long)s_ubx_rx_ok, (unsigned long)s_ubx_rx_bad, (unsigned long)s_tp_last.n,
+           last[0] ? last : "(zatim nic)");
 }

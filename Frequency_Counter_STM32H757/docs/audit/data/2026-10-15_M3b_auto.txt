@@ -1,0 +1,144 @@
+[16:51:03.145] COM10 existuje
+[16:51:13.792] ETH odpovida, uptime_s=9 si5356_status=28
+[16:51:15.810] UART >>> status;tdc;sensors
+[16:51:16.300] UART <<<
+CHYBA: Exception calling "Open" with "0" argument(s): "The port 'COM10' does not exist."
+[16:52:06.227] uptime=61 si5356_status=28 seq_meas=0 freq_hz=
+[16:52:06.230] Si5356 NEZAMCENY po 60 s -> UART si5356 (re-init)
+[16:52:06.233] UART >>> si5356
+[16:52:15.256] UART <<<
+===== > si5356
+si5356
+Si5356A init: zapisy=OK, status218=0x00
+
+TDC: rezerva retezu A 14, B 3 tapu z 268, za koncem 0 ppm -> KRITICKE
+[16:52:20.348] PO RE-INITU: uptime=75 si5356_status=0 seq_meas=46 freq_hz=10000010.7679987
+[16:52:20.351] UART >>> status
+[16:52:26.762] UART <<<
+===== > status
+status
+RUNNING gpsdo-ui v0.15.0  uptime 77s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 20%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 33266, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6596 B
+  stack I2C4    free 1076 B
+  stack Ui      free 5512 B
+  stack Fpga    free 752 B
+VAROVANI: prio 6  OCXO MIMO TEPLOTNI PASMO  (celkem 2)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena - start po zapnuti napajeni
+
+REFERENCE: *** VYPADEK OD VYNULOVANI ***  LOS_CLKIN  PLL_LOL  SYS_CAL  -> mereni z te doby je podezrele; `si5356 clr` vynuluje
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 942 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.314 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 4681 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: TX watchdog zlomil zasek 33x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x01 REGR:pouzita (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 0, hodiny 1, delka okna 0 | posledni rozdil 0
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 250000 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 23.9 C) | spike-reject 21 oken (obri bin)
+  TDC REZERVA: A 14 tapu (5.2 %) POZOR | B 3 tapu (1.1 %) KRITICKE | z 268 tapu, za koncem A 0 B 0 ud. (cal #1)  <== retez TDC temer/uz kratky (`tdc`, rekalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `flightrec`
+DATALOG W25Q ON 226197/696960 rec seq:226197 err:0 skip:0
+[16:53:37.403] UART >>> status;tdc
+[16:53:48.830] UART <<<
+===== > status
+TDC: teplotni rekalibrace, FPGA 23.9 -> 26.9 C
+TDC: teplotni rekalibrace, FPGA 23.9 -> 26.9 C
+TDC: teplotni rekalibrace, FPGA 23.9 -> 26.9 C
+TDC: teplotni rekalibrace, FPGA 23.9 -> 26.9 C
+TDC: teplotni rekalibrace, FPGA 23.9 -> 26.9 C
+TDC: teplotni rekalibrace, FPGA 23.9 -> 26.9 C
+tatus
+RUNNING gpsdo-ui v0.15.0  uptime 153s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 21%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selfteT: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 65535+, zahozeno 0
+  stact    free 6596 B
+  stack I2C4    free 1076 B
+  stack Ui      free 5512 B
+  stack Fpga    free 752 B
+VAROVANI: prio 6  OCXO MIMO TEPLOTNI PASMO  (celkem 2)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena - start po zapnuti napajeni
+
+REFERENCE: *** VYPADEK OD VYNULOVANI ***  LOS_CLKIN  PLL_LOL  SYS_CAL  -> mereni z te doby je podezrele; `si5356 clr` vynuluje
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 2094 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.314 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 7892 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: TX watchdog zlomil zasek 137x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x01 REGR:pouzita (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 2, hodiny 1, delka okna 0 | posledni rozdil 0  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 249999 us (`tdc` = detail)
+  TDC: teplot. rekal 1x (cal pri 26.9 C) | spike-reject 24 oken (obri bin)
+  TDC REZERVA: A 16 tapu (5.9 %) OK | B 6 tapu (2.2 %) KRITICKE | z 268 tapu, za koncem A 0 B 0 ud. (cal #7)  <== retez TDC temer/uz kratky (`tdc`, rekalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `flightrec`
+===== > tdc
+DATALOG W25Q ON 226205/696960 rec seq:226205 err:0 skip:0
+
+tdc
+TDC A: kodu 157/512 (nejvyssi 252), nejvetsi bin 26977 = 257 ps (2.5 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 168/512 (nejvyssi 262), nejvetsi bin 18582 = 177 ps (1.7 % periody), za koncem retezu 0, max tap 264
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 264 vs nejvyssi kod 262 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 6 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji
+[16:53:48.832] HOTOVO
