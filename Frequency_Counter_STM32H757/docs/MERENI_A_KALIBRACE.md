@@ -1054,3 +1054,207 @@ roste šum s počtem period taktu mezi A a B (hodiny), nebo závisí jen na mís
 - Uvnitř jedné periody zbývá složka závislá na poloze (30–89 ps, #347).
 - Ověření: T-kus z jednoho výstupu a dvě délky kabelu (zpoždění < 10 ns a > 10 ns); jestli kód FPGA vede 100 MHz přes PLL;
   osciloskopem hrana 100 MHz co nejblíž FPGA.
+
+### 2026-11-07 13:09 – 15:18 — t368/t369/t370: interval A→B při posunu A a B o ~6 ns, externí OCXO přes T-kus (CM7 v0.45.2 – v0.45.4)
+
+Zapojení: externí OCXO (10 000 002,99 Hz proti naší referenci) přes T-kus na A i B, B přes +1 m RG174. Reference t367 se stejně
+dlouhými kabely (zpoždění ~0,45 ns): rychlý šum ~103 ps. Skripty `noc_logs/_rozbor/t368.py`, `t369.py`, `t370.py`,
+rozbor složení podle fáze `t368_fold.py`, souhrny v `noc_logs/_rozbor/t368/`, `t369/`, `t370/`.
+
+| běh | nastavení | intervalů | střed | σ |
+|---|---|---|---|---|
+| t368 S1 | `spi poll 40`, maska CS zap., 60 min | 150 310 | 93,651 ns | 1 631 ps |
+| t368 S2 | `spi poll 100`, 15 min | 37 568 | 93,729 ns | 1 632 ps |
+| t368 S3 | `spi poll 40`, maska CS vyp., 15 min | 37 574 | 93,680 ns | 1 634 ps |
+| t369 | v0.45.3, 10 min | 24 212 | 93,485 ns | 1 653 ps (vše „přes hranu taktu“) |
+| t370 | v0.45.4, 20 min | 48 418 | 93,487 ns | 1 656 ps |
+
+- **SPI na tom nemá podíl:** S1–S3 shodné; páry všechny platné, 0 mezer, 0 „A bez B“, 0 zahozených kvůli CS; FLAGS bit3 = podíl
+  segmentů s transakcí (50 % při poll 40, 25 % při poll 100, i s maskou vypnutou – L-0267).
+- **Chyba je deterministická, ne šum:** hodnoty se opakují s periodou 4 záznamů (např. 95,5 / 92,6 / 91,8 / 93,4 ns). Fáze 10 MHz
+  proti taktu 100 MHz se točí 29,9×/s, při 40 záznamech/s je to 0,75 otáčky na záznam (`t368_fold.py`: r = 0,7500).
+- **t370 (v0.45.4, interval podle fáze STARTU v periodě taktu, 16 dílů):** odchylka středu od celku −1,87 ns (fáze 0,25–0,31)
+  až +2,24 ns (fáze 0,75), tedy **špička–špička ~4,1 ns**; uvnitř dílu σ 100–300 ps, v přechodu (0,375–0,5) 590–970 ps.
+- **Naměřené fáze startu ani stopu nejsou rovnoměrné**, přestože skutečná fáze se točí rovnoměrně: díl 0,375 má 10 633 intervalů,
+  díly 0,875 a 0,9375 žádný. Fáze stopu sleduje fázi startu nelineárně (start 351 → stop 495 ‰, 543 → 162 ‰). Interval = 9 period
+  + (fáze stopu − fáze startu), takže celá chyba je v naměřených fázích hran, které se kupí u ~0,35–0,45 periody taktu.
+- Kalibrace TDC z ring oscilátoru přitom vypadá zdravě (`tdc`: největší bin A 195 ps, B 150 ps, rezerva řetězu 23 / 28 tapů) a
+  INL ±2 ns by v hustotě kódů vidět byla. `tdc cal pin` na tomto signálu kontrola správně odmítla (10 MHz je skoro soudělné se
+  100 MHz, pokrytí fáze 275 ‰), tabulka beze změny.
+- Výklad (HYPOTÉZA): **rušení synchronní s taktem 100 MHz na vstupu posouvá průchod hrany prahem**; časová chyba = napětí rušení /
+  strmost hrany. Externí OCXO dává pomalou hranu (sinus), proto ±2 ns; generátor Si5356 (strmé CMOS hrany) dával tutéž složku
+  10 ns jen ~100–200 ps (1. harmonická periody taktu, #347, viz výše). Se stejně dlouhými kabely mají A a B stejnou fázi a chyba
+  se v rozdílu odečte (t367: 103 ps). Táž podstata jako „schod na hraně 100 MHz v oblasti prahu“ (#362) a „~80 ps na hranu“ (t366).
+- Ověření: (1) přehodit +1 m kabel na A – tvar chyby se zrcadlí, (2) OCXO přes tvarovač (strmá hrana) – chyba musí klesnout
+  úměrně strmosti, (3) změnit amplitudu sinusu (útlumový článek) – chyba roste s 1/amplituda, (4) osciloskopem 100 MHz na vstupu.
+
+### 2026-11-07 15:44 – 16:04 — t370b: totéž s EXTERNÍM GPSDO místo slabého OCXO (CM7 v0.45.4)
+
+Uživatel: OCXO dávalo slabý signál, nahrazeno externím GPSDO (10 MHz, −0,85 ppb proti naší referenci → fáze proti taktu se otočí
+~1× za 12 s), B dál +1 m RG174. `t370.py 20` (⚠️ přepsal `t370/snimky.txt` běhu s OCXO; jeho čísla jsou výše a v `souhrn.txt`).
+
+| | OCXO (t370) | externí GPSDO (t370b) |
+|---|---|---|
+| interval | 93,49 ns (B předbíhalo) | **5,964 ns** (B pozdější o 1 m) |
+| σ celkem | 1 656 ps | **292 ps** |
+| ve stejné periodě / přes hranu | – / 1 656 ps | 180 / 236 ps (n 17 067 / 31 365) |
+| odchylka středu podle fáze startu | −1,87 … +2,24 ns | **−0,44 … +0,32 ns** |
+| σ uvnitř dílu fáze | 100 – 970 ps | **84 – 171 ps** |
+| počty v dílech (16 dílů) | 0 – 10 633 | 2 272 – 4 509 (rovnoměrné) |
+
+- **Slabý signál OCXO byl hlavní příčinou ±2 ns** (pomalá hrana → velká časová chyba z rušení / prahu). S GPSDO je rozkmit 5,4× menší.
+- **Zbývá složka podle fáze ~0,76 ns špička–špička**, tvar 1. harmonické periody taktu (minimum u fáze 0, maximum u 0,5). Při
+  posunu A–B o δ = 0,6 periody dává chyba na hranu e(φ) = a·sin(2πφ) v rozdílu 2a·sin(πδ) ≈ 1,9·a → **a ≈ 200 ps na hranu**,
+  společně oběma kanálům (se stejně dlouhými kabely se odečte, t367 103 ps). Tutéž velikost měla „složka 10 ns“ z testů
+  s ujíždějící fází (#347, 85–220 ps).
+- Po odečtení tvaru zbývá σ ~100 ps = tatáž hodnota jako se stejnými kabely → **náhodná část je v pořádku, dominuje systematická
+  nelinearita převodu fáze**.
+- Proč ji kalibrace z pinu dosud neopravila: `fpga_v3_calpin_check` porovnává osminy histogramu z pinu **s tabulkou z ring
+  oscilátoru** a odmítá nad ±100 ‰. Nelinearita 200 ps na hranu sama dává ±126 ‰ (derivace 0,2 ns·2π/10 ns), takže kontrola
+  odmítala právě případ, kdy je kalibrace potřeba (dřívější −135 / +520 ‰). **v0.45.5: `tdc cal pin gen mez <100..900>`** povolí
+  volnější mez jen pro jednu kalibraci (výchozí 100 ‰ beze změny). ⬜ neověřeno na HW.
+- Další krok: kabely CLK_2 → A, CLK_4 → B (generátor Si5356), `tdc cal pin gen mez 400`, pak zpět GPSDO s +1 m na B a `t370.py 20`:
+  rozkmit podle fáze musí klesnout z ~0,76 ns.
+
+### 2026-11-07 16:15 – 16:35 — t370c: externí GPSDO, kabely PROHOZENÉ (+1 m na A) (CM7 v0.45.5)
+
+Surová data předchozího běhu (+1 m na B) zachována v `noc_logs/_rozbor/t370/snimky_gpsdo_b1m.txt`, tento běh v `t370/snimky.txt`.
+Interval 94,504 ns (A pozdější → páruje se s další hranou B), σ 309 ps (t370b 292 ps), 48 422 intervalů, 0 chyb a mezer.
+
+| fáze startu [‰] | 0 | 62 | 125 | 187 | 250 | 312 | 375 | 437 | 500 | 562 | 625 | 687 | 750 | 812 | 875 | 937 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| +1 m na B (δ ≈ 0,60) [ps] | −444 | −343 | −245 | −279 | −273 | −16 | +201 | +302 | +318 | +296 | +260 | +204 | +171 | +19 | −198 | −383 |
+| +1 m na A (δ ≈ 0,45) [ps] | −264 | −285 | −270 | −268 | −347 | −300 | −31 | +258 | +436 | +424 | +321 | +267 | +337 | +232 | −36 | −256 |
+
+- Tvar i velikost (špička–špička 0,76 / 0,78 ns) zůstaly, náběh u fáze ~0,33–0,40, sestup ~0,81–0,88. **Chyba nepatří jednomu
+  kanálu, kabelu ani odrazu na T-kusu**: je to SPOLEČNÁ funkce fáze hrany vůči taktu e(φ). V rozdílu e(φ+δ) − e(φ) rozhoduje jen
+  δ mod 1 periody (0,60 a 0,45 jsou si blízko), proto se tvar nezrcadlil (můj předpoklad zrcadlení byl chybný).
+- Tvar je spíš „schodovitý“ než čistý sinus (ploché úseky ±0,3 ns) → e(φ) může mít skok ~0,6–0,7 ns v jednom místě periody
+  (HYPOTÉZA; místo hranice hrubého a jemného času / konec řetězu?). Rozhodne kalibrace z pinu (`tdc cal pin gen mez 400`,
+  kabely CLK_2 → A, CLK_4 → B) a opakování t370b: chyba musí klesnout, nebo se ukáže, že tabulka TDC není příčinou.
+
+### 2026-11-07 16:45 – 18:05 — t371/t372/t370d: kalibrace TDC z pinu (`tdc cal pin gen mez 400`, v0.45.5) a její účinek
+
+- **`tdc cal pin gen mez 400` PROŠLA** (Si5356 CLK_2 → A, CLK_4 → B, 11 603 104 Hz, pokrytí fáze 0 ‰): A −124 ‰, B −319 ‰ proti
+  tabulce z ring oscilátoru (opakování po nové kalibraci z ring oscilátoru: A −147 ‰, B +136 ‰), největší bin 217 / 178 ps.
+  S výchozí mezí 100 ‰ by byla opět odmítnuta (L-0268).
+- t371 (A→B ze Si5356 na 11,6 MHz, tabulka pin / ring / pin, 3 min každá): **nerozhodné** – generátor je zavěšený na naší
+  referenci, fáze startu obsadily jen 8–9 dílů z 16 (mříž), rozkmit 825 / 575 / 682 ps. ⚠️ Skript na konci nastavil generátor na
+  10 000 000,041 Hz místo původních 10 000 000,000 Hz; vráceno ručně.
+- t372 (A = externí GPSDO, B = Si5356, pokus o přímý tvar e(φ) proti přímce v čase): **metoda nefunguje** – relativní fáze obou
+  GPSDO putuje o jednotky ns za desítky sekund (56,4 → 59,0 → 53,4 ns za minutu, střední rozdíl jen ~5·10⁻¹¹), takže nezávislá
+  „pravda“ chybí. Tvar chyby se dá měřit jen s A i B ze stejného zdroje (putování se v rozdílu odečte).
+- **t370d: GPSDO přes T-kus, B +1 m, tabulka z PINU (po běhu stále `zdroj A pin, B pin`), 40 min, 96 852 intervalů:**
+
+| | t370b (tabulka ring osc.) | t370d (tabulka z pinu) |
+|---|---|---|
+| σ celkem | 292 ps | **237 ps** |
+| ve stejné periodě / přes hranu | 180 / 236 ps | **157 / 176 ps** |
+| odchylka podle fáze startu | −444 … +318 ps (0,76 ns) | **−282 … +263 ps (0,55 ns)** |
+| σ uvnitř dílu | 84 – 171 ps | 89 – 149 ps |
+
+- Kalibrace z pinu chybu **zmenšila o ~28 %, ale neodstranila**; tvar zůstal (minimum u fáze 0,06–0,25, maximum 0,44–0,75).
+  HYPOTÉZA: zbytek závisí na signálu (kalibrováno strmými CMOS hranami Si5356, měřeno hranou z GPSDO) – rušení taktem na vstupu
+  × strmost hrany, jak ukázalo slabé OCXO. Ověření: kalibrace z pinu přímo signálem GPSDO není možná (10 MHz je skoro soudělné),
+  ale A→B se Si5356 se ZÁMĚRNĚ rozladěným generátorem (např. 10 000 001 Hz na obou, T-kus z jednoho výstupu, +1 m) změří tvar
+  pro strmou hranu; když tam rozkmit zmizí, zbytek u GPSDO patří tvaru jeho hrany.
+
+### 2026-11-07 — t370e: Si5356 rozladěný o +0,041 Hz, CLK_2 → A, CLK_4 → B, kabely STEJNĚ DLOUHÉ (oprava: ne +1 m), tabulka TDC z pinu (CM7 v0.45.5)
+
+Uživatel: Si5356 nemá výkon na T-kus, proto dva výstupy (stejné VCO, pevný vzájemný odstup). Generátor 10 000 000,041 Hz (na vstupu
+10 000 000,039 Hz, fáze proti taktu ~0,4 otáčky/s), 20 min, potom vrácen na 10 000 000,000 Hz; tabulka po běhu stále `pin / pin`.
+Surová data GPSDO + pin zachována v `t370/snimky_gpsdo_b1m_pin.txt`.
+
+| | GPSDO, ring osc. (t370b) | GPSDO, pin (t370d) | **Si5356, pin (t370e)** |
+|---|---|---|---|
+| interval | 5,964 ns | 5,842 ns | 96,827 ns (B předbíhá o 3,17 ns = jen odstup výstupů CLK_2/CLK_4) |
+| σ celkem | 292 ps | 237 ps | **128 ps** |
+| rozkmit podle fáze startu | 0,76 ns | 0,55 ns | **0,28 ns** (−149 … +129 ps) |
+| σ uvnitř dílu | 84 – 171 ps | 89 – 149 ps | 88 – 127 ps |
+
+- **Se strmými hranami Si5356 je chyba podle fáze 2× menší než u GPSDO se stejnou tabulkou** a celkové σ (128 ps) je skoro jen
+  náhodná složka (~100 ps uvnitř dílu). Tvar už není schod ±0,3 ns, zbývá nepravidelné zvlnění ±0,15 ns.
+- Pořadí OCXO (slabý) 4,1 ns → GPSDO 0,55 ns → Si5356 0,28 ns odpovídá HYPOTÉZE, že chyba podle fáze je převážně **vlastnost
+  vstupní hrany** (rušení taktem / práh × strmost), ne TDC. ⚠️ Odstup δ se mezi běhy liší (0,58 / 0,68 periody), vliv na
+  amplitudu 1. harmonické ~5 %, závěr nemění.
+- ⚠️ **Oprava (uživatel):** v t370e byly koaxy stejně dlouhé, +1 m na B je zapojen až pro t370f. Posun A–B (0,68 periody)
+  dal sám odstup výstupů Si5356, takže A a B ležely v různých fázích taktu a srovnání s GPSDO (0,58) platí.
+- Důsledek: přesnost A−B závisí na strmosti vstupního signálu; pro sinus/slabý signál je potřeba tvarovač (komparátor) před FPGA,
+  což plánuje vstupní modul (`SY100ELT23L`). Kalibrace z pinu se strmým signálem opravuje část společnou TDC.
+
+### 2026-11-07 19:17 – 20:05 — t370f + t373: Si5356 (2 výstupy), B skutečně +1 m RG174, po power-cyklu (CM7 v0.45.5)
+
+Po power-cyklu: `version` v0.45.5, reset power-on, `fpga v3 test` PASS, `selftest` 16/16 PASS, SCPI/HTTP CM4 PASS, tabulka po
+startu z ring oscilátoru; `tdc cal pin gen mez 400` prošla napoprvé (A −125, B −128 ‰). Generátor +0,041 Hz. Každé nové
+nastavení `gen` dává náhodný odstup výstupů CLK_2/CLK_4, takže skutečný posun A–B (δ = interval mod 10 ns) je pokaždé jiný.
+
+| etapa | tabulka TDC | interval | δ [periody] | σ | rozkmit podle fáze | σ v dílu |
+|---|---|---|---|---|---|---|
+| t370f, 20 min | pin | 0,563 ns | 0,06 | 118 ps | 0,25 ns | 79 – 104 ps |
+| t373 R, 15 min | ring osc. (`tdc cal`) | 90,242 ns | 0,02 | 142 ps | 0,22 ns | – |
+| t373 P2, 10 min | pin (nová, A −206, B −175 ‰) | 31,986 ns | 0,20 | 212 ps | 0,40 ns | – |
+| (t370e, stejné kabely) | pin | 96,827 ns | 0,68 | 128 ps | 0,28 ns | 88 – 127 ps |
+
+- **Kabel +1 m se v intervalu neprojevil předvídatelně** – převládá náhodný odstup výstupů Si5356 po každém `gen`. Dvakrát vyšlo
+  δ ≈ 0 (A a B ve stejné fázi), takže srovnání tabulek pin / ring v t373 **nerozhoduje** (R i t370f mají δ blízko 0).
+- σ a rozkmit nezávisí na δ monotónně (δ 0,20 → 212 ps, δ 0,68 → 128 ps) → chyba podle fáze NENÍ čistá 1. harmonická; pro
+  tvar e(φ) je potřeba řízené δ.
+- Kalibrace z pinu proti tabulce z ring oscilátoru: −124/−319, −147/+136, −125/−128, −206/−175 ‰ (A/B) – odchylka se mění
+  hlavně s tabulkou z ring oscilátoru, proti které se měří (L-0268).
+- Další krok (návrh): řízený posun fáze výstupu Si5356 (registry fáze MultiSynthu, krok Tvco/128 = 3,55 ps) a sweep δ po
+  0,05 periody, 2 min na bod → přímo tvar chyby rozdílu e(φ+δ) − e(φ) pro strmou hranu, pin vs ring.
+
+### 2026-11-07 20:23 – 22:16 — t374–t376: chyba časování JEDNOHO kanálu proti koherentnímu generátoru, přeslech mezi řetězci (CM7 v0.45.6/v0.45.7)
+
+**Metoda (nová, v0.45.6 `fpga ev raw`):** generátor Si5356 běží ze stejného VCO jako takt FPGA (CLK0 = VCO/22), takže skutečné
+hrany leží PŘESNĚ na přímce t_u = a + b·x (x = absolutní index hrany, který FPGA posílá). Odchylka značky od přímky podle fáze
+taktu (t_u & 0x3FFF) = chyba časování JEDNOHO kanálu e_c(φ), bez druhého kanálu a bez náhodného odstupu výstupů. Perioda
+z přímky 163 839,9993 jednotek = přesně podle děliče MultiSynthu (10 MHz + 0,041 Hz), poměr B/A − 1 = ±2·10⁻¹². Skripty
+`noc_logs/_rozbor/t374.py` (sběr přes trvale otevřený COM10, 0 ztracených událostí), `t374_xtalk.py`, `t375*.py`, `t376*.py`.
+Zapojení: CLK_2 → A, CLK_4 → B (+1 m RG174).
+
+| etapa (8 / 5 min) | tabulka TDC | e_A špička–špička | e_B š–š | šum v dílu A / B | σ(B−A) → po korekci z 1. půlky dat |
+|---|---|---|---|---|---|
+| t374 A_sam (B vyp.) | pin | 422 ps | – | 95 ps | – |
+| t374 B_sam (A vyp.) | pin | – | 297 ps | 101 ps | – |
+| t374 AB (oba +0,041 Hz, odstup 0,48 periody) | pin | 500 ps | 306 ps | 98 / 105 ps | 224 → **159 ps** |
+| t374 AB_jiny (B +0,113 Hz) | pin | 507 ps | 397 ps | **211 / 226 ps** | – |
+| t374 AB_ring (odstup 0,33) | ring osc. | 295 ps | 439 ps | 96 / 101 ps | 223 → **153 ps** |
+| t375 G_on / G_off (CLK6/7 200 MHz zap / vyp) | ring osc. | 335 / 338 ps | – | 95,2 / 95,2 ps | – |
+
+- **Rozdíl B−A tehož segmentu je beze zbytku vysvětlen modelem e_B(φ_B) − e_A(φ_A)** (16 dílů, shoda ±10 ps ve všech etapách
+  se stejným kmitočtem). Korekce odhadnutá z 1. poloviny dat zlepšila 2. polovinu z ~224 na 153–159 ps ≈ náhodná složka
+  (√(98² + 105²) = 144 ps).
+- **Značky při SPI transakci (CS) mají stejný šum jako bez ní** (např. 148 / 150 ps) a **CLK6/7 (200 MHz = 2× takt) vliv nemá**.
+- **Přeslech mezi kanály (t374 AB_jiny, `t374_xtalk.py`):** běží-li B na jiném kmitočtu, šum značek uvnitř dílu stoupne
+  u OBOU kanálů z ~100 na 211–226 ps. Chyba A podle odstupu nejbližší hrany B je hladká funkce ±330 ps se DVĚMA cykly na periodu
+  100 ns (minimum ~5–7 ns po hraně B, maximum ~25–29 ns po ní, náběžná i sestupná hrana B). t376 `t376_2d.py`: je to skoro jen
+  funkce vzájemné fáze A–B (rms 170 ps z 174 ps), na fázi vůči taktu závisí málo.
+- **t376 – kde přeslech vzniká (fáze A vůči průběhu B z přesné periody B, nepotřebuje značky B):**
+
+| režim | rms přeslechu na A | šum v dílu |
+|---|---|---|
+| pinB (normálně) | 174 ps (š–š 648 ps) | 119 ps |
+| skew (`fpga pw cal`: TDC B měří pin A, signál B dál na pinu B) | **33 ps** (jen dvě úzké špičky ±100 ps, když hrana B padne na hranu A) | 97 ps |
+| Boff (CLK4/5 vypnut) | 8 ps | 93 ps |
+
+  → **přeslech vzniká uvnitř FPGA činností řetězce TDC kanálu B**, ne fyzickou přítomností signálu na pinu B, ne na desce ani
+  v Si5356. HYPOTÉZA: řetězec se přepíná na obou hranách 10MHz signálu (20 MHz) a zvlnění napájení / země jádra mění zpoždění
+  sousedního řetězce. Ověření: FPGA instance (rozmístění řetězců, napájení, omezení aktivity řetězce mimo časované hrany).
+- **skew = oba řetězce na TÝCHŽ hranách:** B − A σ **70 ps** a jen ±60 ps podle fáze (š–š 120 ps). Náhodná složka značky
+  (~95–105 ps proti generátoru) je tedy z ~50 ps nezávislá v každém řetězci a z ~80 ps SPOLEČNÁ oběma (stejná hrana taktu) –
+  přesně „~80 ps na hranu taktu“ z t366 (ve stejné periodě taktu se odečte). Kandidát: hrana 100 MHz na pinu FPGA (#362).
+  Velká chyba podle fáze (300–650 ps) je u obou řetězců na týchž hranách podobná (rms rozdílu tabulek 60–66 ps).
+- **Tabulky e_A při stejné kalibraci TDC jsou stálé** (fw `fpga lin cal`, Boff, pinB, skew: rms rozdílu 16–48 ps), **e_B
+  ne**: kanál B (pin B, výstup CLK4, 1 m kabel) měl při `fpga lin cal` rozkmit 658 ps, jinde 297–439 ps; řetězec B měřící pin A
+  má chybu podobnou A. Chyba kanálu závisí i na cestě signálu / tvaru hrany (srov. slabé OCXO ±2 ns).
+- **t375b – korekce ve firmwaru (v0.45.7 `fpga lin cal 300` + `fpga lin on`) obecně NEPOMÁHÁ:** V1 (odstup 0,63) σ 232 →
+  234 ps, V2 (0,73) 194 → 183 ps. Firmware korekci uplatňuje přesně podle návrhu (změřené „s korekcí“ = „bez“ − předpověď
+  z tabulek, shoda na desítky ps), ale předpověď z tabulek zachycených při jiném nastavení generátoru na skutečnou chybu nesedí
+  (hlavně kanál B). Korekce se proto sama nezapíná (`fpga lin on` jen pro pevné uspořádání, ve kterém byla tabulka změřena).
+- t375 (první pokus) neplatný: skript čekal na konec `fpga lin cal` jen 3 s ticha (průběh se vypisuje po 30 s), poslal další
+  příkazy a vyprázdněním vstupu zahodil výsledek; kalibrace navíc odmítla 120 s jako málo dat (počty v dílech se liší až 5×,
+  ~150 diskrétních hodnot TDC na periodu) → výchozí 300 s, mez 20 v dílu (L-0270).
+- **Rozpočet chyby jednorázového intervalu A–B se strmými hranami (CM7 v0.45.7, FPGA 0x050A):** náhodně ~50 ps na řetězec
+  + ~80 ps společně (hrana taktu); systematicky e_c(φ) 300–650 ps š–š (závisí na kalibraci TDC i cestě signálu); přeslech
+  B → A ±330 ps podle vzájemné fáze. Se slabou / pomalou hranou e_c(φ) roste (OCXO ±2 ns).

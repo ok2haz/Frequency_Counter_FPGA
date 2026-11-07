@@ -6073,4 +6073,52 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** každé zahození dat musí mít počítadlo s důvodem. Hláška „zahozených 0“ tady skrývala polovinu dat, protože zahození šlo cestou, která se nepočítala.
 - **Detekce:** `fpga ab on` se spojitým signálem → `fpga ab`: tempo ~40/s; řádek „záznamy A / B“: podíl záznamů s bit3 ≈ transakcí/s ÷ 40.
 - **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
-- **Stav:** ✅ ověřeno na HW 2026-11-07 (flash + power-cyklus, A i B přes T-kus z externího OCXO): `spi poll 40` → 2 492 intervalů/62 s = **40/s** (dřív 20/s), záznamy s bit3 1 247 z 2 494 (50 % = 20 transakcí/s z 40 segmentů/s); `spi poll 100` → 2 507/63 s, s bit3 627 z 2 508 (25 %); zahozeno kvůli CS 0, A bez B 0, mezery 0. Mechanismus přes bit3 tím potvrzen. Otevřené: proč `fpga diag mask off` (t365) tempo nezměnil – FPGA zřejmě nastavuje bit3 i bez masky, nebo příkaz na v3 nepůsobí (zkontrolovat RTL / echo bajt 66 bit0).
+- **Stav:** ✅ ověřeno na HW 2026-11-07 (flash + power-cyklus, A i B přes T-kus z externího OCXO): `spi poll 40` → 2 492 intervalů/62 s = **40/s** (dřív 20/s), záznamy s bit3 1 247 z 2 494 (50 % = 20 transakcí/s z 40 segmentů/s); `spi poll 100` → 2 507/63 s, s bit3 627 z 2 508 (25 %); zahozeno kvůli CS 0, A bez B 0, mezery 0. Mechanismus přes bit3 tím potvrzen. Proč `fpga diag mask off` (t365) tempo nezměnil, vysvětluje RTL: bit3 = „značka ZAPSANÁ do souhrnu při aktivním CS“ (`v3_core.v:165-167`, `tk1 & cs_f`), ne „hrana chyběla“. S maskou se nastaví taky, protože hrana spuštěná těsně před CS↓ se zapíše o několik taktů později (pipeline TDC), už při CS. Bit3 tedy má každý segment s transakcí, s maskou i bez ní.
+
+### L-0268 — Kontrola kalibrace z pinu měřila proti podezřelé straně a odmítala právě potřebnou opravu
+
+- **Datum:** 2026-11-07
+- **Oblast:** `fpga_freq.c` služba kalibrace TDC (`fpga_v3_calpin_check`, `tdc cal pin [gen]`)
+- **Symptom:** `tdc cal pin gen` se na desce opakovaně odmítal jako „nerovnoměrný“ (A −135 ‰, B +520 ‰, mez ±100 ‰), přitom interval A→B s posunem hran o ~6 ns (t370b, externí GPSDO, B +1 m) má chybu podle fáze hran vůči taktu ~0,76 ns špička–špička = nelinearita ~200 ps na hranu.
+- **Příčina:** odchylka osmin histogramu z pinu se počítá **proti tabulce z ring oscilátoru**, tedy proti té kalibraci, kterou má kalibrace z pinu opravit. Nelinearita 200 ps na hranu (1. harmonická taktu) sama dává ±126 ‰, takže kontrola odmítala přesně ten případ, kdy je oprava potřeba. Rovnoměrnost fáze signálu hlídá už `fpga_v3_calpin_cover` před sběrem.
+- **Oprava:** v0.45.5: `tdc cal pin [gen] mez <100..900>` povolí volnější mez odchylky (`fpga_freq_calpin_lim`) jen pro tuto jednu kalibraci; výchozí 100 ‰ a `fpga_v3.c` beze změny.
+- **Pravidlo:** kontrola nového měření nesmí jako referenci brát veličinu, kterou má to měření nahradit nebo opravit. Pak její „odchylka“ měří chybu reference a odmítá právě užitečný výsledek.
+- **Detekce:** `tdc cal pin gen` → „ODMITNUT: nerovnomerny“ s odchylkou řádu 100 ‰ i při rovnoměrném pokrytí fáze před sběrem (0 ‰).
+- **Commit:** `349de01` (fix v0.45.3–v0.45.7, tag v0.45.7)
+- **Stav:** ✅ ověřeno na HW 2026-11-07: `tdc cal pin gen mez 400` prošla opakovaně (A −124 … −206 ‰, B −319 … +136 ‰), i hned po power-cyklu (A −125, B −128 ‰); s výchozí mezí 100 ‰ by byla odmítnuta.
+
+### L-0269 — Rozdíl dvou kanálů skrývá, čí je chyba; jeden kanál se dá změřit proti koherentnímu generátoru
+
+- **Datum:** 2026-11-07
+- **Oblast:** metodika měření TDC (`fpga ab`, `fpga ev raw`, `fpga lin`, STATUS #366–#368)
+- **Symptom:** dny testů A−B (T-kus, dva výstupy Si5356, GPSDO) dávaly chybu podle fáze 0,25–0,8 ns, ale nešlo rozhodnout, jestli
+  patří kanálu A, B, jejich vzájemnému vlivu, nebo zdroji; každé nastavení generátoru dalo jiný náhodný odstup a jiný výsledek.
+- **Příčina:** měřilo se jen e_B(φ+δ) − e_A(φ) (+ přeslech závislý na vzájemné fázi). Z rozdílu dvou neznámých funkcí se
+  jednotlivé funkce ani přeslech oddělit nedají.
+- **Oprava:** v0.45.6 `fpga ev raw` (index hrany x a čas t_u každé události bez převodu). Generátor Si5356 je ze stejného VCO
+  jako takt FPGA, takže skutečné hrany leží přesně na přímce t_u = a + b·x; odchylka od ní podle fáze taktu je chyba JEDNOHO
+  kanálu (t374). Přeslech: fáze hrany A vůči průběhu B z přesné periody B (nepotřebuje značky B) a režim, kdy TDC B měří pin A
+  (t376). v0.45.7 `fpga lin` totéž ve firmwaru (perioda přímo z P1/P2/P3 MultiSynthu, host test + 7 mutací).
+- **Pravidlo:** když rozdíl dvou kanálů nedává opakovatelný výsledek, změř každý kanál zvlášť proti referenci, kterou znáš
+  přesně (koherentní generátor = přímka v indexu hran), a vzájemný vliv pokusem, který druhý kanál „odpojí“ uvnitř (zdroj TDC B
+  = pin A), ne jen fyzicky.
+- **Detekce:** `fpga lin cal` / `t374.py`: šum uvnitř fázového dílu ~100 ps = jeden kanál čistě; víc = přeslech nebo nekoherentní signál.
+- **Commit:** `349de01` (fix v0.45.3–v0.45.7, tag v0.45.7)
+- **Stav:** ✅ metoda ověřena na HW 2026-11-07 (t374–t376); v0.45.6/v0.45.7 po power-cyklu ⬜.
+
+### L-0270 — Skript ukončil čekání na dlouhý příkaz při první pauze výpisu a další příkaz zahodil výsledek
+
+- **Datum:** 2026-11-07
+- **Oblast:** měřicí skripty `noc_logs/_rozbor/t37x.py` (funkce `cmd`: čte do `idle` s ticha, před příkazem `reset_input_buffer`)
+- **Symptom:** t375: `fpga lin cal 120` „bez výsledku“, ověření V_off přečetlo konec kalibrace, tabulky nenastavené – nebylo
+  vidět proč.
+- **Příčina:** kalibrace vypisuje průběh po 30 s, skript bral 3 s ticha jako konec odpovědi, poslal další příkazy (UART je
+  zpracoval až po kalibraci) a vyprázdněním vstupu před každým příkazem zahodil výsledek kalibrace.
+- **Oprava:** t375b: u dlouhých příkazů `idle` delší než nejdelší pauza výpisu (45 s pro průběh po 30 s) a strop podle délky
+  příkazu; výsledek ukládat do souboru. Ruční `uartq -Idle 40000` ukázal skutečnou příčinu (málo dat: ~150 diskrétních hodnot
+  TDC na periodu → počty v dílech se liší až 5×) → firmware: výchozí 300 s, mez 20 v dílu.
+- **Pravidlo:** čekání na odpověď musí být delší než NEJDELŠÍ pauza výpisu daného příkazu, ne než typická; a nikdy nemazat
+  vstup, dokud předchozí příkaz prokazatelně neskončil (koncový řádek).
+- **Detekce:** výsledek dlouhého příkazu chybí, další příkaz vrací cizí text.
+- **Commit:** `349de01` (fix v0.45.3–v0.45.7, tag v0.45.7)
+- **Stav:** ✅ (t375b proběhl správně).

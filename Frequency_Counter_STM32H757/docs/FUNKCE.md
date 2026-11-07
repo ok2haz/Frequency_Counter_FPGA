@@ -51,6 +51,7 @@
 | Detekce ztráty signálu, auto‑restart, kontrola oken (samokontrola FPGA) | ✅ | `status` → FPGA SAMOKONTROLA |
 | Kalibrace TDC (code density) po startu, po teplotě, po výpadku hodin | ✅ | UART `tdc`, `tdc cal` |
 | Kalibrace TDC ze vstupního pinu (krok 1 STATUS #347): histogram ze signálu na vstupu místo ring oscilátoru, kontrola rovnoměrnosti fáze před sběrem i po něm | 🟡 v0.43.0 | UART `tdc cal [pin] [a\|b] [gen]`; potřebuje FPGA FW 0x0509 (CAPS bit24), ⬜ neověřeno na HW |
+| Chyba časování jednoho kanálu proti koherentnímu generátoru Si5356 (přímka v indexu hran): surové události `fpga ev raw [od]` (v0.45.6), měření tabulky e(φ) 64 dílů `fpga lin cal [s]` / `fpga lin tab`, korekce `fpga lin on\|off` (v0.45.7, sama se nezapíná – obecně neplatí, STATUS #366) | 🟡 v0.45.7 | ověřeno na HW bez power-cyklu (t374–t376); `tdc cal pin ... mez <N>` v0.45.5 (L-0268) |
 | Rozsah vstupu | ✅ | dnes do ~30 MHz bez děliče; 200 MHz/1,1 GHz ⬜ (vstupní modul) |
 | Math Mx+B, NULL (relativní měření), limity PASS/FAIL + alarm | 🟡 | okno MATH/LIMITY |
 | Odchylka ×N (jako ADRET 4110) | 🟡 | okno „Odchylka ×N" |
