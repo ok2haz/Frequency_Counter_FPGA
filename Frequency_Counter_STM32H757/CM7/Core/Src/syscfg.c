@@ -258,7 +258,11 @@ static void pack(syscfg_blob_t *b)
         b->gen_hz[i] = g_si_gen[i].freq_hz;
         b->gen_on[i] = g_si_gen[i].on ? 1u : 0u;
     }
-    b->gen_valid = (uint8_t)(1u | (screen_main_digits_res() ? 2u : 0u));
+    /* bit0 = pole generatoru plati, bit1 = rezim cislic, bity 4:2 = rozsirena merici funkce SM_FX_* (v0.44.5; 0/1 = FREQ/PER
+     * plati z g_ui_cfg, tady se ukladaji jen >= SM_FX_TI) */
+    {   const int fx = screen_main_mode();
+        b->gen_valid = (uint8_t)(1u | (screen_main_digits_res() ? 2u : 0u)
+                                 | ((fx >= SM_FX_TI && fx < SM_FX_N) ? (uint8_t)((fx & 7) << 2) : 0u)); }
     b->push_en   = g_apush_en ? 1u : 0u;
     for (int i = 0; i < 4; i++) b->push_ip[i] = g_apush_ip[i];
     b->push_port = g_apush_port;
@@ -406,6 +410,7 @@ void syscfg_load(void)
     screen_main_set_layout_classic(b.layout_classic ? 1 : 0);
     screen_main_set_allan_density(b.allan_dens);   /* mimo 0..2 -> 0 (vychozi) */
     screen_main_set_digits_res((b.gen_valid & 2u) ? 1 : 0);
+    if (b.gen_valid & 1u) screen_main_restore_fx((b.gen_valid >> 2) & 7u);   /* v0.44.5: rozsirena merici funkce */
     encoder_set_div(b.enc_div);   /* neplatnou hodnotu (0 ze stareho blobu) ignoruje */
 
     g_net_dhcp      = b.net_dhcp ? 1u : 0u;

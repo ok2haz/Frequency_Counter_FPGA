@@ -99,6 +99,7 @@ static uint32_t s_mc_pos     = 0u, s_mc_neg = 0u;   /* soucty od bootu pro `stat
 static uint32_t s_seq_gaps   = 0u;         /* kolikrat byla dira */
 static uint32_t s_seq_missed = 0u;         /* kolik mereni celkem chybelo */
 static uint32_t s_seq_resync = 0u;         /* skoky/navraty (reset FPGA, start emulace) */
+static uint32_t s_seq_brk = 0u, s_seq_brk_missed = 0u;   /* v0.44.3: zamerna preruseni v3 (posun mrizky, gen, ...) a jejich okna */
 /* 2026-10-10 (STATUS #283): samokontrola okna (`fpga_freq_window_check`, FW 0x041F caps bit10). Zamitnute
  * okno se jako miscount nezapise do `s_last` a FpgaTask ho vyradi; soucty jdou do `status`. */
 static int      s_poll_chk   = FPGA_CHK_OK;   /* vysledek posledniho vraceneho mereni */
@@ -963,18 +964,42 @@ static fpga_v3_pair_out_t s3_po[2];  /* vystup parovani (staticky: 2 okna ~0,5 k
 static uint32_t s3_wins_b = 0u;       /* mereni s oknem druheho kanalu (diagnostika, `fpga v3`) */
 static uint32_t s3_lsq_b = 0u;        /* z toho s LSQ delkou okna B */
 static uint32_t s3_segrej[2];         /* v0.42.5: oken A/B, kde LSQ odmitla kontrola teziste segmentu (-> dvoubodove) */
-static uint32_t s3_wseq = 0u;        /* poradi okna = `sequence` pro konzumenty; mezera v oknech = dira v SEQ */
+/* v0.44.4 (STATUS #360): clen parity segmentu v LSQ okna (UART `fpga v3 par`, nepersistuje se) a odhad stridave slozky
+ * znacek c [ps] z oken, jejichz LSQ delka se pouzila. Zapisuje FpgaTask, cte UartTask (diagnostika, bez zamku). */
+static volatile uint8_t s3_par_en = 1u, s3_par_rst = 0u;
+static uint32_t s3_par_n[2];
+static double   s3_par_s[2], s3_par_ss[2];
+static uint32_t s3_wseq = 0u;       /* poradi okna = `sequence` pro konzumenty; mezera v oknech = dira v SEQ */
 static uint8_t  s3_brk = 1u;         /* pred dalsim oknem je preruseni */
+static uint8_t  s3_brk_loss = 0u;    /* v0.44.3 (STATUS #357): v tom preruseni se ztratila data (fronta plna, mezera v zaznamech) */
 static uint32_t s3_wseg_prev, s3_wseg_k;   /* v0.43.3 (P1 bod 4): seg_first a K predchoziho okna (skutecna dira v SEQ) */
 static uint8_t  s3_wseg_ok;
 static uint32_t s3_wseg_gapn;        /* oken navic v SEQ proti puvodnimu +2/+1 (zmeskana okna) */
 static uint32_t s3_gen_drops;        /* v0.43.3: preruseni kvuli zapisu generatoru (`gen`) */
 static uint8_t  s3_chan = 0u, s3_gate = 2u;
 static uint32_t s3_last_win_ms = 0u;
+/* v0.44.5 (STATUS #361): posledni okno nevybraneho kanalu samostatne (pise FpgaTask, cte UiTask pod zakazem preruseni) */
+static fpga_v3_sec_t s3_sec;
+static uint32_t      s3_sec_ms = 0u;
+static uint8_t       s3_sec_ok = 0u;
 static uint8_t  s3_lost = 0u;
 static uint32_t s3_frames = 0u, s3_wins = 0u, s3_qdrop = 0u, s3_pages = 0u;
 static uint32_t s3_xfer_ms = 0u;   /* HAL_GetTick posledni transakce poll_v3 */
 static volatile uint32_t s3_poll_ms = S3_POLL_MS;   /* v0.40.7: nejkratsi odstup transakci, `spi poll` (zkousky; nepersistuje se) */
+
+/* v0.44.1 (STATUS #352, #354): poloha 1PPS v okne kanalu A a mrizka oken podle 1PPS. Noc 2026-11-04/05 (noc17):
+ * 1PPS posouva casovou znacku hranice okna (+d/-d), velikost zavisi na poloze hranice proti pulzu a na delce pulzu.
+ * Mrizka oken (bunky K segmentu) se dosud odvozovala od prvniho zaznamu po startu / regroup -> poloha 1PPS v okne byla
+ * po kazdem startu nahodna a z vypisu nezjistitelna. Ted se poloha meri z kazdeho okna A, ktere 1PPS obsahuje
+ * (PTS - T prvni znacky okna, tataz osa FPGA mod 2^48), a mrizka se posune o cele segmenty (fpga_v3_grp_phase) tak, aby
+ * 1PPS lezel s3p_target promile delky okna od jeho zacatku (vychozi 400 = 100 ms u 0,25 s: hranice oken 100 ms pred
+ * nabeznou hranou a 140 ms po konci pulzu 10 ms); dosazitelne jsou jen polohy po L, vybere se nejblizsi
+ * (fpga_v3_pps_shift, v0.44.2). Zarovna se az po 3 shodnych polohach (+-1 ms) po sobe -- falesne
+ * hrany 1PPS (`gps tp off`) mrizku nepohnou. Jen pro okna <= 1 s (delsi okno obsahuje vic pulzu). Zapisuje FpgaTask,
+ * cil UART (`fpga v3 pps`); cteni pro vypis bez zamku (diagnosticka pocitadla). */
+static volatile int16_t s3p_target = FPGA_V3_PPS_TARGET_DEF;   /* promile delky okna, -1 = mrizka se nezarovnava */
+static uint32_t s3p_pseq, s3p_n, s3p_align, s3p_us, s3p_min, s3p_max, s3p_cand_us;
+static uint8_t  s3p_have, s3p_cand_n;
 
 /* v0.40.7 (STATUS #343): diagnostika chyb SPI v3 -- kdy, ktery blok, serie, tvar poskozeni. Jen zaznam. Zapisuje FpgaTask
  * (poll_v3), cte UartTask (`spi err`); roztrzene cteni kruhu je pri ladeni prijatelne (jako ostatni pocitadla). Vadne bloky
@@ -1097,7 +1122,19 @@ static uint32_t s3_k(void)
 }
 static void s3_regroup(void)
 {
+    /* v0.44.1: diagnosticka pocitadla X0/SX preziji (regroup bezi pri kazdem zapisu generatoru `gen`) */
+    uint32_t xf[2], xo[2], xs[2], sr[2], sr0[2];
+    int32_t  xd[2];
+    for (int c = 0; c < 2; c++) {
+        xf[c] = s3_grp.x0_fix[c]; xo[c] = s3_grp.x0_odd[c]; xs[c] = s3_grp.x0_step[c]; xd[c] = s3_grp.x0_dev[c];
+        sr[c] = s3_grp.sx_rep[c]; sr0[c] = s3_grp.sx_rep_x0[c];
+    }
     fpga_v3_grp_init(&s3_grp, s3_k());
+    for (int c = 0; c < 2; c++) {
+        s3_grp.x0_fix[c] = xf[c]; s3_grp.x0_odd[c] = xo[c]; s3_grp.x0_step[c] = xs[c]; s3_grp.x0_dev[c] = xd[c];
+        s3_grp.sx_rep[c] = sr[c]; s3_grp.sx_rep_x0[c] = sr0[c];
+    }
+    s3p_n = 0u; s3p_cand_n = 0u;                     /* mrizka zacina znovu (seg_off = 0) -> poloha 1PPS znovu */
     s3_grp.seg_ms = (s3_h_ok && s3_h.seg_len_ms) ? s3_h.seg_len_ms : 25u;
     s3_qr = s3_qw = 0u; fpga_v3_pair_init(&s3_pair); s3_brk = 1u;
 }
@@ -1179,6 +1216,15 @@ static int s3_lsq_gate_ps(const fpga_v3_win_t *w, uint64_t *gate_ps)
     return 1;
 }
 
+/* v0.44.4: odhad stridave slozky znacek z okna s pouzitou LSQ delkou (jen kdyz LSQ clen parity mela) */
+static void s3_par_note(const fpga_v3_win_t *w, uint32_t clk)
+{
+    if (!w->lsq_par) return;
+    const uint32_t c = w->ch & 1u;
+    const double ps = w->par_u * fpga_v3_unit_ps(clk);
+    s3_par_n[c]++; s3_par_s[c] += ps; s3_par_ss[c] += ps * ps;
+}
+
 static void s3_win_to_meas(const fpga_v3_win_t *w, const fpga_v3_win_t *wb, fpga_meas_t *m)
 {
     memset(m, 0, sizeof *m);
@@ -1198,7 +1244,10 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, const fpga_v3_win_t *wb, fpga
         s3_wseg_prev = w->seg_first; s3_wseg_k = K; s3_wseg_ok = (K != 0u);
         s3_wseq += inc;
     }
-    s3_brk = 0u;
+    /* v0.44.3 (STATUS #357): skok SEQ ze zamerneho preruseni (posun mrizky 1PPS, `gen`, regroup, predelicka, ztrata signalu)
+     * neni zmeskane okno -- noc19: kazdy posun mrizky = 1 "dira" a status hlasil "FpgaTask nestihal" */
+    m->seq_brk = (uint8_t)(s3_brk && !s3_brk_loss);
+    s3_brk = 0u; s3_brk_loss = 0u;
     m->sequence = s3_wseq;
     m->measurement_status = 0x03u;
     m->status_flags = (uint8_t)(ST_DATA_VALID | ST_DATA_FRESH);
@@ -1208,7 +1257,7 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, const fpga_v3_win_t *wb, fpga
     m->gate2_ps   = dt_units_to_ps(m->dt_units, clk);
     m->gate_ps    = m->gate2_ps;
     m->cc_ok = 1u; m->f_cc_hz = w->f_2pt_hz; m->gate_cc_ps = m->gate2_ps;   /* dvoubodove mezi prvnimi znackami teleskopuje */
-    if (s3_lsq_gate_ps(w, &m->gate_ps)) { m->f_regr_hz = w->f_lsq_hz; m->regr_used = 1u; }
+    if (s3_lsq_gate_ps(w, &m->gate_ps)) { m->f_regr_hz = w->f_lsq_hz; m->regr_used = 1u; s3_par_note(w, clk); }
     /* teziste prvniho segmentu relativne k prvni znacce okna (fpga_phrec: rg_xm v 1/4096 hrany, rg_ym v 1/16 jednotky) */
     m->rg_xdiv  = 4096u;
     m->rg_n[0]  = w->n0; m->rg_n[1] = w->n0;
@@ -1220,7 +1269,7 @@ static void s3_win_to_meas(const fpga_v3_win_t *w, const fpga_v3_win_t *wb, fpga
         m->edges_b = (uint32_t)wb->edges;
         m->dt_b_ps = dt_units_to_ps(wb->gate_units & 0xFFFFFFFFFFFFull, clk);
         s3_wins_b++;
-        if (s3_lsq_gate_ps(wb, &m->dt_b_ps)) s3_lsq_b++;
+        if (s3_lsq_gate_ps(wb, &m->dt_b_ps)) { s3_lsq_b++; s3_par_note(wb, clk); }
         m->ccd_s   = (int8_t)((wb->flags_or & FPGA_V3_R_CCD) ? 2 : 0);
     }
     m->gate_time_ns      = m->gate_ps / 1000u;
@@ -1250,6 +1299,16 @@ static fpga_v3_stat_t s3e_st;
 static uint8_t        s3e_act = 0u;
 static volatile uint8_t s3e_on = 0u, s3e_pair = FPGA_EVP_OFF;   /* zapisuje UART */
 static volatile uint8_t s3e_gen[4];     /* UART: vynulovat kruh / intervaly / zpozdeni, prepnuti zdroje B */
+/* v0.44.5 (okno FUNKCE MERENI): zadost o parovani z UiTasku (bit7 = plati, bity 6:0 = FPGA_EVP_*), provede poll_v3 ve FpgaTasku;
+ * vysledek fpga_freq_ev_pair (1/2 ok, 0 SET_CONFIG selhal, -1 FW bez CAPS bit20, -2 neni v3), 127 = jeste neprovedeno */
+static volatile uint8_t s3e_req = 0u;
+static volatile int8_t  s3e_req_rc = 127;
+/* v0.44.5: totalizace kanalu A z absolutniho indexu hran X0 zaznamu segmentu (mezery v prijmu se nepocitaji jako ztrata:
+ * X0 je absolutni, rozdil pres chybejici zaznamy obsahuje i jejich hrany). Pise FpgaTask, cte UiTask (kopie pod zakazem IRQ). */
+static uint64_t s3tot_n = 0u, s3tot_x = 0u;
+static uint8_t  s3tot_have = 0u, s3tot_seen = 0u, s3tot_pl = 0u;
+static volatile uint8_t s3tot_gen = 0u;
+static uint32_t s3tot_resync = 0u;      /* skok X0 (restart FPGA / zmena predelicky): navazano bez pricteni */
 static uint8_t        s3e_seen[4];
 static uint8_t        s3e_bsrc = 0u;    /* posledni odeslany SET_CONFIG 0x09 */
 
@@ -1282,7 +1341,9 @@ static void s3e_apply(uint32_t clk)
     if (s3e_gen[1] != s3e_seen[1]) {
         s3e_seen[1] = s3e_gen[1];
         pm = __get_PRIMASK(); __disable_irq();
-        fpga_v3_ab_init(&s3e_pr.ab, max_u); s3e_pr.pa_have = 0u; fpga_v3_stat_init(&s3e_st); s3e_abw = 0u;
+        fpga_v3_ab_init(&s3e_pr.ab, max_u); s3e_pr.pa_have = 0u; s3e_pr.arm_cs = 0u; fpga_v3_stat_init(&s3e_st); s3e_abw = 0u;
+        s3e_pr.rec_a = s3e_pr.rec_b = s3e_pr.inv_a = s3e_pr.inv_b = s3e_pr.cs_a = s3e_pr.cs_b = 0u;
+        s3e_pr.lone_a = s3e_pr.lost_cs = s3e_pr.gaps = 0u;
         __set_PRIMASK(pm);
     }
     if (s3e_gen[2] != s3e_seen[2]) {
@@ -1343,6 +1404,56 @@ static double          s3s_ss[2];       /* soucet r^2 dobrych */
 static volatile uint8_t s3s_gen = 0u;
 static uint8_t         s3s_seen = 0u;
 
+/* ── v0.44.5 (STATUS #350): σ JEDNE casove znacky TDC za behu, z reziduí segmentu (fpga_v3_seg_resid) ─────────────────
+ * Reziduum segmentu a: r = prumer(e_i) - (1-u)·e_0 - u·e_b, kde e_i = chyby jeho n znacek (e_0 = prvni, x = x0), e_b = prvni
+ * znacka segmentu b a u = prumerna poloha znacek v segmentu / dx (= sx/n/dx). Pri bilem sumu znacek σ je
+ *   Var(r) = σ²·k,  k = (1/n - (1-u))² + (n-1)/n² + u²,
+ * takze σ² = Σr² / Σk (vazeny odhad pres segmenty s ruznym n a u). Exponencialni zapominani S3T_LAMBDA na segment kanalu
+ * (~2048 segmentu = ~50 s pri 25 ms). Obsahuje vse, co znacky rozhazuje (kvantizace, jitter hodin a komparatoru, zbytek
+ * nelinearity tabulky, sum zdroje za 25 ms) -- tedy presne to, co vstupuje do rozliseni okna.
+ * 🔴 KOHERENTNI signal (kmitocet v jednoduchem pomeru k 100 MHz, napr. Si5356 ze stejne reference) dava znackam stale tutez
+ * fazi -> chyby se nemeni a reziduum vyjde podhodnocene. Proto se pokryti fazi (fpga_v3_calpin_cover, stejne kriterium jako
+ * kalibrace TDC ze vstupniho pinu) kontroluje kazdych 64 segmentu a pri spatnem pokryti se odhad ZNEPLATNI (vychozi konstanta). */
+#define S3T_LAMBDA    (1.0 / 2048.0)
+#define S3T_MIN_N     256u              /* aspon tolik dobrych segmentu od posledniho vynulovani */
+#define S3T_COV_PERMIL 250              /* nejhorsi odchylka obsazeni 8 fazi [promile], nad = koherentni */
+static double   s3t_sk[2], s3t_srr[2];
+static uint32_t s3t_n[2], s3t_cnt[2];
+static uint8_t  s3t_coh[2];
+static volatile float  s3t_sigma[2];    /* vysledek [ps], 0 = neni; float = atomicky 32b zapis (cte UiTask/defaultTask) */
+
+static void s3t_feed(uint8_t ch, const fpga_v3_rec_t *a, const fpga_v3_rec_t *b, double rp, uint32_t clk)
+{
+    const uint64_t dx = (b->x0 - a->x0) & 0xFFFFFFFFFFull, dt = (b->t0 - a->t0) & 0xFFFFFFFFFFFFull;
+    if (dx == 0u || dt == 0u || a->n < 2u) return;
+    const double n = (double)a->n, u = (double)a->sx / n / (double)dx;
+    const double c0 = 1.0 / n - (1.0 - u);
+    const double k = c0 * c0 + (n - 1.0) / (n * n) + u * u;
+    if (!(k > 0.0)) return;
+    if ((s3t_cnt[ch]++ & 63u) == 0u) {
+        /* pokryti fazi hran vuci taktu: kmitocet hran z dvojice prvnich znacek (presne, pres cely segment) */
+        const double per_ps = (double)dt * fpga_v3_unit_ps(clk) / (double)dx;
+        const int16_t w = (per_ps > 0.0) ? fpga_v3_calpin_cover(1e12 / per_ps, 2048u) : 32767;
+        const uint8_t coh = (uint8_t)(w > S3T_COV_PERMIL || w < -S3T_COV_PERMIL);
+        if (coh != s3t_coh[ch]) { s3t_sk[ch] = s3t_srr[ch] = 0.0; s3t_n[ch] = 0u; }   /* zmena zdroje: znovu */
+        s3t_coh[ch] = coh;
+    }
+    if (s3t_coh[ch]) { s3t_sigma[ch] = 0.0f; return; }
+    s3t_sk[ch]  = s3t_sk[ch]  * (1.0 - S3T_LAMBDA) + k;
+    s3t_srr[ch] = s3t_srr[ch] * (1.0 - S3T_LAMBDA) + rp * rp;
+    if (s3t_n[ch] < 0xFFFFFFFFu) s3t_n[ch]++;
+    s3t_sigma[ch] = (s3t_n[ch] >= S3T_MIN_N) ? (float)sqrt(s3t_srr[ch] / s3t_sk[ch]) : 0.0f;
+}
+
+double fpga_freq_tdc_sigma_ps(int ch, uint32_t *n, uint8_t *coh)
+{
+    if (ch < 0) ch = (int)(s3_chan & 1u);
+    ch &= 1;
+    if (n)   *n = s3t_n[ch];
+    if (coh) *coh = s3t_coh[ch];
+    return (s_proto == 3u) ? (double)s3t_sigma[ch] : 0.0;
+}
+
 static void s3s_feed(const fpga_v3_rec_t *r, uint32_t clk)
 {
     if (s3s_seen != s3s_gen) {
@@ -1374,6 +1485,7 @@ static void s3s_feed(const fpga_v3_rec_t *r, uint32_t clk)
             s3s.rms_ps[ch] = sqrt(s3s_ss[ch] / (double)ng);
         }
         __set_PRIMASK(pm);
+        if (fabs(rp) <= FPGA_SEG_BAD_PS && sxok && !(s3s_prev[ch].flags & FPGA_V3_R_SAT)) s3t_feed(ch, &s3s_prev[ch], r, rp, clk);
     }
     s3s_prev[ch] = *r; s3s_have[ch] = 1u;
 }
@@ -1391,10 +1503,61 @@ void fpga_freq_v3_seg_reset(void) { s3s_gen++; }
 /* hotove mereni do fronty (okno primarniho kanalu, wb = okno druheho tychz segmentu nebo NULL) */
 static void s3_emit(const fpga_v3_win_t *w, const fpga_v3_win_t *wb)
 {
-    if ((uint8_t)(s3_qw - s3_qr) >= S3_Q) { s3_qr++; s3_qdrop++; s3_brk = 1u; }   /* fronta plna: nejstarsi pryc */
+    if ((uint8_t)(s3_qw - s3_qr) >= S3_Q) { s3_qr++; s3_qdrop++; s3_brk = 1u; s3_brk_loss = 1u; }   /* fronta plna: nejstarsi pryc */
     s3_win_to_meas(w, wb, &s3_q[s3_qw % S3_Q]);
     s3_qw++; s3_wins++;
     s3_last_win_ms = HAL_GetTick();
+}
+
+/* v0.44.1 (STATUS #354): uzavrene okno kanalu A -> poloha 1PPS v nem, pripadne posun mrizky (popis u s3p_target).
+ * @return 1 = mrizka se posunula (rozpracovana okna zahozena) */
+static int s3_ppsw(const fpga_v3_win_t *w, uint32_t clk)
+{
+    for (int i = 0; i < 2; i++) {
+        const fpga_v3_pps_t *p = &s3_h.pps[i];
+        if (!(p->pflags & 1u)) continue;
+        const int64_t d = s3e_s48(p->pts - w->t_first);       /* T okna je rozbalene, mod 2^48 = surovy cas FPGA */
+        if (d < 0 || (uint64_t)d >= w->gate_units) continue;
+        if (s3p_have && p->pseq == s3p_pseq) return 0;        /* tentyz pulz uz zapocten */
+        s3p_have = 1u; s3p_pseq = p->pseq;
+        const uint32_t us = (uint32_t)((double)d * fpga_v3_unit_ps(clk) * 1e-6 + 0.5);
+        if (s3p_n == 0u || us < s3p_min) s3p_min = us;
+        if (s3p_n == 0u || us > s3p_max) s3p_max = us;
+        s3p_us = us; s3p_n++;
+
+        const int32_t tg = s3p_target;
+        const uint32_t K = s3_grp.k_target, L = s3_grp.seg_ms ? s3_grp.seg_ms : 25u;
+        if (tg < 0 || K < 2u || K * L > 1000u) { s3p_cand_n = 0u; return 0; }
+        const uint32_t du = (us > s3p_cand_us) ? us - s3p_cand_us : s3p_cand_us - us;
+        s3p_cand_n = (s3p_cand_n && du < 1000u) ? (uint8_t)(s3p_cand_n < 255u ? s3p_cand_n + 1u : 255u) : 1u;
+        s3p_cand_us = us;
+        if (s3p_cand_n < 3u) return 0;
+        const int32_t W = (int32_t)(K * L * 1000u), Lus = (int32_t)L * 1000;
+        /* v0.44.2: nejblizsi dosazitelna poloha (do v0.44.1 hystereze 3/4 L -> zustalo 83 ms misto 108 ms pri cili 100 ms) */
+        const int32_t n = fpga_v3_pps_shift((int32_t)us, (int32_t)((uint32_t)tg * (uint32_t)W / 1000u), W, Lus);
+        if (n == 0) return 0;
+        /* bunka = (seg_u + off) / K: off + 1 posune zacatek okna o segment drive -> 1PPS v okne o L pozdeji */
+        const uint32_t off = (uint32_t)(((int32_t)s3_grp.seg_off + n % (int32_t)K + (int32_t)K) % (int32_t)K);
+        if (!fpga_v3_grp_phase(&s3_grp, off)) return 0;
+        s3p_align++; s3p_n = 0u; s3p_cand_n = 0u;
+        return 1;
+    }
+    return 0;
+}
+
+int fpga_freq_v3_pps_target(int v)
+{
+    if (v >= -1 && v <= 999) s3p_target = (int16_t)v;
+    return s3p_target;
+}
+
+int fpga_freq_v3_par(int v)
+{
+    if (v == 0 || v == 1) {
+        if ((uint8_t)v != s3_par_en) s3_par_rst = 1u;   /* zmena = novy odhad (stary patri k jinemu nastaveni) */
+        s3_par_en = (uint8_t)v;
+    } else if (v == 2) s3_par_rst = 1u;
+    return s3_par_en;
 }
 
 /* Prijaty ramec DATA: nove zaznamy -> okna -> fronta */
@@ -1403,22 +1566,59 @@ static void s3_take_records(uint32_t n_ok)
     uint32_t i0 = 0u; int gap = 0;
     const uint32_t n = fpga_v3_link_take(&s3_link, &s3_h, n_ok, &i0, &gap);
     if (s3_h.seg_len_ms && s3_h.seg_len_ms != s3_grp.seg_ms) s3_regroup();   /* zmena L: okna znovu */
+    s3_grp.par_en = s3_par_en;                       /* v0.44.4: `fpga v3 par` (grp_init po regroup da vychozi 1) */
+    if (s3_par_rst) {
+        s3_par_rst = 0u;
+        for (int c = 0; c < 2; c++) { s3_par_n[c] = 0u; s3_par_s[c] = 0.0; s3_par_ss[c] = 0.0; }
+    }
     if (gap) {
         fpga_v3_grp_break(&s3_grp, 0u); fpga_v3_grp_break(&s3_grp, 1u);
         if (fpga_v3_pair_flush(&s3_pair, s3_po)) s3_emit(&s3_po[0].a, NULL);   /* v0.42.12: cekajici okno bez B */
-        s3_brk = 1u;
+        s3_brk = 1u; s3_brk_loss = 1u;
     }
     const uint32_t clk = s3_h.clk_mhz ? s3_h.clk_mhz : 100u;
     s3e_apply(clk);
     if (gap) { const uint32_t pm = __get_PRIMASK(); __disable_irq(); fpga_v3_pr_gap(&s3e_pr); __set_PRIMASK(pm); }
     const uint32_t now = HAL_GetTick();
     for (uint32_t i = 0; i < n; i++) {
+        {   /* v0.44.5: totalizace A (viz s3tot_n) */
+            const fpga_v3_rec_t *r = &s3_rec[i0 + i];
+            if (s3tot_seen != s3tot_gen) { s3tot_seen = s3tot_gen; s3tot_have = 0u;
+                                           const uint32_t pm = __get_PRIMASK(); __disable_irq(); s3tot_n = 0u; __set_PRIMASK(pm); }
+            if ((r->ch & 1u) == 0u && r->n > 0u && !(r->flags & FPGA_V3_R_INVALID)) {
+                const uint8_t pl = FPGA_V3_REC_PLOG2(r);
+                const uint64_t dx = (r->x0 - s3tot_x) & 0xFFFFFFFFFFull;
+                if (s3tot_have && pl == s3tot_pl && dx < (1ull << 38)) {
+                    const uint32_t pm = __get_PRIMASK(); __disable_irq(); s3tot_n += dx << pl; __set_PRIMASK(pm);
+                } else if (s3tot_have) s3tot_resync++;
+                s3tot_x = r->x0; s3tot_pl = pl; s3tot_have = 1u;
+            }
+        }
         if (s3e_act) s3e_rec(&s3_rec[i0 + i], clk, now);
         s3s_feed(&s3_rec[i0 + i], clk);
         fpga_v3_win_t w;
         const int got = fpga_v3_grp_feed(&s3_grp, &s3_rec[i0 + i], clk, &w);
+        if (got && (w.ch & 1u) != (s3_chan & 1u)) {
+            /* v0.44.5 (STATUS #361): okno druheho kanalu i samostatne -- vydava se jen s oknem vybraneho kanalu, takze
+             * bez signalu na vybranem by se druhy kanal neukazal vubec. Delka okna stejne jako v s3_win_to_meas. */
+            fpga_v3_sec_t sc;
+            sc.ch = (uint8_t)(w.ch & 1u); sc.prim = (uint8_t)(s3_chan & 1u);
+            sc.edges = w.edges;
+            sc.dt_ps = dt_units_to_ps(w.gate_units & 0xFFFFFFFFFFFFull, clk);
+            (void)s3_lsq_gate_ps(&w, &sc.dt_ps);
+            sc.x100000 = freq_x1e5_from(sc.edges, sc.dt_ps);
+            sc.age_ms = 0u;
+            const uint32_t pm = __get_PRIMASK(); __disable_irq();
+            s3_sec = sc; s3_sec_ms = now; s3_sec_ok = (sc.x100000 != 0u);
+            __set_PRIMASK(pm);
+        }
         const uint32_t np = fpga_v3_pair_feed(&s3_pair, &s3_grp, s3_chan, &s3_rec[i0 + i], got ? &w : NULL, s3_po);
         for (uint32_t k = 0; k < np; k++) s3_emit(&s3_po[k].a, s3_po[k].has_b ? &s3_po[k].b : NULL);
+        if (got && (w.ch & 1u) == 0u && s3_ppsw(&w, clk)) {
+            /* mrizka posunuta: okno cekajici na druhy kanal ho uz nedostane -> vydat bez nej, preruseni */
+            if (fpga_v3_pair_flush(&s3_pair, s3_po)) s3_emit(&s3_po[0].a, NULL);
+            s3_brk = 1u;
+        }
     }
 }
 
@@ -1478,6 +1678,10 @@ int fpga_sim_v3_active(void) { return s_sim_on && s_sim_v3; }
 /* Jedna transakce v3 ve FpgaTasku: ACK + prijem; vrati true, kdyz je k dispozici okno vybraneho kanalu */
 static bool poll_v3(fpga_meas_t *out)
 {
+    {   /* v0.44.5: zadost okna FUNKCE MERENI o parovani A/B (fpga_freq_ev_pair_req) -- SET_CONFIG patri FpgaTasku, ne UiTasku */
+        const uint8_t rq = s3e_req;
+        if (rq & 0x80u) { s3e_req = 0u; s3e_req_rc = (int8_t)fpga_freq_ev_pair((uint8_t)(rq & 0x7Fu)); }
+    }
     {   /* v0.43.3 (P1 bod 3): zapis generatoru Si5356 (`gen`) vypne vystup -> okna z teto doby zahodit (i ta ve fronte) */
         static uint32_t s_gen_seen, s_gen_ms;
         static uint8_t  s_gen_hold;
@@ -1595,6 +1799,7 @@ static bool poll_v3(fpga_meas_t *out)
     s_poll_chk = chk;
     s_poll_gap = gap;
     if (gap == FPGA_SEQ_RESYNC) s_seq_resync++;
+    else if (gap != 0u && m.seq_brk) { s_seq_brk++; s_seq_brk_missed += gap; }   /* v0.44.3: zamerne preruseni */
     else if (gap != 0u)        { s_seq_gaps++; s_seq_missed += gap; }
     if (out) *out = m;
     g_last_seq = m.sequence;
@@ -1818,6 +2023,12 @@ void fpga_freq_seq_stats(uint32_t *gaps, uint32_t *missed, uint32_t *resync)
     if (gaps)   *gaps   = s_seq_gaps;
     if (missed) *missed = s_seq_missed;
     if (resync) *resync = s_seq_resync;
+}
+
+void fpga_freq_seq_brk_stats(uint32_t *n, uint32_t *missed)
+{
+    if (n)      *n      = s_seq_brk;
+    if (missed) *missed = s_seq_brk_missed;
 }
 
 int fpga_freq_window_check(uint64_t edges, uint64_t dt_ps, uint64_t gate_ps)
@@ -3121,6 +3332,54 @@ int fpga_freq_ev_pair(uint8_t mode)
     return rc;
 }
 
+void fpga_freq_ev_pair_req(uint8_t mode)
+{
+    s3e_req_rc = 127;
+    s3e_req = (uint8_t)(0x80u | (mode & 0x7Fu));
+}
+
+int fpga_freq_ev_pair_rc(void) { return s3e_req_rc; }
+
+uint8_t fpga_freq_proto(void) { return (s_sim_on && s_sim_v3) ? 3u : s_proto; }
+
+int fpga_freq_ab_stat(uint32_t last, double *mean_ps, double *sd_ps, uint32_t *n, uint32_t *total)
+{
+    static double v[S3E_AB];          /* 512 B -> ne na zasobnik UiTasku; vola jen UiTask (okno FUNKCE / hlavni obrazovka) */
+    uint32_t w;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    w = s3e_abw;
+    const uint32_t fill = (w < S3E_AB) ? w : S3E_AB;
+    if (last == 0u || last > fill) last = fill;
+    for (uint32_t i = 0; i < last; i++) v[i] = s3e_ab[(w - 1u - i) % S3E_AB];
+    __set_PRIMASK(pm);
+    if (total) *total = w;
+    if (n) *n = last;
+    if (last == 0u) return 0;
+    double s = 0.0, ss = 0.0;
+    for (uint32_t i = 0; i < last; i++) s += v[i];
+    const double m = s / (double)last;
+    for (uint32_t i = 0; i < last; i++) ss += (v[i] - m) * (v[i] - m);
+    if (mean_ps) *mean_ps = m;
+    if (sd_ps)   *sd_ps = (last > 1u) ? sqrt(ss / (double)(last - 1u)) : 0.0;
+    return 1;
+}
+
+void fpga_freq_v3_total_reset(void) { s3tot_gen++; }
+
+int fpga_freq_v3_total(uint64_t *n, uint32_t *resync)
+{
+    if (s_proto != 3u) return 0;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const uint64_t v = s3tot_n;
+    const uint8_t ok = (uint8_t)(s3tot_have && s3tot_seen == s3tot_gen);
+    __set_PRIMASK(pm);
+    if (n) *n = v;
+    if (resync) *resync = s3tot_resync;
+    return ok;
+}
+
 void fpga_freq_ev_info(fpga_ev_info_t *o)
 {
     if (o == NULL) return;
@@ -3130,6 +3389,8 @@ void fpga_freq_ev_info(fpga_ev_info_t *o)
     __disable_irq();
     st = s3e_st; sk = s3e_pr.sk;
     o->ev_total = s3e_w; o->ab_lost = s3e_pr.ab.lost; o->ab_fill = s3e_abw;
+    o->rec_a = s3e_pr.rec_a; o->rec_b = s3e_pr.rec_b; o->inv_a = s3e_pr.inv_a; o->inv_b = s3e_pr.inv_b;
+    o->cs_a = s3e_pr.cs_a; o->cs_b = s3e_pr.cs_b; o->lone_a = s3e_pr.lone_a; o->lost_cs = s3e_pr.lost_cs; o->gaps = s3e_pr.gaps;
     __set_PRIMASK(pm);
     o->ev_fill = (o->ev_total < S3E_RING) ? o->ev_total : S3E_RING;
     if (o->ab_fill > S3E_AB) o->ab_fill = S3E_AB;
@@ -3309,6 +3570,20 @@ int fpga_freq_v3_raw(uint8_t ch, uint32_t timeout_ms, fpga_raw_cb_t cb, void *ct
     return (st->n >= 512u) ? 1 : 0;
 }
 
+int fpga_freq_v3_sec(fpga_v3_sec_t *o)
+{
+    if (o == NULL || s_proto != 3u) return 0;
+    const uint32_t pm = __get_PRIMASK(); __disable_irq();
+    *o = s3_sec;
+    const uint32_t t0 = s3_sec_ms;
+    const uint8_t ok = s3_sec_ok;
+    const uint8_t chan = s3_chan;
+    __set_PRIMASK(pm);
+    o->age_ms = HAL_GetTick() - t0;
+    /* stare okno / zmena vybraneho kanalu (okno by patrilo k jinemu prirazeni slotu) = neplatne */
+    return ok && o->prim == (chan & 1u) && o->age_ms <= S3_LOST_MS + fpga_gate_idx_ms(s3_gate);
+}
+
 /* Stav v3 pro UART `fpga v3` */
 void fpga_freq_v3_info(fpga_v3_info_t *o)
 {
@@ -3335,6 +3610,11 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     o->segrej[0] = s3_segrej[0]; o->segrej[1] = s3_segrej[1];
     for (int c = 0; c < 2; c++) { o->x0_fix[c] = s3_grp.x0_fix[c]; o->x0_odd[c] = s3_grp.x0_odd[c]; o->x0_dev[c] = s3_grp.x0_dev[c]; }
     for (int c = 0; c < 2; c++) { o->sx_rep[c] = s3_grp.sx_rep[c]; o->sx_rep_x0[c] = s3_grp.sx_rep_x0[c]; }
+    for (int c = 0; c < 2; c++) o->x0_step[c] = s3_grp.x0_step[c];
+    o->pps_n = s3p_n; o->pps_us = s3p_us; o->pps_min = s3p_min; o->pps_max = s3p_max;
+    o->pps_align = s3p_align; o->seg_off = s3_grp.seg_off; o->pps_target = s3p_target;
+    o->par_en = s3_par_en;
+    for (int c = 0; c < 2; c++) { o->par_n[c] = s3_par_n[c]; o->par_s[c] = s3_par_s[c]; o->par_ss[c] = s3_par_ss[c]; }
 }
 
 uint32_t fpga_freq_v3_x0ev(int big, fpga_v3_x0ev_t o[FPGA_V3_X0EV])

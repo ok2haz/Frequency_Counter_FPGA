@@ -201,6 +201,9 @@ void ipc_publish(void)
             { uint8_t rm = 0; double rp = gpsdo_ref_ppb(&rm);
               g_ipc.gpsdo.ref_ppb_x100 = (uint32_t)((rp > 4.0e7) ? 4.0e9 : rp * 100.0 + 0.5);
               g_ipc.gpsdo.ref_meas = rm; }
+            { const double tp = fpga_freq_tdc_sigma_ps(-1, NULL, NULL);   /* v0.44.5 (STATUS #350) */
+              g_ipc.gpsdo.tdc_meas   = (uint8_t)(tp > 0.0);
+              g_ipc.gpsdo.tdc_ps_x10 = (uint16_t)((tp > 6553.0) ? 65530.0 : (tp > 0.0 ? tp * 10.0 + 0.5 : 0.0)); }
             IPC_DMB(); g_ipc.gpsdo.gen++;
 
             /* v30: nastaveni webhooku alarmu (TODO #249) -- seqlock; pole CM4 (sent/failed/last/pending) se nezapisuji */

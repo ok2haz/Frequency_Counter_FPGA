@@ -138,25 +138,63 @@ static uint8_t s_disp_recalc = 0;   /* 1 = prepnul se FREQ/PERIOD -> vynut rebui
 
 const prim_pixel_t *screen_main_bg(void) { return bg_cache; }
 
-/* Aktualni merici funkce = `st.mode` (0 FREKVENCE / 1 PERIODA). Vystaveno pro
- * okno FUNKCE (zadani UI §7), aby app vrstva nemusela sahat do `st`. */
-int  screen_main_mode(void) { return st.mode; }
+/* ── v0.44.5: ROZSIRENE MERICI FUNKCE (okno FUNKCE MERENI, zadani UI §7) ─────────────────────────────────────────────
+ * `s_fx` = zvolena funkce. 0/1 (FREKVENCE / PERIODA) jsou totez co `st.mode` (bit v `g_ui_cfg`, cte ho SCPI/IPC).
+ * Funkce >= SM_FX_TI kresli velke cislo z JINE veliciny nez kmitocet (fx_eval); `st.mode` je pro ne 0, takze SCPI
+ * `SENS:FUNC?` dal hlasi FREQ a statistika (Allan, trend, datalog) bezi dal nad kmitoctem vybraneho kanalu.
+ * Zdroje dat (vse uz ve firmwaru, protokol v3):
+ *   INTERVAL A-B, FAZE A-B   -- parovani hran A->B (FPGA_EVP_AB, FW 0x0501, `fpga ab`), kruh 64 intervalu;
+ *   SIRKA PULZU A, STRIDA A  -- parovani A -> A invertovane na vstupu B (FPGA_EVP_PW, SET_CONFIG 0x09 = 3; kanal B pak
+ *                               NEMERI svuj vstup);
+ *   POMER A/B                -- kmitocty obou kanalu z ramce (hi-res dvojice);
+ *   TOTALIZACE A             -- absolutni index hran X0 zaznamu segmentu (fpga_freq_v3_total).
+ * Persistence: syscfg `gen_valid` bity 4:2 (screen_main_restore_fx). */
+static int8_t s_fx = SM_FX_FREQ;
+static const char *const FX_NAME[SM_FX_N] = {
+    "FREKVENCE", "PERIODA", "INTERVAL A-B", "FAZE A-B", "POMER A/B", "TOTALIZACE A", "SIRKA PULZU A", "STRIDA A" };
 
-/* Aktualni kanal (0 = A, 1 = B) a nastaveni FUNKCE = (mode, kanal) najednou -- okno FUNKCE MERENI (zadani UI §7).
- * Kanal i mod jsou uz ulozene v `g_ui_cfg` (po jednom bitu) a kanal do FPGA posila FpgaTask podle `g_ui_cfg`,
- * takze "Frekvence B" je presne totez, co FREQ + tlacitko CHAN v patce. */
+static uint8_t fx_pair_of(int fx)
+{
+    if (fx == SM_FX_TI || fx == SM_FX_PHASE) return FPGA_EVP_AB;
+    if (fx == SM_FX_PW || fx == SM_FX_DUTY)  return FPGA_EVP_PW;
+    return FPGA_EVP_OFF;
+}
+
+/* Vstup do funkce: parovani ve FPGA (provede FpgaTask), vynulovani totalizace. */
+static void fx_enter(int fx_new, int fx_old)
+{
+    const uint8_t pn = fx_pair_of(fx_new), po = fx_pair_of(fx_old);
+    if (pn != po || pn != FPGA_EVP_OFF) fpga_freq_ev_pair_req(pn);   /* i opakovany vyber = novy start parovani */
+    if (fx_new == SM_FX_TOTAL) fpga_freq_v3_total_reset();
+}
+
+/* Aktualni merici funkce (SM_FX_*). Vystaveno pro okno FUNKCE (zadani UI §7), aby app vrstva nemusela sahat do `st`. */
+int  screen_main_mode(void) { return s_fx; }
+
+/* Aktualni kanal (0 = A, 1 = B) a nastaveni FUNKCE = (funkce, kanal) najednou -- okno FUNKCE MERENI (zadani UI §7).
+ * Kanal i FREQ/PERIOD jsou ulozene v `g_ui_cfg` (po jednom bitu) a kanal do FPGA posila FpgaTask podle `g_ui_cfg`,
+ * takze "Frekvence B" je presne totez, co FREQ + tlacitko CHAN v patce. `chan` < 0 = kanal nemenit. */
 int  screen_main_chan(void) { return st.chan; }
 
 void screen_main_set_func(int mode, int chan)
 {
-    if (mode < 0 || mode > 1 || chan < 0 || chan > 1) return;
-    if (mode == st.mode && chan == st.chan) return;
-    if (mode != st.mode) s_disp_recalc = 1;     /* FREQ<->PERIOD -> prepocet formatu velkeho cisla */
+    if (chan < 0) chan = st.chan;
+    if (mode < 0 || mode >= SM_FX_N || chan > 1) return;
+    if (mode == s_fx && chan == st.chan) return;
+    if (mode != s_fx) { s_disp_recalc = 1; fx_enter(mode, s_fx); }   /* jina velicina -> prepocet formatu */
     if (chan != st.chan)
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)chan, (uint32_t)st.chan, "kanal");
-    st.mode = (int8_t)mode; st.chan = (int8_t)chan;
+    s_fx = (int8_t)mode;
+    st.mode = (int8_t)((mode == SM_FX_PER) ? 1 : 0);
+    st.chan = (int8_t)chan;
     g_ui_cfg = ui_cfg_pack();
     g_ui_cfg_dirty = 1;
+}
+
+/* Obnova funkce ze syscfg (vola syscfg_load PRED screen_main_init; ten pak zapne parovani). 0/1 urcuje `g_ui_cfg`. */
+void screen_main_restore_fx(int fx)
+{
+    if (fx >= SM_FX_TI && fx < SM_FX_N) s_fx = (int8_t)fx;
 }
 
 /* 🔴 SKUTECNE zmerene hradlo z posledniho ramce [s], 0 = nezname.
@@ -330,7 +368,9 @@ int screen_main_button_center(int idx, int16_t *cx, int16_t *cy)
 void screen_main_button_action(int idx)
 {
     switch (idx) {
-    case 0: st.mode = (int8_t)(st.mode ? 0 : 1);          /* FREQ <-> PERIOD */
+    case 0: if (s_fx >= SM_FX_TI) { fx_enter(SM_FX_FREQ, s_fx); st.mode = 0; }   /* rozsirena funkce -> zpet FREKVENCE */
+            else st.mode = (int8_t)(st.mode ? 0 : 1);     /* FREQ <-> PERIOD */
+            s_fx = st.mode;
             s_disp_recalc = 1; break;                     /* prepocitej velke cislo (perioda 1/f) */
     case 1: st.running = !st.running;            break;   /* RUN <-> STOP */
     case 2: {
@@ -374,7 +414,11 @@ int screen_main_apply_cfg_req(void)
     if (gate >= (int8_t)IPC_GATE_N) gate = (int8_t)IPC_GATE_DEFAULT;
     if (mode == st.mode && chan == st.chan && gate == st.gate && run == st.running)
         return 0;                                  /* nic noveho -> zadny redraw */
-    if (mode != st.mode) s_disp_recalc = 1;         /* FREQ<->PERIOD -> prepocet velkeho cisla */
+    if (mode != st.mode) {                          /* FREQ<->PERIOD -> prepocet velkeho cisla */
+        s_disp_recalc = 1;
+        if (s_fx >= SM_FX_TI) fx_enter(mode, s_fx); /* dalkove FREQ/PER ukonci rozsirenou funkci */
+        s_fx = mode;
+    }
     if (st.gate != gate)
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)gate, (uint32_t)st.gate, "brana");
     if (st.chan != chan)
@@ -460,6 +504,9 @@ void screen_main_init(void)
         st.gate     = (int8_t)IPC_UICFG_GATE(c);
         if (st.gate >= (int8_t)IPC_GATE_N) st.gate = (int8_t)IPC_GATE_DEFAULT;
         st.running  = ((c >> 4) & 1) != 0;
+        /* v0.44.5: rozsirena funkce ze syscfg (screen_main_restore_fx) ma prednost; jinak plati bit FREQ/PERIOD */
+        if (s_fx >= SM_FX_TI) { st.mode = 0; fx_enter(s_fx, SM_FX_FREQ); }
+        else s_fx = st.mode;
         g_ui_cfg    = ui_cfg_pack();
     }
     if (cache_initialized) return;
@@ -641,7 +688,9 @@ static void render_body_title(void)
      * rezim frekvence je zrejmy z jednotky Hz). 2026-10-28 (na prani uzivatele): nepise se ani oznaceni kanalu A/B (kanal je
      * na tlacitku CHAN v patce). V rezimu PERIODA se slovo „PERIODA“ ponechava, protoze jinak by se rezim poznal jen
      * z jednotky (ns/us/ms). */
-    if (st.mode)
+    if (s_fx >= SM_FX_TI)                     /* v0.44.5: rozsirena funkce -- nazev vzdy (jednotka ji neprozradi) */
+        x = draw_word(x, y, FX_NAME[s_fx], &ui_font_mono_22, UI_COLOR_ACC);
+    else if (st.mode)
         x = draw_word(x, y, MODE_NAME[st.mode], &ui_font_mono_22, UI_COLOR_ACC);
     (void)x;
     /* Prava cast titulku = σ + pocet vzorku (zadani UI Zasada 2). Kresli se TADY,
@@ -695,6 +744,7 @@ static uint8_t  s_disp_period = 0;   /* 1 = rezim PERIODA */
 /* s_disp_recalc deklarovano vyse (u `st`) — pouziva ho i screen_main_button_action. */
 static const char *s_disp_unit = "Hz";   /* "Hz" / "ns" / "us" / "ms" */
 static double   s_disp_unit_s  = 1.0;    /* zobrazena jednotka -> sekundy (perioda: 1e-9/1e-6/1e-3) */
+static uint8_t  s_layout_exact = 0u;     /* v0.44.5: num_layout -> vsechny cislice duveryhodne, bez podtrzeni (totalizace) */
 static char     s_seps[NUM_SEG_MAX]; /* mutable separatory (num_layout: '.'/','/' '/SEP_NONE) */
 
 /* ── #1: napojeni realnych/emulovanych dat FPGA na headline + statistiky ──────
@@ -793,7 +843,8 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
     if (int_digits < 1) int_digits = 1;
     if (int_digits > 12) int_digits = 12;
     if (frac_digits < 0) frac_digits = 0;
-    if (frac_digits > FREQ_FRAC_HIRES) frac_digits = FREQ_FRAC_HIRES;
+    /* v0.44.5: rozsirena funkce az 12 desetin (pomer dvou 10 MHz = 1 ± 1e-11) -- 13 cislic se vejde do d[20] i 12 segmentu */
+    if (frac_digits > ((s_fx >= SM_FX_TI) ? 12 : FREQ_FRAC_HIRES)) frac_digits = (s_fx >= SM_FX_TI) ? 12 : FREQ_FRAC_HIRES;
 
     /* ── Skladba segmentu (delka / uroven / podtrzeni) + separator ZA kazdym ──
      * CELA cast: skupiny po 3 zprava, oddelene TECKOU (ceske tisice).
@@ -826,7 +877,7 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
     int no_und = 0;
     /* 2026-10-21: plati i pro 0/1 desetinu (driv „vse nejiste, bez podtrzeni") -- format se zkracuje na posledni platnou + jednu,
      * takze 1 desetina je bezny pripad (napr. 100 MHz pri 0,05 s bez regrese) a podtrzeni patri na jednotky Hz. */
-    if (total < 2) {
+    if (total < 2 || s_layout_exact) {       /* v0.44.5: s_layout_exact = cele cislo bez nejistoty (totalizace) */
         n_cert = total; no_und = 1;
     } else {
         if (n_unc < 1) n_unc = 1;
@@ -927,11 +978,15 @@ static int num_layout(int int_digits, int frac_digits, int n_unc)
  * ⚠️ ZADNY `log10` (nano.specs bez float printf je jina vec, ale libm log10 by
  *   zbytecne tahlo float — staci nasobeni 0,1 v celociselne smycce).
  * Vraci pocet nejistych desetin; volajici (`num_layout`) ho jeste sanituje. */
-/* σ casove znacky TDC [ps] (od 2026-10-08 zmerena, ne krok tapu) — hodnota bydli v `meas_present.h` jako `MP_TDC_PS`, protoze ji
- * potrebuje i CM4 (web ji servíruje v `/api/state` pro rozpocet nejistoty).
- * Zdejsi alias zustava jen kvuli citelnosti mistnich vzorcu. */
-#define FREQ_TDC_PS  MP_TDC_PS
-double screen_main_tdc_ps(void) { return FREQ_TDC_PS; }
+/* σ casove znacky TDC [ps]. Od v0.44.5 (STATUS #350) ZMERENA ZA BEHU z reziduí segmentu vybraneho kanalu
+ * (fpga_freq_tdc_sigma_ps, protokol v3, ne pri koherentnim signalu); jinak nahrada `MP_TDC_PS` (meas_present.h, 105 ps
+ * namerenych 2026-10-08 na architekture 0x041x). Jediny zdroj pro rozpocet nejistoty, podlahu presnosti i podlahu Allanu;
+ * na web jde pres IPC (blok gpsdo, `tdc_ps_x10`). */
+double screen_main_tdc_ps(void)
+{
+    const double s = fpga_freq_tdc_sigma_ps(-1, NULL, NULL);
+    return (s > 0.0) ? s : MP_TDC_PS;
+}
 
 /* Nejistota reference [ppb] podle STAVU smycky GPSDO (viz mp_ref_ppb). Vola UiTask (gpsdo_get je pod kritickou sekci). */
 double screen_main_ref_ppb(void)
@@ -964,7 +1019,7 @@ static void regr_track(uint8_t used)
 double screen_main_res_floor_rel(void)
 {
     double gate = screen_main_gate_actual_s();
-    return mp_res_floor_rel(gate, screen_main_freq_hz(), s_regr_act);
+    return mp_res_floor_rel(gate, screen_main_freq_hz(), s_regr_act, screen_main_tdc_ps());
 }
 
 static double meas_u_rel(uint64_t gate_ps, double hz)
@@ -975,7 +1030,7 @@ static double meas_u_rel(uint64_t gate_ps, double hz)
      * drift) -> display by tvrdil vic duveryhodnych cislic, nez mereni unese.
      * Fallback (jeste neni dost vzorku na σy): teoreticke rozliseni hradla. */
     if (s_digits_res)                               /* rezim „rozliseni citace“: jen podlaha citace, viz s_digits_res */
-        return mp_res_floor_rel((double)gate_ps * 1e-12, hz, s_regr_act);
+        return mp_res_floor_rel((double)gate_ps * 1e-12, hz, s_regr_act, screen_main_tdc_ps());
     double u_res = (double)screen_main_adev_1s();   /* relativni σy@1s; 0 = jeste neni */
     /* v0.40.4: σy pri tau = HRADLO z navazujicich oken (FpgaTask, win_adev_feed) -- to je rozptyl PRAVE zobrazeneho mereni;
      * σy@1s plati jen pro hradlo 1 s (pri 0,25 s byva vetsi, pri 10 s mensi). Do naplneni rady (16 oken) zustava σy@1s. */
@@ -993,7 +1048,7 @@ static double meas_u_rel(uint64_t gate_ps, double hz)
      * ~20x pesimisticka (namereno 2,9e-11 proti 5,9e-10 pri 0,25 s), displej tak skryval jednu az dve platne cislice. */
     {
         double gate_s = (double)gate_ps * 1e-12;
-        double u_floor = mp_res_floor_rel(gate_s, hz, s_regr_act);
+        double u_floor = mp_res_floor_rel(gate_s, hz, s_regr_act, screen_main_tdc_ps());
         if (!(u_res > u_floor)) u_res = u_floor;
     }
     /* 🔴 K tomu systematicka nejistota REFERENCE podle stavu smycky (kvadraticky): bez zamceni (volny chod OCXO, desitky
@@ -1080,6 +1135,181 @@ static void period_fmt_of(double hz, const char **unit, double *unit_s, int *int
     *int_digits = n;
 }
 
+/* ── v0.44.5: hodnota rozsirene funkce (s_fx >= SM_FX_TI) ─────────────────────────────────────────────────────────
+ * fx_eval spocita velicinu, jeji nejistotu (k = 1, ve stejne jednotce) a kratky popis pro titulni radek (misto σy+N).
+ * Bez platnych dat ok = 0 a popis rekne PROC -- velke cislo pak ukaze nuly se znackou BEZ DAT (prazdna hodnota je
+ * u meridla k nerozeznani od poruchy). Vola UiTask (freq_advance, 20 Hz). */
+typedef struct {
+    double v, u;              /* hodnota a nejistota prumeru [jednotka unit_s]; v sekundach u casu, jinak primo */
+    const char *unit;         /* NULL = bezrozmerne */
+    double unit_s;            /* prevod zobrazene jednotky (cas: 1 / 1e-3 / ...; jinak 1) */
+    uint8_t ok, exact, time;  /* exact = cele cislo bez nejistych cislic (totalizace); time = volit jednotku casu */
+    char info[44];
+} fx_val_t;
+static fx_val_t    s_fxv;                                  /* posledni hodnota */
+static int         s_fx_int = -1, s_fx_frac = -1;          /* format pri posledni stavbe */
+static const char *s_fx_unit = NULL;
+static double      s_fx_unit_s = 0.0;
+static int8_t      s_fx_ok = -1;
+static uint32_t    s_fx_build_ms = 0u;
+
+/* kmitocet kanalu z ramce: hi-res z dvojice hrany/okno, jinak x1e5 */
+static double fx_ch_hz(const fpga_meas_t *m, int ch)
+{
+    const int prim = ((ch != 0) == (fpga_meas_chb_primary(m) != 0));
+    const uint64_t x = fpga_meas_freq_ch(m, ch);
+    if (x == 0u) return 0.0;
+    const uint64_t e  = prim ? m->edge_count : (uint64_t)m->edges_b;
+    const uint64_t dt = prim ? m->gate_ps : m->dt_b_ps;
+    const double h = (e && dt) ? fpga_freq_hires_hz(x, e, dt) : 0.0;
+    return (h > 0.0) ? h : (double)x / 100000.0;
+}
+
+static void fx_time_unit(double t, const char **u, double *us)
+{
+    if      (t >= 1.0)   { *u = "s";  *us = 1.0;   }
+    else if (t >= 1e-3)  { *u = "ms"; *us = 1e-3;  }
+    else if (t >= 1e-6)  { *u = "us"; *us = 1e-6;  }
+    else if (t >= 1e-9)  { *u = "ns"; *us = 1e-9;  }
+    else                 { *u = "ps"; *us = 1e-12; }
+}
+
+static void fx_eval(fx_val_t *o)
+{
+    memset(o, 0, sizeof *o);
+    o->unit_s = 1.0;
+    fpga_meas_t m;
+    const int seen = fpga_freq_get_last(&m) ? 1 : 0;
+    const int live = seen && fpga_freq_link_ok() && !(m.error_flags & FPGA_ERR_SIGNAL_LOST);
+    const double gate = (screen_main_gate_actual_s() > 0.0) ? screen_main_gate_actual_s() : 0.25;
+    const uint32_t now = HAL_GetTick();
+    switch (s_fx) {
+    case SM_FX_TI: case SM_FX_PHASE: case SM_FX_PW: case SM_FX_DUTY: {
+        const int rc = fpga_freq_ev_pair_rc();
+        const uint8_t pr = fpga_freq_proto();
+        if (pr != 3u && pr != 0u) { snprintf(o->info, sizeof o->info, "jen protokol v3 (FPGA FW 0x05xx)"); return; }
+        if (rc == 127) { snprintf(o->info, sizeof o->info, "ceka na nastaveni FPGA"); return; }
+        if (rc == -2)  { snprintf(o->info, sizeof o->info, "jen protokol v3 (FPGA FW 0x05xx)"); return; }
+        if (rc == -1)  { snprintf(o->info, sizeof o->info, "FPGA FW bez parovani (CAPS bit20)"); return; }
+        if (rc == 0)   { snprintf(o->info, sizeof o->info, "SET_CONFIG do FPGA selhal"); return; }
+        /* prumer pres intervaly jednoho hradla: parovani dava ~1 interval na segment 25 ms (40/s), kruh drzi 64 */
+        uint32_t nl = (uint32_t)(gate * 40.0 + 0.5);
+        if (nl < 1u) nl = 1u;
+        if (nl > 64u) nl = 64u;
+        double mean = 0.0, sd = 0.0; uint32_t n = 0u, tot = 0u;
+        static uint32_t s_tot = 0u, s_tot_ms = 0u;
+        if (!fpga_freq_ab_stat(nl, &mean, &sd, &n, &tot)) {
+            snprintf(o->info, sizeof o->info, (s_fx == SM_FX_PW || s_fx == SM_FX_DUTY) ? "zadny pulz na A" : "zadny par A->B (signal A i B?)");
+            return;
+        }
+        if (tot != s_tot) { s_tot = tot; s_tot_ms = now; }
+        else if ((uint32_t)(now - s_tot_ms) > 2000u) { snprintf(o->info, sizeof o->info, "zadny novy interval > 2 s"); return; }
+        const double t = mean * 1e-12;
+        double ut = ((n > 1u) ? sd / sqrt((double)n) : sd) * 1e-12;
+        const double fl = screen_main_tdc_ps() * 1e-12 * 1.41421356 / sqrt((double)n);   /* dvojice znacek na interval */
+        if (ut < fl) ut = fl;
+        if (s_fx == SM_FX_TI || s_fx == SM_FX_PW) {
+            o->v = t; o->u = ut; o->time = 1u;
+            const unsigned long s10 = (sd < 9.9e6) ? (unsigned long)(sd * 10.0 + 0.5) : 99999990ul;   /* bez %f; strop 9,99 us */
+            snprintf(o->info, sizeof o->info, "n=%lu  jedno %lu,%lu ps", (unsigned long)n, s10 / 10ul, s10 % 10ul);
+        } else {
+            const double fa = live ? fx_ch_hz(&m, 0) : 0.0;
+            if (!(fa > 0.0)) { snprintf(o->info, sizeof o->info, "chybi kmitocet A"); return; }
+            if (s_fx == SM_FX_PHASE) {
+                double ph = fmod(t * fa * 360.0, 360.0);
+                if (ph < 0.0) ph += 360.0;
+                o->v = ph; o->u = ut * fa * 360.0; o->unit = "\xC2\xB0";
+            } else {
+                o->v = t * fa * 100.0; o->u = ut * fa * 100.0; o->unit = "%";
+            }
+            snprintf(o->info, sizeof o->info, "n=%lu  z intervalu a f_A", (unsigned long)n);
+        }
+        o->ok = 1u;
+        return;
+    }
+    case SM_FX_RATIO: {
+        const double fa = live ? fx_ch_hz(&m, 0) : 0.0, fb = live ? fx_ch_hz(&m, 1) : 0.0;
+        if (!(fa > 0.0) || !(fb > 0.0)) {
+            snprintf(o->info, sizeof o->info, !(fa > 0.0) ? "chybi signal A" : "chybi signal B");
+            return;
+        }
+        const double tdc = screen_main_tdc_ps();
+        const double ua = mp_res_floor_rel(gate, fa, s_regr_act, tdc), ub = mp_res_floor_rel(gate, fb, s_regr_act, tdc);
+        o->v = fa / fb; o->u = o->v * sqrt(ua * ua + ub * ub);
+        snprintf(o->info, sizeof o->info, "f_A / f_B, jedno okno");
+        o->ok = 1u;
+        return;
+    }
+    case SM_FX_TOTAL: {
+        uint64_t n = 0u; uint32_t rs = 0u;
+        if (!fpga_freq_v3_total(&n, &rs)) { snprintf(o->info, sizeof o->info, "ceka na hrany A (protokol v3)"); return; }
+        o->v = (double)n; o->exact = 1u;
+        if (rs) snprintf(o->info, sizeof o->info, "hran od vyberu, preruseni %lu", (unsigned long)rs);
+        else    snprintf(o->info, sizeof o->info, "hran od vyberu funkce");
+        o->ok = 1u;
+        return;
+    }
+    default: return;
+    }
+}
+
+/* cele cislice hodnoty v zobrazene jednotce (aspon 1) */
+static int fx_int_digits(double vd)
+{
+    if (!(vd >= 1.0)) return 1;
+    int n = 1;
+    for (double p = 10.0; vd >= p && n < 12; p *= 10.0) n++;
+    return n;
+}
+
+/* desetin tolik, aby posledni platna cislice byla nad nejistotou a za ni nejvys dve nejiste (jako hlavni cislo) */
+static int fx_frac_for(double res)
+{
+    if (!(res > 0.0)) return 3;
+    int f = 0;
+    for (double pv = 1.0; pv > res / 10.0 && f < 12; pv *= 0.1) f++;
+    return f;
+}
+
+static int fx_unc(double res, int frac)
+{
+    if (!(res > 0.0)) return 1;
+    double pv = 1.0;
+    for (int i = 0; i < frac; i++) pv *= 0.1;
+    int n = 0;
+    while (pv < res && n < frac + 12) { n++; pv *= 10.0; }
+    return n;
+}
+
+/* jednotka a cele cislice aktualni hodnoty */
+static void fx_fmt(const fx_val_t *o, const char **u, double *us, int *idg)
+{
+    *u = o->unit; *us = o->unit_s;
+    if (o->time) fx_time_unit(o->ok ? o->v : 1e-9, u, us);
+    *idg = fx_int_digits(o->ok ? o->v / *us : 0.0);
+}
+
+/* Stavba formatu velkeho cisla pro rozsirenou funkci (cast „zobrazeni" num_build_for). */
+static void fx_layout(void)
+{
+    const char *u; double us; int idg;
+    fx_fmt(&s_fxv, &u, &us, &idg);
+    const double res = s_fxv.ok ? s_fxv.u / us : 0.0;
+    s_disp_period = 0u;
+    s_disp_unit = u; s_disp_unit_s = us;
+    int fmax = s_fxv.exact ? 0 : fx_frac_for(res);
+    if (!s_fxv.ok) fmax = 0;
+    s_layout_exact = (uint8_t)(s_fxv.exact && s_fxv.ok);
+    for (int frac = fmax; ; frac--) {
+        num_layout(idg, frac, s_fxv.ok ? fx_unc(res, frac) : 99);
+        if (s_num_w <= FREQ_MAX_W || frac == 0) break;
+    }
+    s_layout_exact = 0u;
+    s_freq_unc_last = -1;                    /* prestavbu podle nejistoty kmitoctu vypnout; ridi ji fx_poll */
+    s_fx_int = idg; s_fx_frac = s_fxv.exact ? 0 : fx_frac_for(res); s_fx_unit = u;   /* POZADOVANY pocet desetin (ne orezany sirkou) */ s_fx_unit_s = us; s_fx_ok = (int8_t)s_fxv.ok;
+    s_fx_build_ms = HAL_GetTick();
+}
+
 static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, int max_frac)
 {
     uint64_t whole = x100000 / 100000ull;
@@ -1094,9 +1324,11 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
     s_freq_nominal_hz = (double)whole;
     s_freq_center     = (whole > 0u) ? whole * pow10_u64(s_freq_frac) : s_freq_n;
 
-    /* ── 2) ZOBRAZENI: FREQUENCY nebo PERIODA (footer toggle `st.mode`). ── */
+    /* ── 2) ZOBRAZENI: FREQUENCY nebo PERIODA (footer toggle `st.mode`), od v0.44.5 i rozsirena funkce. ── */
     s_disp_period = (uint8_t)(st.mode & 1);
-    if (!s_disp_period) {
+    if (s_fx >= SM_FX_TI) {
+        fx_layout();
+    } else if (!s_disp_period) {
         s_disp_unit = SCR_S_UNIT_HZ; s_disp_unit_s = 1.0;
         for (int frac = max_frac; ; frac--) {
             /* Za posledni platnou (podtrzenou) cislici: prvni nejista VELKYM fontem (SIGMA), dalsi malym (FLOOR) -- zobrazuji se
@@ -1129,6 +1361,14 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
  * Vola se po KAZDE zmene s_freq_n bez rebuilu formatu (SIM krok, drzeny FPGA seq). */
 static void disp_update(void)
 {
+    if (s_fx >= SM_FX_TI) {                  /* v0.44.5: rozsirena funkce -- hodnota z fx_eval v jednotce formatu */
+        uint64_t lim = pow10_u64(s_disp_total);
+        double d = s_fxv.ok ? (s_fxv.v / s_disp_unit_s) * (double)pow10_u64(s_disp_frac) + 0.5 : 0.0;
+        if (!(d > 0.0)) d = 0.0;
+        uint64_t n = (d >= 1.8e19) ? (lim - 1u) : (uint64_t)d;
+        s_disp_n = (n >= lim) ? lim - 1u : n;   /* pretecen formatu resi fx_poll prestavbou; tady jen neprekrocit sirku */
+        return;
+    }
     if (!s_disp_period) {
         /* 2026-10-21: zobrazeni muze mit mene desetin nez kmitocet -> ORIZNOUT (ne zaokrouhlit: prenos by pridal vedouci cislici,
          * kterou format nema -- 9 999 999,9996 -> „0.000.000,000", viz period_fmt_of). Posledni kreslena cislice je nejista. */
@@ -1204,6 +1444,21 @@ static void freq_advance(void)
     do { seq = g_freq_seq; x100000 = g_freq_x100000; valid = g_freq_valid;
          edges = g_freq_edges; gate_ps = g_freq_gate_ps; hires = g_freq_hires; regr = g_freq_regr; }
     while (seq != g_freq_seq);
+
+    /* v0.44.5: rozsirena funkce -- nova hodnota kazdy tik; jiny RAD / jednotka / platnost -> prestavba hned, jiny pocet
+     * desetin (nejistota) nejvys 1x za 2 s (sum σ by jinak format prestavoval porad dokola a zona by blikala). */
+    if (s_fx >= SM_FX_TI) {
+        fx_eval(&s_fxv);
+        const char *u; double us; int idg;
+        fx_fmt(&s_fxv, &u, &us, &idg);
+        const int fr = s_fxv.exact ? 0 : fx_frac_for(s_fxv.ok ? s_fxv.u / us : 0.0);
+        if (idg != s_fx_int || us != s_fx_unit_s || u != s_fx_unit || (int8_t)s_fxv.ok != s_fx_ok)
+            s_disp_recalc = 1;
+        else if (s_fxv.ok && fr != s_fx_frac && (uint32_t)(HAL_GetTick() - s_fx_build_ms) >= 2000u)
+            s_disp_recalc = 1;
+        else
+            disp_update();
+    }
 
     /* Prepnul se FREQUENCY <-> PERIOD (footer toggle) -> vynut rebuild formatu
      * z posledni znamé FREKVENCE (na novém mereni / SIM kroku nezavisle). */
@@ -2619,7 +2874,7 @@ static int allan_metric_kind(void);   /* fwd — definice u prepinace metriky ni
  * vzorkovani), kvantizacni chyba neni nahodna a krivka muze byt i pod ni. */
 static float adev_floor_base(int kind, float tau, int m)
 {
-    double tdc = FREQ_TDC_PS * 1e-12 * 3.46410162;  /* σ znacky -> ekvivalentni krok kvantizace q = σ·√12 [s] */
+    double tdc = screen_main_tdc_ps() * 1e-12 * 3.46410162;  /* σ znacky -> ekvivalentni krok kvantizace q = σ·√12 [s] */
     double t   = (double)tau;
     switch (kind) {
     case ADEV_KIND_HDEV: return (float)(0.52704628 * tdc / t);            /* √(10/3)/√12 */
@@ -3647,7 +3902,8 @@ static void footer_button_def(int i, const char **label, const char **value,
     switch (i) {
     /* Slot 0 = PERIOD/FREQ toggle. Label = AKCE (co se stiskem zapne), ne stav:
      * v rezimu FREQUENCY nabizi "PERIOD" a naopak (MODE_NAME[st.mode ? 0 : 1]). */
-    case 0: *label = MODE_NAME[st.mode ? 0 : 1]; *var = UI_BUTTON_NORMAL; break;
+    case 0: *label = (s_fx >= SM_FX_TI) ? MODE_NAME[0] : MODE_NAME[st.mode ? 0 : 1];   /* rozsirena funkce -> nabidne FREKVENCE */
+            *var = UI_BUTTON_NORMAL; break;
     /* Label = AKCE, ne stav (2026-07-20): bezi-li mereni, tlacitko nabizi "STOP"
      * (cervene), pri zastavenem nabizi "RUN" (zelene). Drive to bylo obracene
      * (label = stav) — matouci, protoze zelene "RUN" svitilo prave kdyz uz bezi.
@@ -3708,6 +3964,7 @@ void screen_main_strike_reading(void)
 /* Jeden zdroj textu σ+N (pouziva ho plny render titulku i partial 1Hz update). */
 static void uncert_text(char *out, size_t n)
 {
+    if (s_fx >= SM_FX_TI) { snprintf(out, n, "%s", s_fxv.info); return; }   /* v0.44.5: popis / duvod rozsirene funkce */
     char sb[24];
     float sy = stats_adev(1);
     if (sy > 0.0f) fmt_frac(sb, sizeof sb, sy, 0);
@@ -4013,6 +4270,14 @@ static void redraw_freq_area_ex(prim_rect_t area, int glyph_accel)
         prim_rect_t fa = freq_area();
         prim_draw_text((prim_point_t){(int16_t)(fa.x + 2), (int16_t)(fa.y + 34)},
                        "RES", &ui_font_mono_16, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    }
+    /* v0.44.5: rozsirena funkce bez platnych dat -- nuly nesmi vypadat jako zmerena hodnota (duvod je v titulnim radku).
+     * Zmena platnosti vynuti prestavbu (fx_poll), takze se znacka kresli i maze plnym prekreslenim zony. */
+    if (s_fx >= SM_FX_TI && !s_fxv.ok) {
+        /* bez dat je cislo jedina nula uprostred -> popisek VLEVO od nej (uvnitr freq_clear_area, smaze ho plny redraw) */
+        prim_rect_t fa = freq_area();
+        prim_draw_text((prim_point_t){(int16_t)(fa.x - 12), (int16_t)(fa.y + 54)},
+                       "BEZ DAT", &ui_font_mono_16, UI_COLOR_WARN, PRIM_ALIGN_RIGHT);
     }
 }
 

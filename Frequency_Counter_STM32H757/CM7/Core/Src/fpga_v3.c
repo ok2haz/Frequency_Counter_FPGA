@@ -283,7 +283,9 @@ void fpga_v3_emu_segment(fpga_v3_emu_t *e)
             if (N > 0u && t + (double)(N - 1u) * p >= L) N--;          /* poistka zaokrouhleni ceil */
             if (N > 0u) {
                 const double e0 = grand(&e->rng) * sig_u;
-                const double m0 = t / unit_s + e0;
+                /* v0.44.4: stridava slozka podle parity segmentu posune vsechny znacky segmentu stejne -> jen T0 (ST ne) */
+                const double dp = ((e->seg_idx & 1u) ? -e->par_ps[c] : e->par_ps[c]) * 1e-12 / unit_s;
+                const double m0 = t / unit_s + e0 + dp;
                 const double t0r = floor(m0 + 0.5);
                 const double q0 = t0r - m0;
                 const double nm1 = (double)(N - 1u);
@@ -451,13 +453,28 @@ uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, in
             p->armed = 0u;
         }
     }
-    /* souhrn B (N >= 3) zacal pred startem a trva pres nej: prvni hrana B PO startu je neznama (presna je jen prvni
-     * hrana souhrnu) -> interval by nebyl presny, start zahodit */
+    /* souhrn B (N >= 3) zacal pred startem a trva pres nej: presna je jen prvni hrana souhrnu. Lezi-li start do jedne
+     * periody za ni, je stopem DRUHA hrana souhrnu = T0 + stredni perioda (chyba = odchylka jedne periody B od stredni,
+     * u spojiteho signalu jednotky ps). To je bezny pripad spojitych signalu na obou kanalech: prvni hrany A i B lezi
+     * do jedne periody od zacatku segmentu, a kdyz je B prvni, bez tohoto by se start zahodil vzdy (koherentni signal
+     * = zadny interval, noc20/t364). Dal za startem by se chyba stredni periody scitala -> start zahodit. Prvni hrana B
+     * blize startu nez FPGA_V3_AB_GUARD_U je s nim soucasna v ramci sumu znacek (B = A): stop by podle sumu vysel ~0 nebo
+     * cela perioda -> start zahodit jako dosud. */
     if (p->armed) {
         for (uint32_t i = 0; i < m; i++) {
             const fpga_v3_ev_t *e = o[i];
             if (e->ch == 1u && e->kind == FPGA_V3_EV_BURST && e->t_u <= p->t_start &&
-                (double)e->t_u + (double)(e->n - 1u) * e->per_u > (double)p->t_start) { p->armed = 0u; p->lost++; break; }
+                (double)e->t_u + (double)(e->n - 1u) * e->per_u > (double)p->t_start) {
+                const double d = (double)e->t_u + e->per_u - (double)p->t_start;     /* druha hrana souhrnu - start */
+                if (d > 0.0 && p->t_start - e->t_u >= FPGA_V3_AB_GUARD_U) {
+                    if (out < max_out) dt_u[out++] = (int64_t)(d + 0.5);
+                    p->n++;
+                } else {
+                    p->lost++;
+                }
+                p->armed = 0u;
+                break;
+            }
         }
     }
     return out;
@@ -496,38 +513,64 @@ void fpga_v3_pr_init(fpga_v3_pr_t *p, uint64_t max_u)
     fpga_v3_stat_init(&p->sk);
 }
 void fpga_v3_pr_switch(fpga_v3_pr_t *p) { p->skip = 1u; p->skip_n = 0u; p->pa_have = 0u; ab_reset(&p->ab); }
-void fpga_v3_pr_gap(fpga_v3_pr_t *p)    { p->pa_have = 0u; ab_reset(&p->ab); }
+void fpga_v3_pr_gap(fpga_v3_pr_t *p)    { p->pa_have = 0u; p->gaps++; ab_reset(&p->ab); }
+
+/* fpga_v3_ab_feed s pravidlem CS: podili-li se na intervalu zaznam se znackami pri CS (cs) nebo muze byt rozpracovany
+ * start z takoveho zaznamu (arm_cs), plati jen interval < FPGA_V3_AB_CS_LIM_U (viz fpga_v3.h) */
+static uint32_t pr_feed(fpga_v3_pr_t *p, const fpga_v3_ev_t *ev, uint32_t n, int cs, int64_t *dt_u, uint32_t max_out)
+{
+    const int c = cs || (p->ab.armed && p->arm_cs);
+    uint32_t k = fpga_v3_ab_feed(&p->ab, ev, n, dt_u, max_out);
+    if (c) {
+        uint32_t j = 0u;
+        for (uint32_t i = 0; i < k; i++) {
+            if ((uint64_t)dt_u[i] < FPGA_V3_AB_CS_LIM_U) dt_u[j++] = dt_u[i];
+            else { p->lost_cs++; p->ab.n--; }
+        }
+        k = j;
+    }
+    p->arm_cs = (uint8_t)(p->ab.armed && c);
+    return k;
+}
 
 uint32_t fpga_v3_pr_rec(fpga_v3_pr_t *p, const fpga_v3_rec_t *r, const fpga_v3_ev_t *e, uint32_t ne, int skew,
                         double unit_ps, int64_t *dt_u, uint32_t max_out)
 {
-    const int bad = (r->flags & (FPGA_V3_R_INVALID | FPGA_V3_R_CS)) != 0u;
+    const int inv = (r->flags & FPGA_V3_R_INVALID) != 0u;
+    const int cs  = !inv && (r->flags & FPGA_V3_R_CS) != 0u;
     uint32_t out = 0u;
     if (ne > 2u) ne = 2u;
     if ((r->ch & 1u) == 0u) {
-        if (p->pa_have && !skew && !p->skip) out = fpga_v3_ab_feed(&p->ab, p->pa, p->pan, dt_u, max_out);   /* A bez B */
+        p->rec_a++;
+        if (cs) p->cs_a++;
+        if (p->pa_have && !skew && !p->skip) {                                          /* A bez B */
+            p->lone_a++;
+            out = pr_feed(p, p->pa, p->pan, p->pa_cs, dt_u, max_out);
+        }
         p->pa_have = 0u;
-        if (bad) { ab_reset(&p->ab); return out; }
+        if (inv) { p->inv_a++; ab_reset(&p->ab); return out; }
         for (uint32_t k = 0; k < ne; k++) p->pa[k] = e[k];
-        p->pan = ne; p->pa_seg = r->seg_idx; p->pa_have = 1u;
+        p->pan = ne; p->pa_seg = r->seg_idx; p->pa_have = 1u; p->pa_cs = (uint8_t)cs;
         return out;
     }
+    p->rec_b++;
+    if (cs) p->cs_b++;
     if (p->skip) {                                       /* prepnuti zdroje B: az za drzenim B */
-        if ((r->flags & FPGA_V3_R_INVALID) || ++p->skip_n > 80u) p->skip = 0u;
+        if (inv || ++p->skip_n > 80u) p->skip = 0u;
         ab_reset(&p->ab); p->pa_have = 0u;
         return 0u;
     }
-    if (bad) { ab_reset(&p->ab); p->pa_have = 0u; return 0u; }
+    if (inv) { p->inv_b++; ab_reset(&p->ab); p->pa_have = 0u; return 0u; }
     const int same = p->pa_have && p->pa_seg == r->seg_idx;
     if (skew) {
         if (same && p->pan && ne) (void)fpga_v3_skew_add(&p->sk, &p->pa[0], &e[0], (int64_t)(50000.0 / unit_ps), unit_ps);
     } else {
         fpga_v3_ev_t ev[4];
         uint32_t m = 0u;
-        if (p->pa_have && !same) out = fpga_v3_ab_feed(&p->ab, p->pa, p->pan, dt_u, max_out);
+        if (p->pa_have && !same) { p->lone_a++; out = pr_feed(p, p->pa, p->pan, p->pa_cs, dt_u, max_out); }
         else if (same) for (uint32_t k = 0; k < p->pan; k++) ev[m++] = p->pa[k];
         for (uint32_t k = 0; k < ne; k++) ev[m++] = e[k];
-        if (m) out += fpga_v3_ab_feed(&p->ab, ev, m, dt_u + out, max_out - out);
+        if (m) out += pr_feed(p, ev, m, cs || (same && p->pa_cs), dt_u + out, max_out - out);
     }
     p->pa_have = 0u;
     return out;
@@ -540,9 +583,32 @@ void fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target)
     g->k_target = k_target ? k_target : 1u;
     g->seg_ms = 25u;
     g->max_gap_ms = 2500u;
+    g->par_en = 1u;
 }
 
 void fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch) { g->c[ch & 1u].open = 0u; }
+
+int fpga_v3_grp_phase(fpga_v3_grp_t *g, uint32_t off)
+{
+    off %= g->k_target;
+    if (off == g->seg_off) return 0;
+    g->seg_off = off;
+    for (int i = 0; i < 2; i++) { g->c[i].open = 0u; g->c[i].clean_ok = 0u; g->c[i].pend = 0u; }
+    return 1;
+}
+
+int32_t fpga_v3_pps_shift(int32_t pos_us, int32_t tg_us, int32_t W_us, int32_t L_us)
+{
+    if (W_us <= 0 || L_us <= 0) return 0;
+    int32_t e = (tg_us - pos_us) % W_us;                         /* o kolik ma 1PPS lezet pozdeji, do <-W/2, W/2) */
+    if (e >= W_us / 2) e -= W_us; else if (e < -(W_us / 2)) e += W_us;
+    const int32_t a = (e >= 0) ? e : -e;
+    const int32_t n = (a + L_us / 2 - 1) / L_us;                 /* nejblizsi nasobek L, shoda -> mensi |n| */
+    if (n == 0) return 0;
+    int32_t r = a - n * L_us; if (r < 0) r = -r;
+    if (r + FPGA_V3_PPS_HYST_US >= a) return 0;                  /* zlepseni mensi nez hystereze: ponechat */
+    return (e >= 0) ? n : -n;
+}
 
 /* v0.42.11 (L-0247): kanal B FW 0x0508 obcas cte index znacky s vynulovanymi bity 6, 7, 32, 33 (noc 2026-10-28:
  * vsech 993 vadnych X0, nikdy se bit nenastavi). V SX se to projevi jako -k*2^32 pri spravnych spodnich 32 b, nebo
@@ -594,7 +660,8 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     if (!g->seg_have) { g->seg_u = r->seg_idx; g->seg_have = 1u; }
     else g->seg_u += (uint16_t)(r->seg_idx - g->seg_raw);
     g->seg_raw = r->seg_idx;
-    const uint32_t cell = g->seg_u / g->k_target, pos = g->seg_u % g->k_target;
+    const uint32_t su = g->seg_u + g->seg_off;          /* v0.44.1: posun mrizky (fpga_v3_grp_phase) */
+    const uint32_t cell = su / g->k_target, pos = su % g->k_target;
 
     /* v0.42.7 (L-0247): kanal B FW 0x0508 obcas zachyti X0 o nasobek 64 hran vedle (chybne bity 6.. indexu, T0 spravne).
      * Na hranici oken to posune dvoubodovy odhad obou oken opacnym smerem a kontrola teziste ho neopravi (vadne X0 je
@@ -611,8 +678,8 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
             const uint64_t dt = (r->t0 - c->t_prev_raw) & MASK48;
             if (c->per_ref > 0.0 && sg >= 1u) {
                 const double pred = (double)dt / c->per_ref, d = (double)dx - pred;
-                if (sg > 1u && pred >= 1e4) c->clean = 0u;               /* mezera u rychleho signalu: nepredpovidat */
-                else if (fabs(d) < 0.5) c->clean = (uint8_t)(fabs(d) < 0.1);
+                if (sg > 1u && pred >= 1e4) { c->clean = 0u; c->fix_run = 0u; }   /* mezera u rychleho signalu */
+                else if (fabs(d) < 0.5) { c->clean = (uint8_t)(fabs(d) < 0.1); c->fix_run = 0u; }
                 else {
                     const double k = floor(d / 64.0 + 0.5);
                     int fix = c->clean && k != 0.0 && fabs(d - 64.0 * k) < 0.1;
@@ -629,12 +696,25 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
                         g->nx0ev++;
                         if (fabs(d) >= 8.0) { g->x0big[g->nx0big % FPGA_V3_X0EV] = *e; g->nx0big++; }
                     }
+                    const int64_t dv = (int64_t)(64.0 * k);
                     if (fix) {
-                        const int64_t dv = (int64_t)(64.0 * k);
+                        c->fix_run = (c->fix_run && dv == c->fix_dv && c->fix_run < 255u) ? (uint8_t)(c->fix_run + 1u) : 1u;
+                        c->fix_dv = dv;
+                    }
+                    if (fix && c->fix_run >= FPGA_V3_X0_STEP_N) {
+                        /* v0.44.1 (STATUS #353): tataz oprava v FPGA_V3_X0_STEP_N zaznamech po sobe = index opravdu
+                         * skocil (noc17: zapis generatoru vypnul vystup na ~1,2 ms = -12160 hran). Opravou by se retez
+                         * drzel na opravenych hodnotach navzdy a prvni zaznam mimo predpoved by ho vratil na surove
+                         * uprostred okna. Proto prijmout surove X0: rozbalene X tu skoci o dv -> rozpracovane okno
+                         * zahodit, perioda se urci znovu z dalsiho paru. */
+                        g->x0_step[ch]++; g->x0_dev[ch] = (int32_t)dv;
+                        c->fix_run = 0u; c->clean = 0u; odd = 1;
+                        c->open = 0u; c->clean_ok = 0u; c->pend = 0u;
+                    } else if (fix) {
                         rc = *r; rc.x0 = (r->x0 - (uint64_t)dv) & MASK40; r = &rc;
                         dx = (uint64_t)((int64_t)dx - dv) & MASK40;
                         g->x0_fix[ch]++; g->x0_dev[ch] = (int32_t)dv; dv_now = dv;
-                    } else { g->x0_odd[ch]++; c->clean = 0u; odd = 1; }
+                    } else { g->x0_odd[ch]++; c->clean = 0u; odd = 1; c->fix_run = 0u; }
                 }
             }
             /* v0.43.3 (P1 bod 3): perioda jen z platneho paru -- par mimo predpoved bez opravy (vadne X0 tohoto nebo
@@ -673,8 +753,9 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
          * celeho okna na dvoubodove se sumem dvou znacek). Nelze-li zkontrolovat, plati jako driv. */
         if (c->pend) {
             if (c->open && !pbad) {
-                const double w = c->pw, X = c->pX, T = c->pT;
+                const double w = c->pw, X = c->pX, T = c->pT, P = c->pP;
                 c->sw += w; c->swx += w * X; c->swt += w * T; c->swxx += w * X * X; c->swxt += w * X * T; c->kl++;
+                c->swp += w * P; c->swpx += w * P * X; c->swpt += w * P * T;
             }
             c->pend = 0u;
         }
@@ -730,8 +811,22 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         out->f_2pt_hz = (out->gate_units) ? (double)out->edges * 1e12 / ((double)out->gate_units * up) : 0.0;
         const double mx = c->swx / c->sw, mt = c->swt / c->sw;
         const double vxx = c->swxx / c->sw - mx * mx, vxt = c->swxt / c->sw - mx * mt;
-        out->lsq_ok = (uint8_t)(c->kl >= 2u && vxx > 0.0 && vxt > 0.0);
-        out->f_lsq_hz = out->lsq_ok ? (double)(1u << c->p_log2) * 1e12 / ((vxt / vxx) * up) : 0.0;   /* sklon t(x) = P perioda */
+        double sl = (vxx > 0.0) ? vxt / vxx : 0.0;                   /* sklon t(x) = P perioda [jednotky / periodu] */
+        /* v0.44.4 (STATUS #360): t = a + b*x + c*p. Jen s >= FPGA_V3_PAR_MIN_SEG segmenty a s x skoro nezavislym na p
+         * (r^2 < 0,5; pri K 10 je r^2 0,03 -> rozptyl sklonu +3 %). Jedna parita v okne: vpp = 0 -> det <= 0 -> bez clenu. */
+        out->lsq_par = 0u; out->par_u = 0.0;
+        if (g->par_en && c->kl >= FPGA_V3_PAR_MIN_SEG && vxx > 0.0) {
+            const double mp = c->swp / c->sw;
+            const double vpp = 1.0 - mp * mp, vxp = c->swpx / c->sw - mx * mp, vpt = c->swpt / c->sw - mp * mt;
+            const double det = vxx * vpp - vxp * vxp;
+            if (det > 0.5 * vxx * vpp) {
+                sl = (vxt * vpp - vpt * vxp) / det;
+                out->par_u = (vpt * vxx - vxt * vxp) / det;
+                out->lsq_par = 1u;
+            }
+        }
+        out->lsq_ok = (uint8_t)(c->kl >= 2u && vxx > 0.0 && sl > 0.0);
+        out->f_lsq_hz = out->lsq_ok ? (double)(1u << c->p_log2) * 1e12 / (sl * up) : 0.0;
         out->flags_or = c->flags_or; out->xc0 = c->xc0 * (double)(1u << c->p_log2); out->tc0 = c->tc0;
         out->x_first = c->x_first << c->p_log2; out->t_first = c->t_first; out->n0 = c->n0; out->p_log2 = c->p_log2;
         out->seg_bad = c->seg_bad; out->seg_max_ps = c->seg_max_ps; out->cell = c->cell;
@@ -746,6 +841,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
         c->open = 1u; c->k = 0u; c->n_tot = 0u; c->seg_first = r->seg_idx; c->p_log2 = pl;
         c->x_first = x; c->t_first = t;
         c->sw = c->swx = c->swt = c->swxx = c->swxt = 0.0; c->flags_or = 0u; c->kl = 0u;
+        c->swp = c->swpx = c->swpt = 0.0;
         c->seg_bad = 0u; c->seg_max_ps = 0.0;
         c->xc0 = (double)x + (double)r->sx / (double)r->n;
         c->n0  = r->n;
@@ -756,6 +852,7 @@ int fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz,
     c->pw = w;
     c->pX = (double)(x - c->x_first) + (double)r->sx / w;
     c->pT = (double)(t - c->t_first) + (double)r->st / w;
+    c->pP = (r->seg_idx & 1u) ? -1.0 : 1.0;           /* v0.44.4: parita segmentu podle cisla z FPGA */
     c->pend = 1u;
     c->k++; c->n_tot += r->n; c->flags_or |= r->flags;
     return closed;
@@ -1414,6 +1511,130 @@ bool fpga_v3_selftest(void)
             }
         }
         V3OK(nwr == 8u && bad == 0u);
+    }
+
+    /* 24) v0.44.1 skutecny skok X0 (STATUS #353): od segmentu 20 je X0 kanalu B trvale o 640 hran (10*64) mensi (vystup
+     * stal). Prvni 3 zaznamy se opravi, 4. prijme surove X0 a zahodi rozpracovane okno -> zadna dalsi oprava, vsechna
+     * okna B (i po skoku) presna, A beze zmeny */
+    {
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 23u);
+        fpga_v3_grp_init(&s_g, 4u);
+        uint32_t nwin_after = 0u, nwa = 0u;
+        double maxrel = 0.0;
+        for (uint32_t s = 0; s < 60u; s++) {
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                fpga_v3_rec_t q = s_e.ring[i % FPGA_V3_EMU_RING];
+                if ((q.ch & 1u) == 1u && q.seg_idx >= 20u) q.x0 = (q.x0 - 640u) & MASK40;
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, &q, s_e.clk_mhz, &w)) continue;
+                const double f = (w.lsq_ok && !w.seg_bad) ? w.f_lsq_hz : w.f_2pt_hz;
+                if (fabs(f / 1e6 - 1.0) > maxrel) maxrel = fabs(f / 1e6 - 1.0);
+                if ((w.ch & 1u) == 0u) nwa++;
+                else if (w.seg_first >= 24u) nwin_after++;
+            }
+        }
+        V3OK(maxrel < 1e-6 && s_g.x0_fix[1] == FPGA_V3_X0_STEP_N - 1u && s_g.x0_step[1] == 1u && s_g.x0_dev[1] == -640 &&
+             s_g.x0_odd[1] == 0u && s_g.x0_fix[0] == 0u && s_g.x0_step[0] == 0u && nwin_after >= 7u && nwa >= 13u);
+    }
+
+    /* 25) v0.44.1 posun mrizky oken (fpga_v3_grp_phase, STATUS #354): K = 4; pred zmenou okna od bunky seg_u % 4 = 0,
+     * po posunu o 1 segment od (seg_u + 1) % 4 = 0, vsechna po 4 segmentech; opakovany stejny posun nic nemeni */
+    {
+        fpga_v3_emu_init(&s_e, 1e6, 1e6, 50.0, 24u);
+        fpga_v3_grp_init(&s_g, 4u);
+        uint32_t s0 = 0u, nbefore = 0u, nafter = 0u, bad = 0u;
+        int ch1 = -1, ch2 = -1;
+        for (uint32_t s = 0; s < 48u; s++) {
+            if (s == 20u) { ch1 = fpga_v3_grp_phase(&s_g, 1u); ch2 = fpga_v3_grp_phase(&s_g, 5u); }
+            fpga_v3_emu_segment(&s_e);
+            for (uint32_t i = s_e.rec_head - 2u; i < s_e.rec_head; i++) {
+                const fpga_v3_rec_t *q = &s_e.ring[i % FPGA_V3_EMU_RING];
+                if (s == 0u && i == s_e.rec_head - 2u) s0 = q->seg_idx;
+                fpga_v3_win_t w;
+                if (!fpga_v3_grp_feed(&s_g, q, s_e.clk_mhz, &w)) continue;
+                const uint32_t rel = (uint32_t)(uint16_t)(w.seg_first - s0);
+                if (w.nseg != 4u) bad++;
+                if (rel < 20u) { nbefore++; if (rel % 4u != 0u) bad++; }
+                else { nafter++; if ((rel + 1u) % 4u != 0u) bad++; }
+            }
+        }
+        V3OK(ch1 == 1 && ch2 == 0 && s_g.seg_off == 1u && nbefore >= 8u && nafter >= 10u && bad == 0u);
+    }
+
+    /* 26) v0.44.2 posun mrizky k 1PPS (fpga_v3_pps_shift): okno 250 ms, L 25 ms. Deska 2026-11-05: 1PPS 83,08 ms, cil
+     * 100 ms -> o 1 segment (108,08 ms). Prah polovina L se shodou ke mensimu |n|, hystereze, preklopeni pres okraj okna.
+     * Sweep cile po L pro ruzne faze 1PPS: po posunu stabilni, chyba <= L/2 + HYST, mimo pasmo hystereze kazdy krok cile
+     * = krok polohy o L (v0.44.1 s hysterezi 3/4 L davala dvojice stejnych poloh) */
+    {
+        const int32_t W = 250000, L = 25000, H = FPGA_V3_PPS_HYST_US;
+        int good = fpga_v3_pps_shift(83080, 100000, W, L) == 1 && fpga_v3_pps_shift(108080, 100000, W, L) == 0 &&
+                   fpga_v3_pps_shift(100000, 100000, W, L) == 0 && fpga_v3_pps_shift(87500, 100000, W, L) == 0 &&
+                   fpga_v3_pps_shift(112500, 100000, W, L) == 0 && fpga_v3_pps_shift(62500, 100000, W, L) == 1 &&
+                   fpga_v3_pps_shift(137500, 100000, W, L) == -1 && fpga_v3_pps_shift(87300, 100000, W, L) == 0 &&
+                   fpga_v3_pps_shift(87000, 100000, W, L) == 1 && fpga_v3_pps_shift(240000, 0, W, L) == 0 &&
+                   fpga_v3_pps_shift(230000, 0, W, L) == 1 && fpga_v3_pps_shift(20000, 230000, W, L) == -2 &&
+                   fpga_v3_pps_shift(0, 0, 0, L) == 0;
+        static const int32_t ph[] = { 8080, 0, 3000, 20000, 24999, 12400, 12600 };
+        for (uint32_t k = 0; k < sizeof ph / sizeof ph[0]; k++) {
+            const int step = (ph[k] != 12400 && ph[k] != 12600);  /* v pasmu hystereze u poloviny L muze byt dvojice */
+            int32_t pos = ph[k], prev = 0;
+            for (int32_t j = 0; j < 10; j++) {
+                const int32_t T = j * L;
+                pos = ((pos + fpga_v3_pps_shift(pos, T, W, L) * L) % W + W) % W;
+                int32_t err = (T - pos) % W; if (err >= W / 2) err -= W; else if (err < -(W / 2)) err += W;
+                if (err < 0) err = -err;
+                if (fpga_v3_pps_shift(pos, T, W, L) != 0 || err > L / 2 + H) good = 0;
+                if (step && j > 0 && ((pos - prev) % W + W) % W != L) good = 0;
+                prev = pos;
+            }
+        }
+        V3OK(good);
+    }
+
+    /* 27) v0.44.4 (STATUS #360): znacky se po segmentech stridaji o +-20 ps (emulator par_ps; noc19 A ~0,26 ps). LSQ okna
+     * (K 10) bez clenu parity (par_en = 0) se posune o -0,61 * 20 ps / 0,25 s = ~4,9e-11 se znamenkem podle parity mrizky
+     * (posun o 1 segment ho otoci) -- negativni kontrola, ze test vadu vidi. S clenem parity bez posunu a c = 20 ps. */
+    {
+        const double ft = 10e6 + 0.041;
+        double mean[2][2];
+        uint32_t nw1 = 0u, npar = 0u;
+        double cmin = 1e9, cmax = -1e9;
+        for (int en = 0; en < 2; en++) {
+            for (uint32_t off = 0; off < 2u; off++) {
+                fpga_v3_emu_init(&s_e, ft, 0.0, 30.0, 27u + off);
+                s_e.par_ps[0] = 20.0;
+                fpga_v3_grp_init(&s_g, 10u);
+                s_g.par_en = (uint8_t)en;
+                (void)fpga_v3_grp_phase(&s_g, off);
+                double s = 0.0; uint32_t n = 0u, fr = 0u;
+                for (uint32_t q = 0; q < 240u; q += 6u) {
+                    for (int k = 0; k < 6; k++) fpga_v3_emu_segment(&s_e);
+                    fpga_v3_emu_frame(&s_e, s_f);
+                    fr++;
+                    fpga_v3_hdr_t h; uint32_t n_ok = 0;
+                    if (fpga_v3_parse(s_f, &h, s_rec, &n_ok) != FPGA_V3_OK) { n = 0u; break; }
+                    for (uint32_t i = 0; i < n_ok; i++) {
+                        fpga_v3_win_t w;
+                        if (!fpga_v3_grp_feed(&s_g, &s_rec[i], h.clk_mhz, &w) || w.ch != 0u || !w.lsq_ok) continue;
+                        s += w.f_lsq_hz / ft - 1.0; n++;
+                        if (en) {
+                            nw1++;
+                            if (w.lsq_par) {
+                                const double cp = w.par_u * fpga_v3_unit_ps(h.clk_mhz);
+                                npar++; if (cp < cmin) cmin = cp; if (cp > cmax) cmax = cp;
+                            }
+                        } else if (w.lsq_par) npar = 0xFFFFFFFFu;     /* vypnuty clen se nesmi pouzit */
+                    }
+                    fpga_v3_build_ack(s_m, fr, h.rec_first + n_ok);
+                    fpga_v3_emu_rx(&s_e, s_m);
+                }
+                mean[en][off] = (n >= 15u) ? s / (double)n : 1.0;
+            }
+        }
+        V3OK(fabs(mean[0][0]) > 3e-11 && fabs(mean[0][1]) > 3e-11 && mean[0][0] * mean[0][1] < 0.0);
+        V3OK(fabs(mean[1][0]) < 5e-12 && fabs(mean[1][1]) < 5e-12);
+        V3OK(nw1 >= 30u && npar == nw1 && cmin > 18.0 && cmax < 22.0);
     }
 
     return ok;

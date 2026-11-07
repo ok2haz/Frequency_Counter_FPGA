@@ -402,10 +402,11 @@ static bool ubx_send(uint8_t cls, uint8_t id, const uint8_t *pl, uint16_t n)
  * zadnou PLL nema a FPGA na PIN33 ceka 1PPS. */
 #define GPS_TP_FREQ_HZ        1u        /* s fixem: 1PPS pro FPGA */
 #define GPS_TP_FREQ_NOFIX_HZ  10u       /* bez fixu: 10 Hz (indikator bez fixu) */
-/* Delka pulzu v us (isLength = 1). S fixem TYPICKA strida 1PPS: 100 ms high
- * (10 %, vychozi hodnota u-blox), ne 50 % — zadani uzivatele 2026-10-03.
- * Bez fixu 50 ms pri 10 Hz = 50 % jako dosud. Casovou znackou je NABEZNA hrana. */
-#define GPS_TP_LEN_LOCK_US    100000u   /* s fixem: pulz 100 ms */
+/* Delka pulzu v us (isLength = 1). Casovou znackou je NABEZNA hrana. Bez fixu 50 ms pri 10 Hz = 50 %.
+ * S fixem do v0.44.0 100 ms (zadani 2026-10-03). v0.44.1 (STATUS #352): 10 ms -- noc 2026-11-04/05 (noc17) ukazala,
+ * ze vliv 1PPS na kanal A roste s delkou VYSOKE urovne (cara 1 s: 10 ms 0,31 ps, 100 ms 0,54-0,75 ps, 200 ms 0,71 ps,
+ * bez 1PPS 0,07-0,27 ps); FPGA bere jen nabeznou hranu. */
+#define GPS_TP_LEN_LOCK_US    10000u    /* s fixem: pulz 10 ms */
 #define GPS_TP_LEN_NOFIX_US   50000u    /* bez fixu: pulz 50 ms (strida 50 %) */
 #define GPS_TP_RESEND_MS      60000u    /* opakovani TP5 (F-0219): 1x/min, zadani uzivatele */
 static uint32_t s_tp_last_ms;           /* posledni odeslani TP5 (HAL_GetTick) — jen defaultTask */
@@ -437,12 +438,14 @@ void gps_cable_changed(void) { s_tp_resend_req = 1u; }
 
 /* Diagnostika (2026-11-03, validace auditu dat): je zdrojem soustavne chyby #348 (cara 1 s zamcena na okna) 1PPS
  * na PIN33 v bance 2 FPGA? UART `gps tp <ms>|off|def` zmeni delku pulzu s fixem, nebo TIMEPULSE vypne (active = 0).
- * Nepersistuje se (po resetu vychozi 100 ms); posila se i v minutovem opakovani TP5. Pozor: `off` = GPSDO bez 1PPS
+ * Nepersistuje se (po resetu vychozi GPS_TP_LEN_LOCK_US); posila se i v minutovem opakovani TP5. Pozor: `off` = GPSDO bez 1PPS
  * (HOLD). Zapisuje UartTask, cte defaultTask (gps_tick) -- 32b zapis je atomicky. */
 static volatile uint32_t s_tp_len_lock_us = GPS_TP_LEN_LOCK_US;
 static volatile uint8_t  s_tp_active = 1u;
 /* `gps tp z <ms>`: posun 1PPS (userConfigDelay, ns) -- poloha impulzu vuci mrizce oken FPGA. Posouva i fazi pro smycku
- * GPSDO, proto jen s `gpsdo off`. `gps tp def` vraci 0. */
+ * GPSDO, proto jen s `gpsdo off`. `gps tp def` vraci 0.
+ * Smer: kladna hodnota posouva 1PPS DRIV (zmereno 2026-11-05 v0.44.2: `gps tp z 8` -> 1PPS v okne 97,176 -> 89,176 ms,
+ * STATUS #357), ne pozdeji. */
 static volatile int32_t  s_tp_delay_ns = 0;
 
 void gps_tp_delay(int32_t ns)

@@ -620,7 +620,10 @@ typedef struct {
     int32_t  x_raw_ns;             /* v25: SUROVA fazova chyba (TIE) [ns], platna ve stavu LOCK (jinak 0) */
     uint32_t ref_ppb_x100;         /* v29: nejistota reference [0,01 ppb] podle stavu smycky (gpsdo_ref_ppb; web ji nema jak spocitat) */
     uint8_t  ref_meas;             /* v29: 1 = ZMERENA (FLL |y|, LOCK ADEV faze, HOLD ADEV + drift kodu), 0 = nahradni tabulka */
-    uint8_t  _pad_ref[3];
+    /* v0.44.5 (STATUS #350, byvale `_pad_ref[3]`, velikost i IPC_VERSION beze zmeny): σ casove znacky TDC vybraneho kanalu
+     * zmerena za behu (fpga_freq_tdc_sigma_ps). Stary obraz CM4 bajty necte; novy CM4 se starym CM7 vidi 0 = nahrada MP_TDC_PS. */
+    uint8_t  tdc_meas;             /* 1 = zmerena za behu, 0 = neni (CM4 servíruje MP_TDC_PS) */
+    uint16_t tdc_ps_x10;           /* σ [0,1 ps], 0 = neni */
 } ipc_gpsdo_t;
 _Static_assert(sizeof(ipc_gpsdo_t) == 48u, "ipc_gpsdo_t zmenil velikost");
 

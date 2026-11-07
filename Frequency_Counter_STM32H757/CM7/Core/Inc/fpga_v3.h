@@ -238,6 +238,8 @@ typedef struct {
     uint64_t x_next[2];          /* absolutni index pristi hrany */
     uint8_t  p_log2[2], p_req[2], p_inv[2];   /* v0.38.0: predelicka jako RTL (SET_CONFIG 0x07, 2 neplatne segmenty) */
     uint8_t  narrow;             /* v0.40.0: skladat uzkou hlavicku jako FW 0x0507 (CAPS bit22, ACK jen dolnich 16 b) */
+    double   par_ps[2];          /* v0.44.4: vsechny znacky segmentu posunute o +par (sudy SEG_IDX) / -par (lichy) [ps],
+                                  * model stridave slozky z noc19 (STATUS #360); vychozi 0 */
     fpga_v3_rec_t ring[FPGA_V3_EMU_RING];
 } fpga_v3_emu_t;
 
@@ -292,6 +294,7 @@ uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t 
  * po startu (cas > start); start starsi nez max_u se zahodi. Udalosti JEDNE hranice segmentu (A i B) se predaji spolu
  * (fpga_v3_ab_feed je seradi v case). U souhrnu (BURST) se bere jen prvni, presna hrana. Sirka pulzu = totez s kanalem B
  * na pinu A invertovanem (SET_CONFIG 0x09 = 3): A nabezne, B sestupne hrany. */
+#define FPGA_V3_AB_GUARD_U     500u    /* [jednotky T/16384] ~305 ps pri 100 MHz: hrana B blize startu = soucasna */
 typedef struct {
     uint8_t  armed;              /* 1 = ceka na stop */
     uint64_t t_start;
@@ -313,17 +316,23 @@ double   fpga_v3_stat_sd(const fpga_v3_stat_t *s);
 int      fpga_v3_skew_add(fpga_v3_stat_t *s, const fpga_v3_ev_t *ea, const fpga_v3_ev_t *eb, int64_t lim_u, double unit_ps);
 
 /* Parovani po zaznamech (ovladac, FW 0x0501): FPGA posila kazdy segment jako A, pak B. Udalosti A segmentu cekaji na
- * zaznam B tehoz segmentu a predaji se spolu (fpga_v3_ab_feed). Zaznam neplatny (FLAGS bit0) nebo se znackami pri CS
- * (bit3) = hrana mohla chybet -> rozpracovany start pryc. Po prepnuti zdroje B (fpga_v3_pr_switch) se paruje az za
- * zaznamem B s drzenim (bit0; starsi zaznamy jsou z puvodniho zdroje), nejvys 80 zaznamu B (2 s). Rezim skew = misto
- * intervalu zpozdeni B - A prvnich hran teze hranice segmentu do sk (|d| < 50 ns). */
+ * zaznam B tehoz segmentu a predaji se spolu (fpga_v3_ab_feed). Zaznam neplatny (FLAGS bit0) -> rozpracovany start pryc.
+ * Zaznam se znackami pri CS (bit3; maskovani nechava hrany po dobu transakce necasovane) se od v0.45.2 paruje taky, ale
+ * interval, na kterem se takovy zaznam podili (start, stop, nebo rozpracovany start z nej), plati jen kratsi nez
+ * FPGA_V3_AB_CS_LIM_U: maska je jedno souvisle okno delsi nez tato mez a prvni znacky zaznamu jsou casovane, takze
+ * necasovana hrana B mezi startem a stopem by vyzadovala celou masku uvnitr intervalu. Delsi se zahodi (lost_cs).
+ * Po prepnuti zdroje B (fpga_v3_pr_switch) se paruje az za zaznamem B s drzenim (bit0; starsi zaznamy jsou z puvodniho
+ * zdroje), nejvys 80 zaznamu B (2 s). Rezim skew = misto intervalu zpozdeni B - A prvnich hran teze hranice segmentu
+ * do sk (|d| < 50 ns). Pocitadla: zaznamy A/B, z toho neplatne a se znackami pri CS, A bez zaznamu B tehoz segmentu. */
+#define FPGA_V3_AB_CS_LIM_U    (20000ull * 16384ull)   /* 200 us pri 100 MHz < transakce 1024 B pri SCK 40 MHz (205 us) */
 typedef struct {
     fpga_v3_ab_t   ab;
     fpga_v3_stat_t sk;           /* zpozdeni B - A [ps] (rezim skew) */
     fpga_v3_ev_t   pa[2];        /* udalosti A cekajici na zaznam B */
     uint32_t       pan, skip_n;
+    uint32_t       rec_a, rec_b, inv_a, inv_b, cs_a, cs_b, lone_a, lost_cs, gaps;
     uint16_t       pa_seg;
-    uint8_t        pa_have, skip;
+    uint8_t        pa_have, skip, pa_cs, arm_cs;   /* pa_cs: zaznam A s bit3; arm_cs: rozpracovany start muze byt z nej */
 } fpga_v3_pr_t;
 void     fpga_v3_pr_init(fpga_v3_pr_t *p, uint64_t max_u);
 void     fpga_v3_pr_switch(fpga_v3_pr_t *p);             /* zdroj B prepnut */
@@ -343,6 +352,11 @@ typedef struct {
     double   f_2pt_hz;           /* edges / gate */
     double   f_lsq_hz;           /* nejmensi ctverce pres teziste segmentu okna (vaha N) */
     uint8_t  lsq_ok;
+    /* v0.44.4 (STATUS #360): LSQ s clenem parity segmentu t = a + b*x + c*p, p = +1 sudy / -1 lichy SEG_IDX. Znacky,
+     * ktere se po segmentech stridaji o +-c (noc19: A ~0,26 ps), by pri sudem poctu segmentu posunuly sklon o -0,61*c
+     * se znamenkem parity prvniho segmentu okna (stredni chyba A +0,13 / -0,19 ps podle posunu mrizky). */
+    uint8_t  lsq_par;            /* 1 = sklon z LSQ s clenem parity (jinak bez nej: malo segmentu / jedna parita / vyp) */
+    double   par_u;              /* odhad c [jednotky T/16384]: sude segmenty o c pozdeji, liche o c drive (diagnostika) */
     uint8_t  flags_or;           /* OR priznaku zaznamu okna */
     double   xc0, tc0;           /* teziste PRVNIHO segmentu okna (absolutni, pro fazovy zaznam) */
     uint64_t x_first, t_first;   /* prvni znacka okna (rozbalene X, T) -- teziste relativne k oknu = xc0 - x_first */
@@ -367,6 +381,7 @@ typedef struct {
     uint32_t seg_first;
     uint64_t x_first, t_first;
     double   sw, swx, swt, swxx, swxt;
+    double   swp, swpx, swpt;    /* v0.44.4: soucty s paritou segmentu p = +-1 (sum w*p*p = sw) */
     double   xc0, tc0;
     uint32_t n0;
     uint8_t  flags_or;
@@ -384,6 +399,7 @@ typedef struct {
     uint8_t  clean;              /* posledni kontrola X0 sedela do 0,1 hrany */
     /* v0.42.7: teziste segmentu ceka na kontrolu (az s dalsim zaznamem); vadny segment se do LSQ neprida */
     double   pw, pX, pT;
+    double   pP;                 /* v0.44.4: parita cekajiciho segmentu (+1 sudy SEG_IDX, -1 lichy) */
     uint8_t  pend;
     uint32_t kl;                 /* segmentu v LSQ okna */
     int64_t  prev_dv;            /* v0.42.11: oprava X0 predchoziho zaznamu (X0 = surove - prev_dv), 0 = bez opravy */
@@ -391,7 +407,12 @@ typedef struct {
     uint32_t cell;               /* bunka, ve ktere zacalo rozpracovane okno */
     uint32_t clean_cell;         /* bunka, jejiz vsechny dosavadni segmenty prisly souvisle a bez hrany (okno zavrene) */
     uint8_t  clean_ok;
+    /* v0.44.1 (STATUS #353): stejna oprava X0 v po sobe jdoucich zaznamech = skutecny skok indexu (napr. vystup
+     * generatoru stal), ne vadne cteni -> po FPGA_V3_X0_STEP_N zaznamech prijmout surove X0 */
+    int64_t  fix_dv;             /* posledni oprava X0 [hran] */
+    uint8_t  fix_run;            /* kolik zaznamu po sobe melo tutez opravu */
 } fpga_v3_grp_ch_t;
+#define FPGA_V3_X0_STEP_N  4u    /* 4 zaznamy = 100 ms pri L 25 ms; vadne cteni FPGA (L-0247) je osamocene */
 
 /* v0.42.9 (L-0247): zaznam odchylky X0 od predpovedi (|d| >= 0,5 hrany), diagnostika `fpga v3 x0` */
 typedef struct {
@@ -423,10 +444,24 @@ typedef struct {
     uint32_t seg_u;
     uint16_t seg_raw;
     uint8_t  seg_have;
+    uint32_t x0_step[2];         /* v0.44.1: skutecnych skoku X0 (surove X0 prijato, rozpracovane okno zahozeno) */
+    uint32_t seg_off;            /* v0.44.1 (STATUS #354): posun mrizky [segmenty, 0..K-1]: bunka = (seg_u + seg_off) / K */
+    uint8_t  par_en;             /* v0.44.4 (STATUS #360): 1 = clen parity segmentu v LSQ okna (vychozi, grp_init) */
 } fpga_v3_grp_t;
+#define FPGA_V3_PAR_MIN_SEG  4u  /* clen parity az od 4 segmentu v LSQ (3 parametry + aspon 1 stupen volnosti) */
 
 void     fpga_v3_grp_init(fpga_v3_grp_t *g, uint32_t k_target);
 void     fpga_v3_grp_break(fpga_v3_grp_t *g, uint8_t ch);   /* mezera / neplatny zaznam: okno zahodit */
+/* v0.44.1: posun mrizky oken o off segmentu (mod K). Pri zmene se rozpracovana okna obou kanalu zahodi; dalsi okna
+ * zacinaji na hranici nove bunky. @return 1 = mrizka se zmenila */
+int      fpga_v3_grp_phase(fpga_v3_grp_t *g, uint32_t off);
+/* v0.44.2: o kolik segmentu posunout mrizku, aby 1PPS (pos_us od zacatku okna) lezel co nejbliz cili tg_us; okno W_us,
+ * segment L_us. Dosazitelne polohy jsou pos + n*L (mod W) -> vybere nejblizsi (pri shode tu s mensim |n|) a posune jen,
+ * kdyz se tim chyba zmensi aspon o FPGA_V3_PPS_HYST_US. V klidu tedy plati |chyba| <= L/2 + HYST.
+ * v0.44.1 mela hysterezi 3/4 L (vetsi nez L/2) -> 1PPS mohl zustat o 16,9 ms od cile, ackoli o 8,1 ms bylo dosazitelne
+ * (deska 2026-11-05: 83,08 ms misto 108,08 ms pri cili 100 ms). @return n (kladne = 1PPS v okne o n*L pozdeji) */
+#define FPGA_V3_PPS_HYST_US  500
+int32_t  fpga_v3_pps_shift(int32_t pos_us, int32_t tg_us, int32_t W_us, int32_t L_us);
 /* @return 1 = do *out prislo hotove okno (uzavrene prvnim zaznamem s hranou po K segmentech = zacatek dalsiho okna).
  * Zahodi rozpracovane okno: neplatny zaznam, nesouvisle SEG_IDX, mezera bez hrany nad limit (ztrata signalu). */
 int      fpga_v3_grp_feed(fpga_v3_grp_t *g, const fpga_v3_rec_t *r, uint32_t clk_mhz, fpga_v3_win_t *out);

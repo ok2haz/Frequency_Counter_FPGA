@@ -156,15 +156,17 @@ void mp_budget(double hz, double gate_s, double tdc_ps, double sigma_y,
  *                 n = f·G/8 značek v segmentu, takže při nízkém kmitočtu rozhoduje teorie), nikdy horší než dvoubodový.
  *  ⚠️ Naměřená podlaha pochází ze signálu synchronního s referencí (stojící fáze, deterministická kvantizace se vykrátí) --
  *  nesoudělný signál ji může mít horší; proto volající bere navíc max s naměřenou σy (viz screen_main.c meas_u_rel). */
-static inline double mp_res_floor_rel(double gate_s, double f_hz, int regr)
+/* `tdc_ps` = σ znacky [ps]: od v0.44.5 zmerena za behu (fpga_freq_tdc_sigma_ps), jinak MP_TDC_PS (STATUS #350). */
+static inline double mp_res_floor_rel(double gate_s, double f_hz, int regr, double tdc_ps)
 {
     if (gate_s <= 0.0) return 0.0;
-    double two = 1.41421356 * (MP_TDC_PS * 1e-12) / gate_s;
+    if (!(tdc_ps > 0.0)) tdc_ps = MP_TDC_PS;
+    double two = 1.41421356 * (tdc_ps * 1e-12) / gate_s;
     if (!regr || f_hz <= 0.0) return two;
     double r = gate_s / 0.25, sr = __builtin_sqrt(r);
     double meas = MP_REGR_FLOOR_REL * ((r < 1.0) ? 1.0 / (r * sr) : 1.0 / sr);
     double n = f_hz * gate_s / 8.0;
-    double white = (n >= 2.0) ? (MP_TDC_PS * 1e-12) * __builtin_sqrt(2.0 / n) / (0.75 * gate_s) : two;
+    double white = (n >= 2.0) ? (tdc_ps * 1e-12) * __builtin_sqrt(2.0 / n) / (0.75 * gate_s) : two;
     double fl = (meas > white) ? meas : white;
     return (fl < two) ? fl : two;
 }

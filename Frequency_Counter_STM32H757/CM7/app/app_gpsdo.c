@@ -3121,6 +3121,7 @@ static void app_gpsdo_render_gpscfg(void);       /* NASTAVENI GPS - antenni koax
 static void app_gpsdo_render_errlog(void);       /* CHYBY — trvaly log ve W25Q (s_view=51) */
 static void kv_row_live(int16_t y, const char *k, const char *v, prim_color_t vc, int first); /* def niz */
 static void kv_margin_bar(int16_t base_y, int pct, prim_color_t c, const char *label); /* def niz */
+static void fmt_sci_ppb(double rel, char *b, size_t n);                                /* def niz (okno ANALYZA) */
 static void app_gpsdo_render_ti(void);           /* GPSDO TIE + stav smycky (s_view=45) */
 static void app_gpsdo_render_dualch(void);       /* Dvojkanal A + B + RF bargraf (s_view=46) */
 static void app_gpsdo_render_devmult(void);      /* Odchylka x N — ADRET 4110 styl (s_view=47) */
@@ -3879,9 +3880,18 @@ static void app_gpsdo_render_ti(void)
  * takze obe karty ukazuji tutez hodnotu (zamerne, at je bar u kazdeho kanalu).
  * Karty jsou plne sirky pod sebou. Zive (2 Hz tik).
  *
+ * 2026-11-06: puvodni rozlozeni (kmitocet, RF bar, stavovy radek) zustava; kmitocet vetsim fontem (cislice
+ * mono_52, oddelovace a nejiste cislice mono_30, jednotka sans_32 — stavajici fonty; kdyz se mono_52 nevejde
+ * do DUALCH_FW, vse mono_30 jako drive). Vpravo od kmitoctu sloupec doplnujicich udaju (perioda, okno,
+ * pocet period, predelicka) a v hlavicce "hlavni cislo" + rozliseni. Kazdy doplnujici udaj se kresli JEN
+ * kdyz je platny (mereni kanalu OK, hodnota v ramci nenulova).
+ *
  * SVISLY ROZPOCET karty (vse relativne k jejimu hornimu okraji `cy`, vyska 178):
- *   cy+25   hlavicka (sans_18, kresli ui_card_render_chrome)
- *   cy+46.. cy+92   clear + kmitocet (mono_30 baseline cy+80, glyfy cy+49..cy+89)
+ *   cy+25   hlavicka vlevo (sans_18, ui_card_render_chrome); vpravo cy+6..cy+31 clear + "hlavni cislo"
+ *           a rozliseni (sans_16) jen u kanalu v primarnim slotu ramce
+ *   cy+33.. cy+92   clear + kmitocet x CX..CX+FW (baseline cy+82: mono_52 cislice cy+43..cy+82,
+ *                   podtrzeni cy+87..cy+89) | clear + sloupec udaju x IX..IX+IW (mono_16, baseline
+ *                   cy+50 / cy+69 / cy+88)
  *   cy+94.. cy+138  clear + RF bar (text baseline cy+114, stopa cy+122..cy+132)
  *   cy+142..cy+170  clear + stavovy radek (mono_18 baseline cy+162)
  * Zadne dva clear obdelniky se neprekryvaji a posledni konci 8 px nad dnem karty. */
@@ -3895,6 +3905,11 @@ static void app_gpsdo_render_ti(void)
 #define DUALCH_ST_W  360
 #define DUALCH_DX    (DUALCH_CX + 368)
 #define DUALCH_DW    (DUALCH_CW - 368)
+/* Vodorovne rozdeleni zony kmitoctu: vlevo cislo (sirka DUALCH_FW), vpravo sloupec udaju (mono_16, 10 px/znak
+ * -> 21 znaku). ⚠️ Kazda cast ma vlastni zmenovy klic -> clear obdelniky se NESMI prekryvat. */
+#define DUALCH_FW    510
+#define DUALCH_IX    (DUALCH_CX + 520)
+#define DUALCH_IW    (DUALCH_CW - 520)
 
 /* RF bar vcetne ciselne hodnoty vpravo nahore ("-61.2 dBm").
  * ⚠️ Clear PRED renderem je POVINNY: `ui_bargraph_render` value text jen kresli,
@@ -3919,38 +3934,147 @@ static void dualch_bar(int16_t y, float dbm)
     ui_bargraph_render(&bg);
 }
 
-/* Kmitocet kanalu v typografii hlavni obrazovky (viz `card_freq_draw`).
- * ⚠️ `fpga_freq_format_val` pripoji "Hz" natvrdo; `mono_30` ho nema, takze se
- * sufix odrizne a jednotku dokresli helper mensim `sans_18`. */
+/* Velky kmitocet: cislice `big` (mono_52 — subset JEN cislice; nebo mono_30), vse ostatni (oddelovace '.' ',',
+ * "--") a nejiste koncove cislice mono_30, jednotka sans_32 ("Hz" v subsetu je). Chybejici glyf by se tise
+ * preskocil, proto se znak do velkeho fontu posila jen kdyz je to cislice.
+ * `draw` = 0 jen meri. Vraci sirku vcetne jednotky; `sig` (smi byt NULL) = pocet duveryhodnych cislic. */
+static int16_t dualch_big_run(int16_t x, int16_t base, const char *num, int unc, prim_color_t ink,
+                              const prim_font_t *big, int draw, int *sig)
+{
+    int L = (int)strlen(num);
+    if (unc < 0) unc = 0;
+    if (unc > L - 1) unc = (L > 1) ? L - 1 : 0;
+    int hl = L - unc, nsig = 0;
+    int16_t cx = x, last_x = -1, last_w = 0;
+    for (int i = 0; i < L; i++) {
+        char g[2] = { num[i], '\0' };
+        int dig = (num[i] >= '0' && num[i] <= '9');
+        const prim_font_t *f = (i < hl && dig) ? big : &ui_font_mono_30;
+        prim_color_t c = (i < hl) ? ink : UI_COLOR_INK_4;
+        int16_t w = prim_text_width(g, f);
+        if (draw) prim_draw_text((prim_point_t){cx, base}, g, f, c, PRIM_ALIGN_LEFT);
+        if (i < hl && dig) { last_x = cx; last_w = w; nsig++; }
+        cx = (int16_t)(cx + w);
+    }
+    /* Modre podtrzeni POSLEDNI duveryhodne cislice (jako hlavni obrazovka a card_freq_draw). */
+    if (draw && last_x >= 0 && nsig > 1 && ink != UI_COLOR_INK_3)
+        prim_fill_rect((prim_rect_t){last_x, (int16_t)(base + 5), last_w, 3}, UI_COLOR_ACC, PRIM_BLEND_REPLACE);
+    cx = (int16_t)(cx + 10);
+    if (draw) prim_draw_text((prim_point_t){cx, base}, "Hz", &ui_font_sans_32, UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+    cx = (int16_t)(cx + prim_text_width("Hz", &ui_font_sans_32));
+    if (sig) *sig = nsig;
+    return (int16_t)(cx - x);
+}
+
+/* Kmitocet kanalu velkym pismem. ⚠️ `fpga_freq_format_val` pripoji "Hz" natvrdo -> odriznout, jednotku kresli
+ * `dualch_big_run`. Font cislic: mono_52, pokud se cele cislo vejde do DUALCH_FW, jinak mono_30. */
 static void dualch_freq(int16_t cy, uint64_t x100000, int seen)
 {
     char s[40];
     if (seen) fpga_freq_format_val(x100000, s, sizeof s);
-    else      snprintf(s, sizeof s, "--");
+    else      snprintf(s, sizeof s, "--");     /* `seen` = 0 i pro kanal bez signalu (volajici) */
     size_t L = strlen(s);
-    int has_unit = (L > 2 && s[L - 2] == 'H' && s[L - 1] == 'z');
-    if (has_unit) s[L - 2] = '\0';
+    if (L > 2 && s[L - 2] == 'H' && s[L - 1] == 'z') s[L - 2] = '\0';
+    L = strlen(s);
+    while (L > 0 && s[L - 1] == ' ') s[--L] = '\0';
 
-    int stale = (!seen || g_freq_stale);
+    /* `seen` = kanal opravdu meri (dualch_status); spolecne g_freq_stale patri jen vybranemu kanalu (v0.44.5) */
+    int stale = !seen;
     prim_color_t fc = stale ? UI_COLOR_INK_3 : UI_COLOR_INK;
     /* Kolik desetin retezec nese (za carkou) -> kolik z nich je pod rozlisenim. */
     const char *comma = strchr(s, ',');
     int dec = comma ? (int)strlen(comma + 1) : 0;
     int unc = stale ? 0 : card_uncert_digits((double)x100000 / 100000.0, dec);
 
-    prim_fill_rect((prim_rect_t){DUALCH_CX, (int16_t)(cy + 46), DUALCH_CW, 46},
+    const prim_font_t *big = &ui_font_mono_52;
+    if (dualch_big_run(0, 0, s, unc, fc, big, 0, NULL) > DUALCH_FW) big = &ui_font_mono_30;
+    prim_fill_rect((prim_rect_t){DUALCH_CX, (int16_t)(cy + 33), DUALCH_FW, 60},
                    UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-    card_freq_draw(DUALCH_CX, (int16_t)(cy + 80), s, unc, fc, has_unit ? "Hz" : NULL);
+    (void)dualch_big_run(DUALCH_CX, (int16_t)(cy + 82), s, unc, fc, big, 1, NULL);
 }
 
-/* Stav jednoho kanalu. `err` = priznak chyby prave TOHOTO kanalu (CH A:
- * FPGA_ERR_MEAS, CH B: FPGA_ST2_DIV16_ERR); ostatni stavy jsou spolecne. */
-static const char *dualch_status(int seen, const fpga_meas_t *m, int err)
+/* Pocet duveryhodnych cislic kmitoctu kanalu (stejne kriterium jako vykresleni) -> kolik cislic ma perioda. */
+static int dualch_sig_digits(uint64_t x100000)
 {
-    if (!seen || !fpga_freq_link_ok())            return "bez linku";
-    if (m->error_flags & FPGA_ERR_SIGNAL_LOST)    return "SIGNAL LOST";
-    if (err)                                      return "chyba mereni (dt = 0)";
-    if (m->error_flags & FPGA_ERR_OVERFLOW)       return "preteceni hradla";
+    char s[40];
+    fpga_freq_format_val(x100000, s, sizeof s);
+    const char *comma = strchr(s, ',');
+    int dec = 0;
+    if (comma) for (const char *p = comma + 1; *p >= '0' && *p <= '9'; p++) dec++;
+    int unc = card_uncert_digits((double)x100000 / 100000.0, dec), n = 0;
+    for (const char *p = s; *p; p++) if (*p >= '0' && *p <= '9') n++;
+    n -= unc;
+    return (n < 1) ? 1 : n;
+}
+
+/* Tri radky doplnujicich udaju kanalu `ch` (0 A, 1 B) do sloupce vpravo od kmitoctu (kazdy max ~21 znaku).
+ * Prazdne, kdyz mereni kanalu neni platne. `ln[0]` perioda (reciproka dvojice Δt/N, nasobitel jen
+ * z `fpga_freq_hires_mul`, se stejnym poctem platnych cislic jako kmitocet), `ln[1]` delka okna,
+ * `ln[2]` pocet period a predelicka (jen v3 s CAPS PRESC). Kazdy buffer ma `n` B. */
+static void dualch_info_text(char ln[3][32], size_t n, const fpga_meas_t *m, int ch, int ok,
+                             const fpga_v3_info_t *vi)
+{
+    ln[0][0] = ln[1][0] = ln[2][0] = '\0';
+    if (!ok) return;
+    const int prim = ((ch != 0) == (fpga_meas_chb_primary(m) != 0));
+    const uint64_t fx = fpga_meas_freq_ch(m, ch);
+    const uint64_t edges = prim ? m->edge_count : (uint64_t)m->edges_b;
+    const uint64_t dt = prim ? m->gate_ps : m->dt_b_ps;
+    if (fx == 0u) return;
+    const double hz = (double)fx / 100000.0;
+    const uint32_t mul = (edges && dt) ? fpga_freq_hires_mul(fx, edges, dt) : 0u;
+    const double t = mp_period_sample_s(edges, dt, mul, hz);
+    if (t > 0.0) {
+        double sc = 1.0;
+        const char *u = mp_time_unit(t, &sc);
+        const double v = t / sc;
+        int id = 1;
+        for (double p = 10.0; v >= p && id < 12; p *= 10.0) id++;
+        char b[24];
+        fmt_dec_u(b, sizeof b, v, dualch_sig_digits(fx) - id);   /* fmt_sdec si dec orizne na 0..5 */
+        snprintf(ln[0], n, "T %s %s", b, u);
+    }
+    char nb[16] = "", p[12] = "";
+    if (edges && dt) {
+        char b[20];
+        fmt_dec_u(b, sizeof b, (double)dt / 1e9, 3);
+        snprintf(ln[1], n, "okno %s ms", b);
+        snprintf(nb, sizeof nb, "N %lu", (unsigned long)edges);
+    }
+    if (vi->proto == 3u && (vi->caps & FPGA_V3_CAP_PRESC)) {
+        const uint8_t pr = vi->presc[ch & 1];
+        if (pr & FPGA_V3_PRESC_PEND) snprintf(p, sizeof p, "/? meni");
+        else snprintf(p, sizeof p, "/%u %s", 1u << (pr & 0x07u),
+                      vi->pr_mode[ch & 1] == 0xFFu ? "auto" : "pev");
+    }
+    snprintf(ln[2], n, "%s%s%s", nb, (nb[0] && p[0]) ? " " : "", p);
+}
+
+/* Stav kanalu `ch` (0 A, 1 B) — PRO KAZDY KANAL ZVLAST (2026-11-06).
+ * 🔴 SIGNAL_LOST (watchdog) i OVERFLOW plati jen pro kanal v PRIMARNIM slotu ramce: v3 sklada mereni z oken
+ * primarniho kanalu (`s3_emit`), druhy kanal je jen pribalene okno tychz segmentu (`wb`) — kdyz na nem signal
+ * neni, prijde edges_b = 0 / kmitocet 0 BEZ chyboveho bitu. Drive se proto u kanalu bez signalu ukazovalo „OK“.
+ * Sekundarni kanal: kmitocet 0 = bez signalu. Kdyz primarni kanal signal ztratil, ramce stoji a o sekundarnim
+ * nic nevime (hodnoty jsou z posledniho okna) -> „nemeri se“, ne OK.
+ * `*present` = 1 jen kdyz kanal opravdu meri (vraceno "OK"). */
+static const char *dualch_status(int seen, const fpga_meas_t *m, int ch, int sec_live, int *present)
+{
+    *present = 0;
+    if (!seen || !fpga_freq_link_ok())                  return "bez linku";
+    const int prim = ((ch != 0) == (fpga_meas_chb_primary(m) != 0));
+    const int lost = (m->error_flags & FPGA_ERR_SIGNAL_LOST) != 0;
+    if (prim) {
+        if (lost)                                       return "BEZ SIGNALU";
+        if (fpga_meas_err_ch(m, ch))                    return "chyba mereni (dt = 0)";
+        if (m->error_flags & FPGA_ERR_OVERFLOW)         return "preteceni hradla";
+    } else {
+        /* v0.44.5 (STATUS #361): pri ztrate signalu vybraneho kanalu nese sekundarni slot samostatne okno druheho
+         * kanalu (fpga_freq_v3_sec, dosadi volajici); bez nej (v2, okno starsi nez 2,5 s) druhy kanal signal nema. */
+        if (lost && !sec_live)                          return "BEZ SIGNALU";
+        if (fpga_meas_err_ch(m, ch))                    return "chyba mereni (dt = 0)";
+    }
+    if (fpga_meas_freq_ch(m, ch) == 0u)                 return "BEZ SIGNALU";
+    *present = 1;
     return "OK";
 }
 
@@ -4026,7 +4150,8 @@ static void dualch_result(int64_t a_x100000, int64_t b_x100000, int seen)
 static void app_gpsdo_render_dualch(void)
 {
     int first = window_first(46);
-    static char c_fa[40], c_fb[40], c_rf[16], c_sa[28], c_sb[28], c_dl[40];
+    static char c_fa[40], c_fb[40], c_rf[16], c_sa[36], c_sb[36], c_dl[40];
+    static char c_in[2][100], c_hd[2][48];
     if (first) {
         view_set(46);
         window_chrome("DVOJKANAL", WIN_TITLE_Y);
@@ -4036,22 +4161,50 @@ static void app_gpsdo_render_dualch(void)
         ui_card_render_chrome(&b);
         dualch_ops_draw();
         c_fa[0] = c_fb[0] = c_rf[0] = c_sa[0] = c_sb[0] = c_dl[0] = '\0';
+        c_in[0][0] = c_in[1][0] = c_hd[0][0] = c_hd[1][0] = '\0';
     }
     fpga_meas_t m;
     int seen = fpga_freq_get_last(&m) ? 1 : 0;
     int drew = 0;
+    /* v0.44.5 (STATUS #361): vybrany kanal bez signalu -> mereni stoji, ale druhy kanal se meri dal: jeho samostatne
+     * okno (v3) se dosadi do SEKUNDARNIHO slotu lokalni kopie ramce. Jen pro toto okno; statistika ani datalog ho nevidi.
+     * Bez jedineho mereni od startu (signal jen na druhem kanalu) se kopie slozi z nuly. */
+    int sec_live = 0;
+    {
+        fpga_v3_sec_t sc;
+        if (fpga_freq_v3_sec(&sc) && fpga_freq_link_ok()
+            && (!seen || (m.error_flags & FPGA_ERR_SIGNAL_LOST))) {
+            if (!seen) {
+                memset(&m, 0, sizeof m);
+                m.error_flags = FPGA_ERR_SIGNAL_LOST;
+                seen = 1;
+            }
+            m.caps |= FPGA_CAP_CHAN;                 /* prirazeni slotu podle vybraneho kanalu okna */
+            m.channel_id     = sc.prim;
+            m.freq16_x100000 = sc.x100000;
+            m.edges_b        = (uint32_t)sc.edges;
+            m.dt_b_ps        = sc.dt_ps;
+            m.status2       &= (uint8_t)~FPGA_ST2_DIV16_ERR;
+            sec_live = 1;
+        }
+    }
 
     /* Kmitocty obou kanalu (zmenovy klic = naformatovany retezec). */
     char s[40];
     /* ABSOLUTNI kanaly (FW >= 0x041E: primarni slot ramce = kanal vybrany tlacitkem CHAN). */
     const uint64_t fa = seen ? fpga_meas_freq_ch(&m, 0) : 0u, fb = seen ? fpga_meas_freq_ch(&m, 1) : 0u;
-    if (seen) fpga_freq_format_val(fa, s, sizeof s); else snprintf(s, sizeof s, "--");
+    /* Stav KAZDEHO kanalu zvlast: kanal bez signalu ukaze "--" (seda), ne nulu ani stare cislo. */
+    const char *st[2];
+    int pres[2];
+    st[0] = dualch_status(seen, &m, 0, sec_live, &pres[0]);
+    st[1] = dualch_status(seen, &m, 1, sec_live, &pres[1]);
+    if (pres[0]) fpga_freq_format_val(fa, s, sizeof s); else snprintf(s, sizeof s, "--");
     if (first || dchg(c_fa, sizeof c_fa, s)) {
-        dualch_freq(DUALCH_CA_Y, fa, seen); drew = 1;
+        dualch_freq(DUALCH_CA_Y, fa, pres[0]); drew = 1;
     }
-    if (seen) fpga_freq_format_val(fb, s, sizeof s); else snprintf(s, sizeof s, "--");
+    if (pres[1]) fpga_freq_format_val(fb, s, sizeof s); else snprintf(s, sizeof s, "--");
     if (first || dchg(c_fb, sizeof c_fb, s)) {
-        dualch_freq(DUALCH_CB_Y, fb, seen); drew = 1;
+        dualch_freq(DUALCH_CB_Y, fb, pres[1]); drew = 1;
     }
 
     /* RF uroven — spolecna (jeden AD8307), bar v obou kartach. */
@@ -4075,28 +4228,69 @@ static void app_gpsdo_render_dualch(void)
         drew = 1;
     }
 
+    /* Sloupec doplnujicich udaju vpravo od kmitoctu + "hlavni cislo" v hlavicce (2026-11-06). */
+    fpga_v3_info_t vi;
+    fpga_freq_v3_info(&vi);
+    const double relres = card_relres();
+    for (int ch = 0; ch < 2; ch++) {
+        const int16_t cy = (ch == 0) ? DUALCH_CA_Y : DUALCH_CB_Y;
+        const int ok = pres[ch];
+        /* ⚠️ Zdrojove buffery MUSI byt >= cache (`dchg` cte az sizeof(cache)-1 B, audit 2026-08-30). */
+        char ln[3][32], key[sizeof c_in[0]];      /* 3 x 31 + 2 < 100: klic se neorizne */
+        dualch_info_text(ln, sizeof ln[0], &m, ch, ok, &vi);
+        snprintf(key, sizeof key, "%s|%s|%s", ln[0], ln[1], ln[2]);
+        if (first || dchg(c_in[ch], sizeof c_in[ch], key)) {
+            prim_fill_rect((prim_rect_t){DUALCH_IX, (int16_t)(cy + 33), DUALCH_IW, 60},
+                           UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            for (int i = 0; i < 3; i++)
+                prim_draw_text((prim_point_t){DUALCH_IX, (int16_t)(cy + 50 + 19 * i)}, ln[i], &ui_font_mono_16,
+                               (i == 0) ? UI_COLOR_INK_2 : UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+            drew = 1;
+        }
+        /* Hlavicka vpravo: kanal v PRIMARNIM slotu ramce zene hlavni cislo, statistiku i datalog; jen pro nej
+         * plati podlaha rozliseni `card_relres` (regrese/dvoubodova z primarniho okna). Druhy kanal: prazdno. */
+        char h[sizeof c_hd[0]] = "";
+        if (seen && fpga_freq_link_ok() && ((ch != 0) == (fpga_meas_chb_primary(&m) != 0))) {
+            char rb[20] = "";
+            if (ok && relres > 0.0) fmt_sci_ppb(relres, rb, sizeof rb);
+            if (rb[0]) snprintf(h, sizeof h, "hlavni cislo, rozliseni %s", rb);
+            else       snprintf(h, sizeof h, "hlavni cislo");
+        }
+        if (first || dchg(c_hd[ch], sizeof c_hd[ch], h)) {
+            prim_fill_rect((prim_rect_t){DUALCH_DX, (int16_t)(cy + 6), DUALCH_DW, 26},
+                           UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            prim_draw_text((prim_point_t){(int16_t)(DUALCH_DX + DUALCH_DW), (int16_t)(cy + 25)}, h,
+                           &ui_font_sans_16, UI_COLOR_ACC, PRIM_ALIGN_RIGHT);
+            drew = 1;
+        }
+    }
+
     /* Stavovy radek kazdeho kanalu zvlast (CH A i CH B maji vlastni chybovy bit). */
     for (int ch = 0; ch < 2; ch++) {
-        const char *st = dualch_status(seen, &m, (int)fpga_meas_err_ch(&m, ch));
         char *cache = (ch == 0) ? c_sa : c_sb;
-        if (!first && !dchg(cache, 28, st)) continue;
-        if (first) dchg(cache, 28, st);
+        /* ⚠️ `dchg` cte ze zdroje az sizeof(cache)-1 B: zdroj je retezcovy literal kratsi -> kopie do bufferu. */
+        char sb[sizeof c_sa];
+        snprintf(sb, sizeof sb, "%s", st[ch]);
+        if (!first && !dchg(cache, sizeof c_sa, sb)) continue;
+        if (first) dchg(cache, sizeof c_sa, sb);
         int16_t cy = (ch == 0) ? DUALCH_CA_Y : DUALCH_CB_Y;
         /* ⚠️ Jen LEVA cast radku — prava patri rozdilu A-B (vlastni zmenovy klic,
          * takze se clear obdelniky NESMI prekryvat, jinak si navzajem mazou text). */
         prim_fill_rect((prim_rect_t){DUALCH_CX, (int16_t)(cy + 142), DUALCH_ST_W, 28},
                        UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-        prim_draw_text((prim_point_t){DUALCH_CX, (int16_t)(cy + 162)}, st, &ui_font_mono_18,
-                       (st[0] == 'O') ? UI_COLOR_OK : UI_COLOR_BAD, PRIM_ALIGN_LEFT);
+        prim_draw_text((prim_point_t){DUALCH_CX, (int16_t)(cy + 162)}, sb, &ui_font_mono_18,
+                       pres[ch] ? UI_COLOR_OK : UI_COLOR_BAD, PRIM_ALIGN_LEFT);
         drew = 1;
     }
 
     /* Vysledek zvolene operace (vlastni zmenovy klic — retezec nese i NAZEV
      * operace, takze prepnuti tlacitka prekresleni vyvola samo). */
+    /* Jen kdyz meri OBA kanaly — s jednim bez signalu by A-B ukazalo cely kmitocet druheho. */
     { char d[sizeof c_dl];
-      dualch_result_text(d, sizeof d, (int64_t)fa, (int64_t)fb, seen);
+      const int both = pres[0] && pres[1];
+      dualch_result_text(d, sizeof d, (int64_t)fa, (int64_t)fb, both);
       if (first || dchg(c_dl, sizeof c_dl, d)) {
-          dualch_result((int64_t)fa, (int64_t)fb, seen);
+          dualch_result((int64_t)fa, (int64_t)fb, both);
           drew = 1;
       } }
     if (drew) present_now();
@@ -8359,10 +8553,9 @@ void app_gpsdo_clear(void)
  * prazdnou hodnotou: u merici pristroje je prazdna hodnota k nerozeznani od
  * poruchy mereni. Seznam tim zaroven slouzi jako zivy prehled zavislosti.
  *
- * ⚠️ `avail` se dnes mapuje na `st.mode` (0 = FREKVENCE, 1 = PERIODA), ktery je
- * v `g_ui_cfg` ulozeny na JEDNOM bitu a cte ho i SCPI/IPC. Az pribude treti
- * dostupna funkce, musi se persistence rozsirit — jinak by se po resetu vratila
- * spatna funkce. */
+ * ⚠️ FREKVENCE/PERIODA = `st.mode` (jeden bit v `g_ui_cfg`, cte ho i SCPI/IPC). Rozsirene funkce (v0.44.5, SM_FX_TI..)
+ * se ukladaji zvlast v syscfg (`gen_valid` bity 4:2, screen_main_restore_fx); `st.mode` je pro ne 0, takze SCPI
+ * `SENS:FUNC?` hlasi FREQ. */
 typedef struct { const char *name; int8_t mode; int8_t chan; const char *why; } meas_func_t;
 
 /* `mode` >= 0 -> dostupna: (mode 0 FREKVENCE / 1 PERIODA, chan 0 A / 1 B) jde do `screen_main_set_func`, tedy do
@@ -8370,20 +8563,23 @@ typedef struct { const char *name; int8_t mode; int8_t chan; const char *why; } 
  * `mode` < 0  -> zatim nedostupna, `why` rekne PROC (max. ~44 znaku, vejde se do radku 368 px).
  * Od 2026-10-18 jsou odemcene Frekvence B / Perioda B: FPGA FW >= 0x0400 meri oba kanaly (dva TDC) a vyber kanalu
  * existuje (CHAN v patce, `fpga_freq_cfg_sync`), takze "B" je presne FREQ/PERIOD + CHAN B. Limity -> docs/FUNKCE.md. */
+/* v0.44.5: odemcene Interval A-B, Faze A-B, Pomer A/B, Totalizace A, Sirka pulzu A, Strida A (SM_FX_*, screen_main.h);
+ * `chan` -1 = kanal se nemeni. Sirka pulzu a strida B: FPGA umi na vstup B privest jen INVERTOVANY pin A (SET_CONFIG 0x09),
+ * obracene ne. ⚠️ Sirka pulzu A / Strida A prepnou vstup B na invertovany A -- kanal B mezitim svuj signal nemeri. */
 #define FUNC_N 12
 static const meas_func_t FUNC_ITEMS[FUNC_N] = {
-    { "Frekvence A",         0, 0, NULL },
-    { "Perioda A",           1, 0, NULL },
-    { "Frekvence B",         0, 1, NULL },
-    { "Perioda B",           1, 1, NULL },
-    { "Casovy interval A-B",-1, 0, "chybi spolecne razitko hran A/B (v3)" },
-    { "Faze A-B",           -1, 0, "chybi spolecne razitko hran A/B (v3)" },
-    { "Pomer A/B",          -1, 0, "data jsou, chybi zobrazeni (SW)" },
-    { "Totalize A",         -1, 0, "gap-free okna (protokol v2/v3)" },
-    { "Sirka pulzu A",      -1, 0, "novy merici rezim FPGA" },
-    { "Sirka pulzu B",      -1, 0, "novy merici rezim FPGA" },
-    { "Strida A",           -1, 0, "novy merici rezim FPGA" },
-    { "Strida B",           -1, 0, "novy merici rezim FPGA" },
+    { "Frekvence A",         SM_FX_FREQ,  0, NULL },
+    { "Perioda A",           SM_FX_PER,   0, NULL },
+    { "Frekvence B",         SM_FX_FREQ,  1, NULL },
+    { "Perioda B",           SM_FX_PER,   1, NULL },
+    { "Casovy interval A-B", SM_FX_TI,   -1, NULL },
+    { "Faze A-B",            SM_FX_PHASE,-1, NULL },
+    { "Pomer A/B",           SM_FX_RATIO,-1, NULL },
+    { "Totalizace A",        SM_FX_TOTAL,-1, NULL },
+    { "Sirka pulzu A",       SM_FX_PW,   -1, NULL },
+    { "Sirka pulzu B",      -1, 0, "FPGA invertuje jen pin A na vstup B" },
+    { "Strida A",            SM_FX_DUTY, -1, NULL },
+    { "Strida B",           -1, 0, "FPGA invertuje jen pin A na vstup B" },
 };
 /* 2 sloupce x 6 radku, 56 px. ⚠️ 56 px je POD dotykovym minimem 60 px (7 mm) —
  * jenze 12 polozek jinak nejde zobrazit bez rolovani, a rolovani jsme zamitli
@@ -8400,7 +8596,7 @@ static void func_item_draw(int i, int focused)
 {
     const meas_func_t *f = &FUNC_ITEMS[i];
     int avail = (f->mode >= 0);
-    int cur   = avail && (screen_main_mode() == f->mode) && (screen_main_chan() == f->chan);
+    int cur   = avail && (screen_main_mode() == f->mode) && (f->chan < 0 || screen_main_chan() == f->chan);
     prim_rect_t r = func_rect(i);
     prim_fill_rect_rounded(r, UI_DIM_BUTTON_RADIUS,
                            focused ? UI_COLOR_BG_1 : UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);

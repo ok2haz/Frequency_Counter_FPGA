@@ -115,6 +115,9 @@ typedef struct {
     uint8_t  cc_ok;               /* 1 = f_cc_hz/gate_cc_ps platne (navazujici okno s regresi) */
     double   f_cc_hz;
     uint64_t gate_cc_ps;          /* delka okna tak, aby edge_count / gate_cc_ps = f_cc_hz */
+    /* v0.44.3 (STATUS #357), jen v3: 1 = skok `sequence` pred timto merenim je ZAMERNE preruseni (posun mrizky 1PPS,
+     * zapis generatoru, regroup, predelicka, ztrata signalu), ne zmeskane okno. Statistiku prerusi stejne (L-0104). */
+    uint8_t  seq_brk;
 } fpga_meas_t;
 
 /* caps bity (abs 62-63) */
@@ -355,6 +358,8 @@ int  fpga_freq_poll_miscount(void);
 void fpga_freq_miscount_stats(uint32_t *pos, uint32_t *neg);
 /** Soucty od bootu pro `status`: pocet der, zmeskanych mereni a resyncu. */
 void fpga_freq_seq_stats(uint32_t *gaps, uint32_t *missed, uint32_t *resync);
+/* v0.44.3: zamerna preruseni v3 (posun mrizky, gen, ...) -- do `diry` z fpga_freq_seq_stats se nepocitaji */
+void fpga_freq_seq_brk_stats(uint32_t *n, uint32_t *missed);
 
 /** Naformatuje kmitocet x100000: "123.456.789,01234Hz" (tecky=tisice, carka=des., 5 mist). */
 void fpga_freq_format_val(uint64_t freq_x100000, char *buf, int buflen);
@@ -724,8 +729,40 @@ typedef struct {
     uint32_t x0_fix[2], x0_odd[2];     /* v0.42.7: X0 A/B opravenych o 64*k hran / mimo predpoved bez opravy */
     int32_t  x0_dev[2];                /* posledni opravena odchylka X0 [hran] */
     uint32_t sx_rep[2], sx_rep_x0[2];  /* v0.42.11: segmentu s opravenym SX (zustaly v LSQ) / z toho podle opraveneho X0 */
+    uint32_t x0_step[2];               /* v0.44.1: skutecnych skoku X0 (surove prijato, okno zahozeno) */
+    uint32_t pps_n, pps_us, pps_min, pps_max;   /* v0.44.1: poloha 1PPS od zacatku okna A [us] od posledni zmeny mrizky */
+    uint32_t pps_align, seg_off;       /* posunu mrizky celkem / aktualni posun [segmenty] */
+    int16_t  pps_target;               /* cil [promile delky okna], -1 = mrizka se nezarovnava */
+    uint8_t  par_en;                   /* v0.44.4 (STATUS #360): clen parity segmentu v LSQ okna */
+    uint32_t par_n[2];                 /* oken A/B s odhadem stridave slozky znacek c */
+    double   par_s[2], par_ss[2];      /* soucet c a c^2 [ps]: sude segmenty o c pozdeji nez liche o c drive */
 } fpga_v3_info_t;
 void fpga_freq_v3_info(fpga_v3_info_t *o);
+/* v0.44.5 (STATUS #361): posledni okno DRUHEHO (nevybraneho) kanalu v3 samostatne, i kdyz vybrany kanal nema signal.
+ * Mereni v3 vznika jen z oken vybraneho kanalu (s3_emit); bez signalu na nem by se druhy kanal nezobrazil vubec.
+ * Plati jen okno mladsi nez 2,5 s + hradlo (jinak druhy kanal signal nema). Jen pro zobrazeni (okno DVOJKANAL) —
+ * do statistiky, datalogu ani IPC nejde. */
+typedef struct {
+    uint8_t  ch;                       /* kanal okna (0 A, 1 B) = ten, ktery NENI vybrany */
+    uint8_t  prim;                     /* vybrany (primarni) kanal v okamziku okna */
+    uint64_t x100000;                  /* kmitocet x1e5 */
+    uint64_t edges;                    /* periody v okne (hrany x P) */
+    uint64_t dt_ps;                    /* delka okna [ps] (LSQ, kdyz prosla) */
+    uint32_t age_ms;                   /* stari okna */
+} fpga_v3_sec_t;
+/* @return 1 = cerstve okno druheho kanalu v *o (jen protokol v3) */
+int  fpga_freq_v3_sec(fpga_v3_sec_t *o);
+/* v0.44.5 (STATUS #350): σ JEDNE casove znacky TDC [ps] zmerena za behu z reziduí segmentu kanalu `ch` (0 A, 1 B,
+ * -1 = vybrany kanal). 0 = neni (protokol v2, malo segmentu, KOHERENTNI signal). `n` = dobrych segmentu od vynulovani,
+ * `coh` = 1 pri koherentnim signalu (smi byt NULL). Nahrada pri 0: MP_TDC_PS (meas_present.h). */
+double fpga_freq_tdc_sigma_ps(int ch, uint32_t *n, uint8_t *coh);
+/* v0.44.1 (STATUS #354): cil polohy 1PPS v okne [promile delky okna, 0..999], -1 = mrizku nezarovnavat, jinak jen dotaz.
+ * Nepersistuje se (vychozi FPGA_V3_PPS_TARGET_DEF). @return aktualni cil */
+#define FPGA_V3_PPS_TARGET_DEF  400
+int  fpga_freq_v3_pps_target(int v);
+/* v0.44.4 (STATUS #360): clen parity segmentu v LSQ okna: v 1 = zap (vychozi), 0 = vyp, 2 = vynulovat odhad c, jinak jen
+ * dotaz. Zmena zap/vyp odhad vynuluje. Nepersistuje se. @return 1 = zapnuto */
+int  fpga_freq_v3_par(int v);
 /* v0.42.9 (L-0247): kopie kruhu odchylek X0 (big = 0 vsechny, 1 jen |d| >= 8 hran); vraci celkovy pocet zapsanych */
 uint32_t fpga_freq_v3_x0ev(int big, fpga_v3_x0ev_t o[FPGA_V3_X0EV]);
 
@@ -784,6 +821,7 @@ typedef struct {
     uint32_t caps, pps_seq;
     uint32_t ev_total, ev_fill, ab_fill;
     uint32_t ab_n, ab_lost, sk_n;
+    uint32_t rec_a, rec_b, inv_a, inv_b, cs_a, cs_b, lone_a, lost_cs, gaps;   /* v0.45.2: zaznamy v parovani (fpga_v3_pr_t) */
     double   ab_mean, ab_sd, ab_min, ab_max;          /* intervaly [ps] */
     double   sk_mean, sk_sd, sk_min, sk_max;          /* zpozdeni B - A [ps] */
 } fpga_ev_info_t;
@@ -794,6 +832,20 @@ int  fpga_freq_ev_pair(uint8_t mode);
 void fpga_freq_ev_info(fpga_ev_info_t *o);
 int  fpga_freq_ev_get(uint32_t back, fpga_ev_rec_t *o);   /* back 0 = nejnovejsi; 0 = neni */
 int  fpga_freq_ab_get(uint32_t back, double *ps);           /* posledni intervaly [ps]; 0 = neni */
+/* v0.44.5 (okno FUNKCE MERENI): parovani z UiTasku -- SET_CONFIG provede FpgaTask v dalsim pollu (fpga_freq_ev_pair);
+ * fpga_freq_ev_pair_rc = jeho vysledek, 127 = jeste neprovedeno. */
+void fpga_freq_ev_pair_req(uint8_t mode);
+int  fpga_freq_ev_pair_rc(void);
+/* zjisteny protokol FPGA: 0 = jeste nezjisten, 2, 3 (emulator v3 = 3) */
+uint8_t fpga_freq_proto(void);
+/* Prumer a σ poslednich `last` intervalu kruhu (0 = vsech, nejvys 64) [ps]; *total = intervalu celkem (roste s kazdym
+ * novym -> zmenovy klic). @return 0 = zadny interval */
+int  fpga_freq_ab_stat(uint32_t last, double *mean_ps, double *sd_ps, uint32_t *n, uint32_t *total);
+/* v0.44.5: TOTALIZACE kanalu A = hran od vynulovani (z absolutniho indexu X0 zaznamu segmentu x predelicka; mezery
+ * v prijmu hrany neztraci). *resync = skoku X0 (restart FPGA, zmena predelicky), pri nich se navazuje bez pricteni.
+ * @return 1 = pocita (v3, aspon jeden zaznam A s hranou od vynulovani) */
+void fpga_freq_v3_total_reset(void);
+int  fpga_freq_v3_total(uint64_t *n, uint32_t *resync);
 /** RAW_CAPTURE (TYPE 0x0B): 512 po sobe jdoucich casovanych znacek kanalu ch. Blokuje volajiciho (UartTask) do timeout_ms
  *  + cteni 5 stranek; cb (muze byt NULL) dostane kazdou znacku [ps, 48 b osa] a rozdil proti predchozi [ps].
  *  @return 1 = 512 znacek, 0 = mene (timeout), -1 stranka selhala, -2 neni v3 / emulator, -3 SPI,

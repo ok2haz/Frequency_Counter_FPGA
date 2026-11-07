@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>       /* atoi — argument prikazu "sd export [N]" */
+#include <math.h>         /* sqrt — `fpga v3`: SE odhadu stridave slozky znacek (v0.44.4) */
 #include "fpga_tdccal.h"   /* FW 0x0427: stav kalibrace TDC v STM (status) */
 #include "fpga_v3.h"       /* protokol v3: UART `fpga v3 test` */
 #include "fpga_spi_dma.h"  /* krok 7: UART `spi dma` (stav) */
@@ -336,6 +337,11 @@ static void uart_ab_show(uint32_t n, int pw)
 	const double corr = (pw && ei.sk_n) ? ei.sk_mean : 0.0;
 	if (ei.ab_n) uart_ab_stat(pw ? "sirka pulzu" : "intervalu", ei.ab_n, ei.ab_mean, ei.ab_sd, ei.ab_min, ei.ab_max, corr);
 	printf("  zahozenych startu %lu (bez stopu do 10 s, souhrn B pres start, hrana mohla chybet)\n", (unsigned long)ei.ab_lost);
+	printf("  zaznamy A %lu / B %lu: neplatne %lu / %lu, se znackami pri CS %lu / %lu; A bez B tehoz segmentu %lu, "
+	       "mezery prijmu %lu, intervalu zahozenych kvuli CS (>= 200 us) %lu\n",
+	       (unsigned long)ei.rec_a, (unsigned long)ei.rec_b, (unsigned long)ei.inv_a, (unsigned long)ei.inv_b,
+	       (unsigned long)ei.cs_a, (unsigned long)ei.cs_b, (unsigned long)ei.lone_a, (unsigned long)ei.gaps,
+	       (unsigned long)ei.lost_cs);
 	if (pw) {
 		if (ei.sk_n) uart_ab_stat("zpozdeni B-A", ei.sk_n, ei.sk_mean, ei.sk_sd, ei.sk_min, ei.sk_max, 0.0);
 		else printf("  zpozdeni B-A nekalibrovano (`fpga pw cal`, pak `fpga pw on`): sirka bez korekce\n");
@@ -2377,7 +2383,8 @@ void UartTask_run(void *argument)
 				  if (strcmp(a, "off") == 0) gps_tp_override(0);
 				  else if (strcmp(a, "def") == 0) gps_tp_override(-1);
 				  else if (a[0] == 'z' && (a[1] == ' ' || a[1] == '\0')) {
-					  /* `gps tp z <ms>` -- posun 1PPS 0..999 ms (userConfigDelay); posouva i fazi GPSDO -> jen s `gpsdo off` */
+					  /* `gps tp z <ms>` -- posun 1PPS 0..999 ms (userConfigDelay) o z DRIV (z 8: 97,176 -> 89,176 ms, STATUS #357);
+					   * posouva i fazi GPSDO -> jen s `gpsdo off` */
 					  int ms = atoi(a + 1);
 					  if (ms < 0 || ms > 999) printf("GPS TP: posun 0..999 ms\n");
 					  else gps_tp_delay((int32_t)ms * 1000000);
@@ -2389,7 +2396,7 @@ void UartTask_run(void *argument)
 				  } else if (*a != '\0') printf("GPS TP: pouziti `gps tp [<ms>|off|def|z <ms>]`\n");
 				  uint32_t len; uint8_t act;
 				  gps_tp_get(&len, &act);
-				  printf("GPS TP: %s, pulz s fixem %lu ms, posun %ld ms (vychozi 100 ms / 0, nepersistuje se; odeslani do ~1 s)\n",
+				  printf("GPS TP: %s, pulz s fixem %lu ms, posun %ld ms (vychozi 10 ms / 0, nepersistuje se; odeslani do ~1 s)\n",
 				         act ? "ZAP" : "VYP (GPSDO bez 1PPS)", (unsigned long)(len / 1000u), (long)(gps_tp_delay_get() / 1000000));
 			  }
 			  else if (strcmp(RxBuffer, "gps ver") == 0) {
@@ -2788,6 +2795,36 @@ void UartTask_run(void *argument)
 					         (long)d.x_ps, (unsigned)d.xdiv, (unsigned long)d.n_b, (unsigned long)(d.xm_b >> 32), (unsigned long)d.xm_b);
 				  }
 			  }
+			  else if (strncmp(RxBuffer, "fpga v3 par", 11) == 0 && (RxBuffer[11] == '\0' || RxBuffer[11] == ' ')) {
+				  /* v0.44.4 (STATUS #360): `fpga v3 par [on|off|reset]` -- clen parity segmentu v LSQ okna (porovnani s nim
+				   * a bez nej bez flashe); zmena i reset nuluji odhad stridave slozky v `fpga v3`; nepersistuje se */
+				  const char *a = RxBuffer + 11;
+				  while (*a == ' ') a++;
+				  if (strcmp(a, "on") == 0) (void)fpga_freq_v3_par(1);
+				  else if (strcmp(a, "off") == 0) (void)fpga_freq_v3_par(0);
+				  else if (strcmp(a, "reset") == 0) (void)fpga_freq_v3_par(2);
+				  else if (*a != '\0') printf("pouziti: fpga v3 par [on|off|reset]\n");
+				  printf("FPGA v3 LSQ okna: clen parity segmentu %s (vychozi ZAP; `fpga v3` = odhad stridave slozky A/B)\n",
+				         fpga_freq_v3_par(-1) ? "ZAP" : "VYP");
+			  }
+			  else if (strncmp(RxBuffer, "fpga v3 pps", 11) == 0 && (RxBuffer[11] == '\0' || RxBuffer[11] == ' ')) {
+				  /* v0.44.1 (STATUS #354): `fpga v3 pps [off|def|<promile 0..999>]` -- kam v okne ma padnout 1PPS (mrizka oken
+				   * se posouva po celych segmentech); nepersistuje se */
+				  const char *a = RxBuffer + 11;
+				  while (*a == ' ') a++;
+				  if (strcmp(a, "off") == 0) (void)fpga_freq_v3_pps_target(-1);
+				  else if (strcmp(a, "def") == 0) (void)fpga_freq_v3_pps_target(FPGA_V3_PPS_TARGET_DEF);
+				  else if (*a >= '0' && *a <= '9') {
+					  const int v = atoi(a);
+					  if (v > 999) printf("fpga v3 pps: 0..999 promile delky okna\n");
+					  else (void)fpga_freq_v3_pps_target(v);
+				  } else if (*a != '\0') printf("pouziti: fpga v3 pps [off|def|<promile 0..999>]\n");
+				  const int t = fpga_freq_v3_pps_target(-2);
+				  if (t < 0) printf("FPGA v3 1PPS: mrizka oken se NEZAROVNAVA (vychozi %d promile; `fpga v3` = poloha)\n",
+				                    FPGA_V3_PPS_TARGET_DEF);
+				  else printf("FPGA v3 1PPS: cil %d promile delky okna (vychozi %d; `fpga v3` = poloha a posun mrizky)\n",
+				              t, FPGA_V3_PPS_TARGET_DEF);
+			  }
 			  else if (strcmp(RxBuffer, "fpga v3") == 0) {
 				  /* 2026-10-22 (protokol v3, krok 4c): stav vetve v3 ovladace -- verze FPGA, prijem zaznamu (prekryv = duplicity,
 				   * mezery, resync), okna, posledni hlavicka. */
@@ -2805,6 +2842,39 @@ void UartTask_run(void *argument)
 				  printf("  X0 proti predpovedi z T0: opraveno (64*k hran) A %lu B %lu, posledni %ld / %ld | mimo predpoved bez opravy A %lu B %lu\n",
 				         (unsigned long)vi.x0_fix[0], (unsigned long)vi.x0_fix[1], (long)vi.x0_dev[0], (long)vi.x0_dev[1],
 				         (unsigned long)vi.x0_odd[0], (unsigned long)vi.x0_odd[1]);
+				  printf("  X0 skutecny skok (tataz oprava %u zaznamu po sobe -> surove prijato, okno zahozeno): A %lu B %lu\n",
+				         (unsigned)FPGA_V3_X0_STEP_N, (unsigned long)vi.x0_step[0], (unsigned long)vi.x0_step[1]);
+				  {   /* v0.44.4 (STATUS #360): clen parity segmentu v LSQ okna a odhad stridave slozky znacek (bez %f: fs) */
+					  printf("  LSQ okna: clen parity segmentu %s (`fpga v3 par on|off|reset`), sude segmenty pozdeji o:",
+					         vi.par_en ? "ZAP" : "VYP");
+					  for (int c = 0; c < 2; c++) {
+						  if (vi.par_n[c] < 2u) { printf(" %c bez dat", 'A' + c); continue; }
+						  const double m = vi.par_s[c] / (double)vi.par_n[c];
+						  const double var = (vi.par_ss[c] - vi.par_s[c] * m) / (double)(vi.par_n[c] - 1u);
+						  const double se = (var > 0.0) ? sqrt(var / (double)vi.par_n[c]) : 0.0;
+						  const long mf = (long)(m * 1000.0 + (m >= 0.0 ? 0.5 : -0.5)), sf = (long)(se * 1000.0 + 0.5);
+						  const long am = labs(mf);
+						  printf(" %c %c%ld.%03ld ps (SE %ld.%03ld, oken %lu)", 'A' + c, (mf < 0) ? '-' : '+', am / 1000, am % 1000,
+						         sf / 1000, sf % 1000, (unsigned long)vi.par_n[c]);
+					  }
+					  printf("\n");
+				  }
+				  {   /* v0.44.1 (STATUS #354): poloha 1PPS v okne A, mrizka oken podle 1PPS (bez %f: us -> ms.mmm) */
+					  const unsigned long wms = (unsigned long)(vi.k * vi.seg_ms);
+					  if (vi.pps_n)
+						  printf("  1PPS v okne A: %lu.%03lu ms od zacatku okna (min %lu.%03lu max %lu.%03lu, n %lu od zmeny mrizky), okno %lu ms\n",
+						         (unsigned long)(vi.pps_us / 1000u), (unsigned long)(vi.pps_us % 1000u),
+						         (unsigned long)(vi.pps_min / 1000u), (unsigned long)(vi.pps_min % 1000u),
+						         (unsigned long)(vi.pps_max / 1000u), (unsigned long)(vi.pps_max % 1000u), (unsigned long)vi.pps_n, wms);
+					  else printf("  1PPS v okne A: zatim zadna poloha od zmeny mrizky (1PPS v hlavicce, okno A)\n");
+					  if (vi.pps_target < 0)
+						  printf("  mrizka oken: posun %lu seg, NEZAROVNAVA SE (`fpga v3 pps <promile>`), posunu %lu\n",
+						         (unsigned long)vi.seg_off, (unsigned long)vi.pps_align);
+					  else
+						  printf("  mrizka oken: posun %lu seg, cil 1PPS %d promile okna = %lu ms (okno <= 1 s), posunu %lu\n",
+						         (unsigned long)vi.seg_off, (int)vi.pps_target, wms * (unsigned long)vi.pps_target / 1000ul,
+						         (unsigned long)vi.pps_align);
+				  }
 				  printf("  SX opraveno (segment zustal v LSQ): A %lu B %lu, z toho podle X0 A %lu B %lu | mez teziste %u ps\n",
 				         (unsigned long)vi.sx_rep[0], (unsigned long)vi.sx_rep[1], (unsigned long)vi.sx_rep_x0[0],
 				         (unsigned long)vi.sx_rep_x0[1], (unsigned)FPGA_V3_SEG_BAD_PS);
@@ -4097,10 +4167,12 @@ void UartTask_run(void *argument)
 					  	 * Za bezneho provozu (poll 20 Hz, mereni 4/s) ma byt `diry 0`; nenulove
 					  	 * = FpgaTask nestiha (napr. behem `fpgaloop`). Vzorek s dirou se do
 					  	 * statistiky nedostane, tady je jen videt, jak casto se to deje.
-					  	 * `resync` = skok/navrat SEQUENCE (reset FPGA, start emulace). */
-					  	{ uint32_t sg, sm, sr; fpga_freq_seq_stats(&sg, &sm, &sr);
-					  	  printf("SEQ FPGA: diry %lu (zmeskano %lu mereni), resync %lu%s\n",
-					  	         (unsigned long)sg, (unsigned long)sm, (unsigned long)sr,
+					  	 * `resync` = skok/navrat SEQUENCE (reset FPGA, start emulace).
+					  	 * v0.44.3 (STATUS #357): `preruseni` = zamerne preruseni v3 (posun mrizky
+					  	 * na 1PPS, `gen`, predelicka, ztrata signalu) -- do `diry` se nepocitaji. */
+					  	{ uint32_t sg, sm, sr, bn, bm; fpga_freq_seq_stats(&sg, &sm, &sr); fpga_freq_seq_brk_stats(&bn, &bm);
+					  	  printf("SEQ FPGA: diry %lu (zmeskano %lu mereni), preruseni %lu (%lu oken: posun mrizky, gen, ...), resync %lu%s\n",
+					  	         (unsigned long)sg, (unsigned long)sm, (unsigned long)bn, (unsigned long)bm, (unsigned long)sr,
 					  	         sg ? "  <== FpgaTask nestihal" : ""); }
 					  	/* 🔴 SKUTECNA hodnota refreshe V HARDWARU, ne to, co je ve zdrojaku.
 					  	 * `REFRESH_COUNT` uz jednou byl 4,7x mimo spec (#138) a projevilo se to
@@ -4388,6 +4460,17 @@ void UartTask_run(void *argument)
 								           (unsigned long)ci.sum_bad, (unsigned long)ci.sum_resample);
 							  }
 							  {
+							    /* v0.44.5 (STATUS #350): σ znacky za behu z reziduí segmentu; 0 = nahrada 105 ps (MP_TDC_PS) */
+							    printf("  TDC SUM ZNACKY:");
+							    for (int c = 0; c < 2; c++) {
+							      uint32_t tn = 0u; uint8_t tc = 0u;
+							      const double ts = fpga_freq_tdc_sigma_ps(c, &tn, &tc);
+							      const unsigned long t10 = (unsigned long)(ts * 10.0 + 0.5);
+							      if (ts > 0.0) printf(" %c %lu.%lu ps (segmentu %lu)", c ? 'B' : 'A', t10 / 10ul, t10 % 10ul, (unsigned long)tn);
+							      else          printf(" %c -- (%s, segmentu %lu)", c ? 'B' : 'A', tc ? "koherentni signal" : "malo dat", (unsigned long)tn);
+							      if (c == 0) printf(" |");
+							    }
+							    printf(" | pouzito %s\n", (fpga_freq_tdc_sigma_ps(-1, NULL, NULL) > 0.0) ? "zmerena (vybrany kanal)" : "konstanta 105 ps");
 							    uint32_t mp = 0u, mn = 0u;
 							    fpga_freq_miscount_stats(&mp, &mn);
 							    printf("  CITANI HRAN: okno s hranou navic %lu, s chybejici %lu (nezobrazeno, mimo statistiku)%s\n",

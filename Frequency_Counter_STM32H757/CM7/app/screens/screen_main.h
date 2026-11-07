@@ -104,12 +104,24 @@ int  screen_main_tick_stats_anim(void);                /* ~20 Hz: eased dojezd O
 int  screen_main_tick_trend_anim(void);                /* ~20 Hz: eased dojezd trend sparkline (item 4, jen v2) */
 int  screen_main_tick_sys_xfade(void);                 /* ~20 Hz: prolinani barvy SYS pilulky (FX_SYS_XFADE) */
 int  screen_main_redraw_allan(void);                   /* zivy Allan graf (~1x/s); vrati 1 */
-/** Aktualni merici funkce (0 = FREKVENCE, 1 = PERIODA) — okno FUNKCE. */
+/** Merici funkce hlavni obrazovky (v0.44.5; 0/1 = `st.mode`, ostatni viz screen_main.c u `s_fx`). */
+#define SM_FX_FREQ   0
+#define SM_FX_PER    1
+#define SM_FX_TI     2    /* casovy interval A -> B */
+#define SM_FX_PHASE  3    /* faze A-B [°] */
+#define SM_FX_RATIO  4    /* pomer f_A / f_B */
+#define SM_FX_TOTAL  5    /* totalizace A */
+#define SM_FX_PW     6    /* sirka pulzu A */
+#define SM_FX_DUTY   7    /* strida A [%] */
+#define SM_FX_N      8
+/** Aktualni merici funkce (SM_FX_*) — okno FUNKCE. */
 int  screen_main_mode(void);
 /** Vybrany kanal (0 = A, 1 = B). */
 int  screen_main_chan(void);
-/** Nastavi funkci = (mod 0 FREKVENCE / 1 PERIODA, kanal 0 A / 1 B) najednou; mimo rozsah nebo beze zmeny = no-op. */
+/** Nastavi funkci = (SM_FX_*, kanal 0 A / 1 B, -1 = nemenit) najednou; mimo rozsah nebo beze zmeny = no-op. */
 void screen_main_set_func(int mode, int chan);
+/** Obnova funkce >= SM_FX_TI ze syscfg (pred screen_main_init). */
+void screen_main_restore_fx(int fx);
 /** Historie spektrogramu: pocet vzorku (po 1 s) od resetu a vzorek podle absolutniho indexu (relativni k prvnimu
  *  vzorku od resetu); vraci 0, kdyz vzorek neexistuje nebo byl prepsan. Jen UiTask. */
 uint32_t screen_main_wf_count(void);

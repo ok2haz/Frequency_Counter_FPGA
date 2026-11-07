@@ -59,7 +59,8 @@ const FONTS = [
     ['ui_font_sans_18', SANS, 18],   // tlacitka + nadpisy karet (sans_17 i sans_20 slouceny sem)
     // unit_font velkeho cisla: "Hz" (kmitocet) + "s"/"ms"/"us"/"ns"/"ps" (perioda,
     // footer FREQ<->PERIOD toggle) -> unikatni znaky: H z s m u n p
-    ['ui_font_sans_32', SANS, 32, 'Hzsmunp'],
+    // + "%" (strida) a "°" (faze A-B) od v0.44.5 -- okno FUNKCE MERENI.
+    ['ui_font_sans_32', SANS, 32, 'Hzsmunp%°'],
 ];
 
 // Unicode subset (libprim text.h §9).

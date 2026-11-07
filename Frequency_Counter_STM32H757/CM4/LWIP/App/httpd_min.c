@@ -476,7 +476,12 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
      * NEMUSEL zadratovat — jinak by vznikla dalsi kopie kroku TDC, ktery uz
      * jednou byl na trech mistech (viz `MP_TDC_PS` v meas_present.h, SKILL.md §5).
      * Celociselne, zadny `%f` (nano.specs). */
-    jputf(&j, "\"tdc_ps\":%lu,", (unsigned long)(MP_TDC_PS));
+    /* v0.44.5 (STATUS #350): σ znacky ZMERENA za behu na CM7 (blok gpsdo, 0,1 ps); bez ni nahrada MP_TDC_PS. */
+    { const unsigned long t10 = (unsigned long)g_ipc.gpsdo.tdc_ps_x10;
+      if (g_ipc.gpsdo.tdc_meas && t10)
+          jputf(&j, "\"tdc_ps\":%lu.%lu,\"tdc_meas\":1,", t10 / 10ul, t10 % 10ul);
+      else
+          jputf(&j, "\"tdc_ps\":%lu,\"tdc_meas\":0,", (unsigned long)(MP_TDC_PS)); }
     /* Nejistota reference PODLE STAVU smycky (mp_ref_ppb, sdilene s hlavnim cislem a oknem ANALYZA); x100 = 0,01 ppb rozliseni.
      * Cte se primo z bloku gpsdo (par bajtu, roztrzene cteni by dalo nanejvys jednu spatnou hodnotu na tik). */
     jputf(&j, "\"ref_ppb_x100\":%lu,\"ref_meas\":%u,", (unsigned long)g_ipc.gpsdo.ref_ppb_x100, (unsigned)g_ipc.gpsdo.ref_meas);
@@ -3894,7 +3899,7 @@ static const char SPA_HTML[] =
 "  h+=row('SEQ',(s.seq_meas===undefined)?'--':String(s.seq_meas),'');\n"
 "  h+=row('Kanal FPGA',(s.channel===undefined)?'--':String(s.channel),\n"
 "         'nastaveno: '+((s.set_chan===undefined)?'--':(s.set_chan?'B':'A')));\n"
-"  if(s.tdc_ps) h+=row('Sum znacky TDC',s.tdc_ps+' ps','sigma, carry chain');\n"
+"  if(s.tdc_ps) h+=row('Sum znacky TDC',s.tdc_ps+' ps',s.tdc_meas?'sigma, zmereno za behu':'sigma, konstanta (bez mereni)');\n"
 "  $('tLnk').innerHTML=h;\n"
 "  $('stLink').textContent=s.spi_ok?((r===null)?'link OK':(r.toFixed(1)+'/s')):'DOWN';\n"
 "  $('linkWarn').textContent=s.spi_ok?'':'SPI link neodpovida - vsechna mereni'\n"
