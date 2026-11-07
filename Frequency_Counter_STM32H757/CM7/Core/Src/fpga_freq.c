@@ -1296,6 +1296,22 @@ static uint32_t       s3e_abw = 0u;
 static fpga_v3_evu_t  s3e_u;
 static fpga_v3_pr_t   s3e_pr;           /* parovani po zaznamech (fpga_v3_pr_rec, host test) */
 static fpga_v3_stat_t s3e_st;
+static fpga_v3_stat_t s3e_stx[2];       /* v0.45.3: intervaly se startem a stopem ve stejne periode taktu [0] / pres hranu taktu [1] */
+/* v0.45.4 (t368): interval podle faze STARTU v periode taktu (16 dilu); u kruhu posledni faze startu a stopu [T/16384],
+ * 0xFFFF = neznama. Chyba zavisla na fazi (INL TDC nebo presluch taktu do vstupu) se pri stejne fazi A a B odecte. */
+static fpga_v3_stat_t s3e_sph[FPGA_EV_PH_N];
+static uint16_t       s3e_abph[S3E_AB][2];
+/* v0.45.6: surove udalosti (t_u, x) pro linearitu casovani (fpga_ev_raw_t); pise FpgaTask, cte UART pod zakazem preruseni */
+static fpga_ev_raw_t  s3e_raw[FPGA_EV_RAW_N];
+static uint32_t       s3e_raww = 0u;
+/* v0.45.7 (STATUS #366, t374): chyba casovani podle faze taktu. Sber (s_lin_meas) plni FpgaTask z udalosti proti generatoru
+ * koherentnimu s taktem (fpga_v3_lin_add), tabulku spocte a nastavi UART (`fpga lin cal`). Korekce (s_lin_on) se odecte od casu
+ * kazde udalosti PRED parovanim A->B a kruhem udalosti; surovy kruh (s3e_raw) a sber zustavaji bez korekce. */
+static fpga_v3_lin_t  s_lin_acc[2];
+static int16_t        s_lin_tab[2][FPGA_V3_LIN_NB];
+static volatile uint8_t s_lin_meas = 0u, s_lin_on = 0u;
+static uint8_t        s_lin_ok[2];
+static uint32_t       s_lin_tdcrun = 0u, s_lin_ncorr = 0u;
 static uint8_t        s3e_act = 0u;
 static volatile uint8_t s3e_on = 0u, s3e_pair = FPGA_EVP_OFF;   /* zapisuje UART */
 static volatile uint8_t s3e_gen[4];     /* UART: vynulovat kruh / intervaly / zpozdeni, prepnuti zdroje B */
@@ -1326,7 +1342,7 @@ static int64_t s3e_s48(uint64_t d)
 
 static void s3e_apply(uint32_t clk)
 {
-    const uint8_t act = (uint8_t)(s3e_on || s3e_pair != FPGA_EVP_OFF);
+    const uint8_t act = (uint8_t)(s3e_on || s3e_pair != FPGA_EVP_OFF || s_lin_meas);
     const uint64_t max_u = (uint64_t)(S3E_MAX_S * 1e12 / fpga_v3_unit_ps(clk));
     uint32_t pm;
     if (act && !s3e_act) {
@@ -1336,12 +1352,14 @@ static void s3e_apply(uint32_t clk)
     s3e_act = act;
     if (s3e_gen[0] != s3e_seen[0]) {
         s3e_seen[0] = s3e_gen[0];
-        pm = __get_PRIMASK(); __disable_irq(); s3e_w = 0u; __set_PRIMASK(pm);
+        pm = __get_PRIMASK(); __disable_irq(); s3e_w = 0u; s3e_raww = 0u; __set_PRIMASK(pm);
     }
     if (s3e_gen[1] != s3e_seen[1]) {
         s3e_seen[1] = s3e_gen[1];
         pm = __get_PRIMASK(); __disable_irq();
         fpga_v3_ab_init(&s3e_pr.ab, max_u); s3e_pr.pa_have = 0u; s3e_pr.arm_cs = 0u; fpga_v3_stat_init(&s3e_st); s3e_abw = 0u;
+        fpga_v3_stat_init(&s3e_stx[0]); fpga_v3_stat_init(&s3e_stx[1]);
+        for (uint32_t i = 0; i < FPGA_EV_PH_N; i++) fpga_v3_stat_init(&s3e_sph[i]);
         s3e_pr.rec_a = s3e_pr.rec_b = s3e_pr.inv_a = s3e_pr.inv_b = s3e_pr.cs_a = s3e_pr.cs_b = 0u;
         s3e_pr.lone_a = s3e_pr.lost_cs = s3e_pr.gaps = 0u;
         __set_PRIMASK(pm);
@@ -1380,7 +1398,24 @@ static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
     const double up = fpga_v3_unit_ps(clk);
     fpga_v3_ev_t e[2];
     const uint32_t ne = fpga_v3_ev_from_rec(&s3e_u, r, clk, now, e);
-    if (s3e_on) for (uint32_t k = 0; k < ne; k++) s3e_push(&e[k], r->flags, clk, up);
+    for (uint32_t k = 0; k < ne; k++) {
+        const uint8_t c = (uint8_t)(e[k].ch & 1u);
+        if (s3e_on) {                                   /* surovy kruh: cas BEZ korekce */
+            fpga_ev_raw_t w;
+            w.t_u = e[k].t_u; w.x = e[k].x; w.n = e[k].n; w.seg = e[k].seg; w.ch = e[k].ch;
+            w.kind_flags = (uint8_t)((e[k].kind & 3u) | ((r->flags & FPGA_V3_R_CS) ? 0x80u : 0u));
+            const uint32_t pm = __get_PRIMASK();
+            __disable_irq();
+            s3e_raw[s3e_raww % FPGA_EV_RAW_N] = w; s3e_raww++;
+            __set_PRIMASK(pm);
+        }
+        if (s_lin_meas) fpga_v3_lin_add(&s_lin_acc[c], e[k].x, e[k].t_u);
+        if (s_lin_on && s_lin_ok[c]) {                  /* v0.45.7: korekce chyby casovani podle faze taktu */
+            e[k].t_u = (uint64_t)((int64_t)e[k].t_u - (int64_t)fpga_v3_lin_corr(s_lin_tab[c], e[k].t_u));
+            s_lin_ncorr++;
+        }
+        if (s3e_on) s3e_push(&e[k], r->flags, clk, up);
+    }
     const uint8_t pr = s3e_pair;
     if (pr == FPGA_EVP_OFF) return;
     int64_t dt[4];
@@ -1390,6 +1425,16 @@ static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
     for (uint32_t k = 0; k < nd; k++) {
         const double ps = (double)dt[k] * up;
         fpga_v3_stat_add(&s3e_st, ps);
+        /* v0.45.3: jednotka casu = T/16384 -> perioda taktu = t_u >> 14; lezi-li start a stop v ruznych periodach, chyba
+         * hrany taktu se v rozdilu neodecte (STATUS #364, t366) */
+        uint16_t ph0 = 0xFFFFu, ph1 = 0xFFFFu;
+        if (k < FPGA_V3_AB_TST) {
+            const uint64_t ts = s3e_pr.t_st[k], te = ts + (uint64_t)dt[k];
+            fpga_v3_stat_add(&s3e_stx[((ts >> 14) != (te >> 14)) ? 1 : 0], ps);
+            ph0 = (uint16_t)(ts & 0x3FFFu); ph1 = (uint16_t)(te & 0x3FFFu);
+            fpga_v3_stat_add(&s3e_sph[ph0 / (16384u / FPGA_EV_PH_N)], ps);
+        }
+        s3e_abph[s3e_abw % S3E_AB][0] = ph0; s3e_abph[s3e_abw % S3E_AB][1] = ph1;
         s3e_ab[s3e_abw % S3E_AB] = ps; s3e_abw++;
     }
     __set_PRIMASK(pm);
@@ -2840,6 +2885,13 @@ bool fpga_freq_tdc_cal_start(void)
     return xfer(tx, rx);
 }
 
+/* v0.45.5: mez odchylky osmin pro kalibraci z pinu [promile], 100 = vychozi (fpga_v3_calpin_check); nastavuje UART */
+static volatile int16_t s_calpin_lim = 100;
+void fpga_freq_calpin_lim(int16_t permil)
+{
+    s_calpin_lim = (permil < 100) ? 100 : ((permil > 900) ? 900 : permil);
+}
+
 bool fpga_freq_tdc_cal_start_ex(uint8_t mask, bool pin)
 {
     if (!g_init_ok || s_sim_on || s_proto != 3u) return false;
@@ -3230,7 +3282,11 @@ static bool tdccal_run_v3(uint8_t ch, bool pin)
          * jinak tabulku nezapisovat a spustit novy sber z ring oscilatoru (FPGA prestane cekat, kanal dostane platnou tabulku) */
         if (pin) {
             uint16_t pnz = 0u; int16_t pdev = 0;
-            const int pc = fpga_v3_calpin_check(s_ch_h[ch], s_ref_ok[ch] ? s_ref_h[ch] : NULL, nc, nz_prev, &pnz, &pdev);
+            int pc = fpga_v3_calpin_check(s_ch_h[ch], s_ref_ok[ch] ? s_ref_h[ch] : NULL, nc, nz_prev, &pnz, &pdev);
+            /* v0.45.5 (t370): odchylka osmin se meri PROTI tabulce z ring oscilatoru, tedy proti podezrele strane; nelinearita
+             * ~200 ps na hranu (1. harmonicka taktu) dava sama ~±126 promile a pevna mez 100 promile kalibraci odmitala
+             * prave tehdy, kdy je potreba. Volnejsi mez jen na vyzadani (`tdc cal pin gen mez <N>`), jen pro jednu kalibraci. */
+            if (pc == 2 && s_calpin_lim > 100 && pdev <= s_calpin_lim && pdev >= -s_calpin_lim) pc = 0;
             s_cal_info.pin_res[ch] = (uint8_t)pc; s_cal_info.pin_nz[ch] = pnz; s_cal_info.pin_dev[ch] = pdev;
             if (pc != 0) {
                 s_cal_info.pin_rej++;
@@ -3388,6 +3444,7 @@ void fpga_freq_ev_info(fpga_ev_info_t *o)
     const uint32_t pm = __get_PRIMASK();
     __disable_irq();
     st = s3e_st; sk = s3e_pr.sk;
+    const fpga_v3_stat_t sx0 = s3e_stx[0], sx1 = s3e_stx[1];
     o->ev_total = s3e_w; o->ab_lost = s3e_pr.ab.lost; o->ab_fill = s3e_abw;
     o->rec_a = s3e_pr.rec_a; o->rec_b = s3e_pr.rec_b; o->inv_a = s3e_pr.inv_a; o->inv_b = s3e_pr.inv_b;
     o->cs_a = s3e_pr.cs_a; o->cs_b = s3e_pr.cs_b; o->lone_a = s3e_pr.lone_a; o->lost_cs = s3e_pr.lost_cs; o->gaps = s3e_pr.gaps;
@@ -3398,6 +3455,14 @@ void fpga_freq_ev_info(fpga_ev_info_t *o)
     o->ev_on = s3e_on; o->pair = s3e_pair; o->bsrc = s3e_bsrc;
     o->ab_n = st.n; o->ab_mean = fpga_v3_stat_mean(&st); o->ab_sd = fpga_v3_stat_sd(&st); o->ab_min = st.min; o->ab_max = st.max;
     o->sk_n = sk.n; o->sk_mean = fpga_v3_stat_mean(&sk); o->sk_sd = fpga_v3_stat_sd(&sk); o->sk_min = sk.min; o->sk_max = sk.max;
+    o->ax_n[0] = sx0.n; o->ax_mean[0] = fpga_v3_stat_mean(&sx0); o->ax_sd[0] = fpga_v3_stat_sd(&sx0);
+    o->ax_n[1] = sx1.n; o->ax_mean[1] = fpga_v3_stat_mean(&sx1); o->ax_sd[1] = fpga_v3_stat_sd(&sx1);
+    for (uint32_t i = 0; i < FPGA_EV_PH_N; i++) {
+        fpga_v3_stat_t sp;
+        const uint32_t pm2 = __get_PRIMASK();
+        __disable_irq(); sp = s3e_sph[i]; __set_PRIMASK(pm2);
+        o->ph_n[i] = sp.n; o->ph_mean[i] = fpga_v3_stat_mean(&sp); o->ph_sd[i] = fpga_v3_stat_sd(&sp);
+    }
     if (s3_h_ok) {
         o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->echo = (uint8_t)((s3_h.cfg_echo >> 3) & 3u);
         o->pps_seq = s3_h.pps[0].pseq;
@@ -3422,6 +3487,85 @@ int fpga_freq_ab_get(uint32_t back, double *ps)
     __disable_irq();
     const uint32_t fill = (s3e_abw < S3E_AB) ? s3e_abw : S3E_AB;
     if (ps != NULL && back < fill) { *ps = s3e_ab[(s3e_abw - 1u - back) % S3E_AB]; ok = 1; }
+    __set_PRIMASK(pm);
+    return ok;
+}
+
+uint32_t fpga_freq_ev_raw_w(void)
+{
+    return s3e_raww;
+}
+
+int fpga_freq_ev_raw_get(uint32_t idx, fpga_ev_raw_t *o)
+{
+    int ok = 0;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const uint32_t w = s3e_raww;
+    if (o != NULL && idx < w && (w - idx) <= FPGA_EV_RAW_N) { *o = s3e_raw[idx % FPGA_EV_RAW_N]; ok = 1; }
+    __set_PRIMASK(pm);
+    return ok;
+}
+
+void fpga_freq_lin_start(double tu_a, double tu_b)
+{
+    s_lin_meas = 0u;
+    fpga_v3_lin_init(&s_lin_acc[0], tu_a);
+    fpga_v3_lin_init(&s_lin_acc[1], tu_b);
+    s_lin_meas = 1u;                                     /* FpgaTask: s3e_apply zapne udalosti, s3e_rec pridava */
+}
+
+void fpga_freq_lin_stop(void)
+{
+    s_lin_meas = 0u;
+}
+
+int fpga_freq_lin_result(uint8_t ch, uint32_t nmin, int16_t tab[FPGA_V3_LIN_NB], fpga_v3_lin_res_t *res)
+{
+    if (ch > 1u || s_lin_meas) return 0;                /* volat az po fpga_freq_lin_stop (a ~1 pollu FpgaTasku) */
+    return fpga_v3_lin_table(&s_lin_acc[ch], nmin, tab, res);
+}
+
+void fpga_freq_lin_set(uint8_t ch, const int16_t tab[FPGA_V3_LIN_NB])
+{
+    if (ch > 1u) return;
+    s_lin_ok[ch] = 0u;
+    memcpy(s_lin_tab[ch], tab, sizeof s_lin_tab[ch]);
+    s_lin_tdcrun = s_cal_info.runs;
+    s_lin_ok[ch] = 1u;
+}
+
+void fpga_freq_lin_enable(int on)
+{
+    s_lin_on = (uint8_t)(on ? 1u : 0u);
+}
+
+void fpga_freq_lin_info(fpga_lin_info_t *o)
+{
+    if (o == NULL) return;
+    memset(o, 0, sizeof *o);
+    o->on = s_lin_on; o->meas = s_lin_meas;
+    o->ok[0] = s_lin_ok[0]; o->ok[1] = s_lin_ok[1];
+    o->tdcrun_tab = s_lin_tdcrun; o->tdcrun_now = s_cal_info.runs;
+    o->ncorr = s_lin_ncorr;
+    o->n[0] = s_lin_acc[0].N; o->n[1] = s_lin_acc[1].N;
+    memcpy(o->tab, s_lin_tab, sizeof o->tab);
+}
+
+int fpga_freq_ab_ph(uint32_t back, uint16_t *ph_start, uint16_t *ph_stop)
+{
+    int ok = 0;
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const uint32_t fill = (s3e_abw < S3E_AB) ? s3e_abw : S3E_AB;
+    if (back < fill) {
+        const uint32_t j = (s3e_abw - 1u - back) % S3E_AB;
+        if (s3e_abph[j][0] != 0xFFFFu) {
+            if (ph_start) *ph_start = s3e_abph[j][0];
+            if (ph_stop) *ph_stop = s3e_abph[j][1];
+            ok = 1;
+        }
+    }
     __set_PRIMASK(pm);
     return ok;
 }

@@ -295,11 +295,13 @@ uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t 
  * (fpga_v3_ab_feed je seradi v case). U souhrnu (BURST) se bere jen prvni, presna hrana. Sirka pulzu = totez s kanalem B
  * na pinu A invertovanem (SET_CONFIG 0x09 = 3): A nabezne, B sestupne hrany. */
 #define FPGA_V3_AB_GUARD_U     500u    /* [jednotky T/16384] ~305 ps pri 100 MHz: hrana B blize startu = soucasna */
+#define FPGA_V3_AB_TST         4u      /* v0.45.3: casu startu k prvnim vydanym intervalum jednoho volani */
 typedef struct {
     uint8_t  armed;              /* 1 = ceka na stop */
     uint64_t t_start;
     uint64_t max_u;
     uint32_t n, lost;            /* intervalu / zahozenych startu (bez stopu do max_u) */
+    uint64_t t_st[FPGA_V3_AB_TST];   /* cas startu k dt_u[i] posledniho volani fpga_v3_ab_feed (i < FPGA_V3_AB_TST) */
 } fpga_v3_ab_t;
 void     fpga_v3_ab_init(fpga_v3_ab_t *p, uint64_t max_u);
 /* @return pocet intervalu zapsanych do dt_u[0..max_out-1] [jednotky] */
@@ -331,6 +333,7 @@ typedef struct {
     fpga_v3_ev_t   pa[2];        /* udalosti A cekajici na zaznam B */
     uint32_t       pan, skip_n;
     uint32_t       rec_a, rec_b, inv_a, inv_b, cs_a, cs_b, lone_a, lost_cs, gaps;
+    uint64_t       t_st[FPGA_V3_AB_TST];   /* v0.45.3: cas startu k dt_u[i] posledniho volani fpga_v3_pr_rec */
     uint16_t       pa_seg;
     uint8_t        pa_have, skip, pa_cs, arm_cs;   /* pa_cs: zaznam A s bit3; arm_cs: rozpracovany start muze byt z nej */
 } fpga_v3_pr_t;
@@ -514,6 +517,36 @@ int      fpga_v3_seg_sx_ok(const fpga_v3_rec_t *a, const fpga_v3_rec_t *b);
 int16_t  fpga_v3_calpin_cover(double f_hz, uint32_t n);
 int      fpga_v3_calpin_check(const uint32_t *hist, const uint32_t *ref_h, uint32_t nc, uint16_t nz_ref,
                               uint16_t *nz, int16_t *dev_permil);
+
+/* ---- v0.45.7 (STATUS #366, t374): chyba casovani podle faze taktu proti generatoru koherentnimu s taktem FPGA ----
+ * Generator Si5356 bezi ze stejneho VCO jako takt FPGA (CLK0 = VCO/22), takze skutecne hrany lezi PRESNE na primce
+ * t_u = t0 + (x - x0) * tu (x = index hrany, tu = perioda signalu [T/16384] z deliciho pomeru MultiSynthu). Odchylka zmerene
+ * znacky od primky podle faze taktu (t_u & 0x3FFF) = chyba casovani kanalu e(phi) (t374: spicka-spicka ~370-410 ps).
+ * Linearni drift odchylky (teplotni putovani zpozdeni vystupu, nepresne tu) odstrani regrese odchylky na x. */
+#define FPGA_V3_LIN_NB         64u     /* dilu periody taktu (256 jednotek = 156 ps) */
+typedef struct {
+    double   tu;                 /* perioda signalu [jednotky T/16384]; 0 = nepouzito */
+    uint8_t  have;
+    uint64_t t0, x0;             /* prvni znacka */
+    uint32_t n[FPGA_V3_LIN_NB];
+    double   s[FPGA_V3_LIN_NB], ss[FPGA_V3_LIN_NB], sd[FPGA_V3_LIN_NB];  /* soucty odchylky r, r^2 a d = (x-x0)*1e-9 */
+    uint32_t N;
+    double   S_d, S_dd, S_r, S_dr;   /* globalni regrese r na d (drift) */
+} fpga_v3_lin_t;
+typedef struct {
+    uint32_t n, nmin;            /* znacek celkem, nejmene v dilu */
+    double   rms_in;             /* rms odchylky uvnitr dilu (nahodna slozka) [jednotky] */
+    double   pp, rms;            /* rozkmit a rms tabulky e(phi) [jednotky] */
+    double   drift;              /* sklon odchylky [jednotek na 1e9 hran] */
+} fpga_v3_lin_res_t;
+/* perioda vystupu Si5356 v jednotkach T/16384 taktu FPGA z parametru MultiSynthu (si5356_ms_t), 0 = neplatne */
+double   fpga_v3_lin_tu(uint32_t p1, uint32_t p2, uint32_t p3, uint8_t rexp);
+void     fpga_v3_lin_init(fpga_v3_lin_t *L, double tu);
+void     fpga_v3_lin_add(fpga_v3_lin_t *L, uint64_t x, uint64_t t_u);
+/* tabulka e(phi) [jednotky, stredy dilu, prumer pres dily 0]. @return 0 = malo dat (nejmene v dilu < nmin_req) */
+int      fpga_v3_lin_table(const fpga_v3_lin_t *L, uint32_t nmin_req, int16_t tab[FPGA_V3_LIN_NB], fpga_v3_lin_res_t *res);
+/* chyba znacky s casem t_u z tabulky (linearni interpolace mezi stredy dilu, periodicky) [jednotky]; korekce = t_u - vysledek */
+int32_t  fpga_v3_lin_corr(const int16_t tab[FPGA_V3_LIN_NB], uint64_t t_u);
 
 /* Selftest (na cili i hostu): CRC bloku, zaznam, MOSI/LUT_WRITE, emulator -> parser -> okno (kmitocet), vadny blok
  * (opakovani od ACK), preteceni kruhu, rozbaleni T0 pres 2^48. @return true = PASS */

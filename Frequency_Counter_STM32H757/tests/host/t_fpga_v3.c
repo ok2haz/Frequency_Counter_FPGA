@@ -523,10 +523,12 @@ int main(void)
         ra.seg_idx = 10u; e1[0] = evk(0u, 1000u, 1u, 0.0); n1 = fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
         rb.seg_idx = 10u; rb.flags = FPGA_V3_R_CS; e1[0] = evk(1u, 1200u, 1u, 0.0); n2 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);
         d1 = dt[0];
+        const uint64_t ts1 = Q.t_st[0];                  /* v0.45.3: cas startu k intervalu (perioda taktu start/stop) */
         /* (2) A pri CS, kratky interval -> plati */
         ra.seg_idx = 11u; ra.flags = FPGA_V3_R_CS; e1[0] = evk(0u, 2000u, 1u, 0.0); (void)fpga_v3_pr_rec(&Q, &ra, e1, 1u, 0, 1.0, dt, 4u);
         rb.seg_idx = 11u; rb.flags = 0u; e1[0] = evk(1u, 2300u, 1u, 0.0); n3 = fpga_v3_pr_rec(&Q, &rb, e1, 1u, 0, 1.0, dt, 4u);
         d2 = dt[0];
+        CHECK(ts1 == 1000u && Q.t_st[0] == 2000u, "pr_rec cas startu: %llu %llu", (unsigned long long)ts1, (unsigned long long)Q.t_st[0]);
         CHECK(n1 == 0u && n2 == 1u && d1 == 200 && n3 == 1u && d2 == 300 && Q.cs_a == 1u && Q.cs_b == 1u && Q.lost_cs == 0u,
               "pr_rec CS kratky interval: %u %u dt %lld, %u dt %lld, cs %u/%u", (unsigned)n1, (unsigned)n2, (long long)d1,
               (unsigned)n3, (long long)d2, (unsigned)Q.cs_a, (unsigned)Q.cs_b);
@@ -743,6 +745,127 @@ int main(void)
         CHECK(cs > 6000, "pokryti 10 MHz + 0,041 Hz %d", (int)cs);
         CHECK(cp > 100, "pokryti 10 MHz + 1 Hz %d", (int)cp);
         CHECK(cr > -20 && cr < 20, "pokryti 10 MHz + 10,5 Hz %d", (int)cr);
+    }
+
+    /* ── v0.45.7: chyba casovani podle faze taktu proti koherentnimu generatoru (fpga_v3_lin_*) ── */
+    {
+        const double tu10 = fpga_v3_lin_tu(27648u, 0u, 1u, 0u);                    /* MS 220 celociselne = presne 10 MHz */
+        const double tu41 = fpga_v3_lin_tu(27647u, 213052243u, 213076844u, 0u);    /* `gen` 10 000 000,041 Hz (t374) */
+        printf("  lin: perioda 10 MHz %.6f, 10 MHz + 0,041 Hz %.6f jednotek\n", tu10, tu41);
+        CHECK(fabs(tu10 - 163840.0) < 1e-9, "lin tu 10 MHz %.9f", tu10);
+        CHECK(fabs(tu41 - 163839.99933) < 2e-5, "lin tu +0,041 Hz %.6f", tu41);
+        CHECK(fabs(fpga_v3_lin_tu(27648u, 0u, 1u, 2u) - 4.0 * 163840.0) < 1e-6, "lin tu R = 4");
+        CHECK(fpga_v3_lin_tu(1u, 2u, 0u, 0u) == 0.0, "lin tu P3 = 0");
+
+        /* syntetika: e(phi) = 400 sin + 150 cos(2x) jednotek, sum ~160 jednotek, linearni drift 300 jednotek pres beh */
+        static fpga_v3_lin_t L;
+        fpga_v3_lin_init(&L, tu41);
+        uint64_t s = 777u;
+        const uint64_t x0 = 123456789u, t0 = 5000000000000ull;
+        const uint32_t NE = 24000u;
+        const double xspan = (double)NE * 250000.0;
+        for (uint32_t k = 0; k < NE; k++) {
+            const uint64_t x = x0 + (uint64_t)k * 250000u + (k * 7u) % 5u;
+            /* skutecny cas hrany od t0 vcetne driftu zpozdeni (drift posouva i fazi, ve ktere TDC hranu meri) */
+            const double dr = 300.0 * (double)(x - x0) / xspan;
+            const double tt = (double)(x - x0) * tu41 + dr;
+            const double ph = fmod((double)(t0 % 16384u) + tt, 16384.0) / 16384.0;
+            double nz = 0.0;
+            for (int q = 0; q < 4; q++) { s = s * 6364136223846793005ull + 1442695040888963407ull; nz += (double)(s >> 11) / 9007199254740992.0 - 0.5; }
+            const double e = 400.0 * sin(6.283185307179586 * ph) + 150.0 * cos(12.566370614359172 * ph);
+            fpga_v3_lin_add(&L, x, t0 + (uint64_t)llround(tt + e + 277.0 * nz));
+        }
+        int16_t tab[FPGA_V3_LIN_NB];
+        fpga_v3_lin_res_t lr;
+        const int okt = fpga_v3_lin_table(&L, 100u, tab, &lr);
+        double se = 0.0, emu = 0.0;
+        double ev[FPGA_V3_LIN_NB], evn[FPGA_V3_LIN_NB];
+        /* ocekavana tabulka: e prumerovana podle NAMERENE faze (skutecna + e), bez sumu -- tak ji vidi firmware i korekce */
+        for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) { ev[k] = 0.0; evn[k] = 0.0; }
+        for (uint32_t q = 0; q < 16384u * 4u; q++) {
+            const double ph = ((double)q + 0.5) / (16384.0 * 4.0);
+            const double e = 400.0 * sin(6.283185307179586 * ph) + 150.0 * cos(12.566370614359172 * ph);
+            double pm = fmod(ph * 16384.0 + e + 16384.0, 16384.0);
+            const uint32_t k = (uint32_t)(pm * FPGA_V3_LIN_NB / 16384.0) % FPGA_V3_LIN_NB;
+            ev[k] += e; evn[k] += 1.0;
+        }
+        for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) { ev[k] = (evn[k] > 0.0) ? ev[k] / evn[k] : 0.0; emu += ev[k]; }
+        emu /= (double)FPGA_V3_LIN_NB;
+        for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) se += ((double)tab[k] - (ev[k] - emu)) * ((double)tab[k] - (ev[k] - emu));
+        se = sqrt(se / (double)FPGA_V3_LIN_NB);
+        printf("  lin: tabulka %d, znacek %lu (nejmene v dilu %lu), sum v dilu %.1f, rozkmit %.0f, odchylka od e %.1f jednotek, drift %.1f\n",
+               okt, (unsigned long)lr.n, (unsigned long)lr.nmin, lr.rms_in, lr.pp, se, lr.drift);
+        CHECK(okt == 1 && lr.n == NE, "lin tabulka %d n %lu", okt, (unsigned long)lr.n);
+        CHECK(se < 20.0, "lin tabulka proti e: rms %.1f", se);
+        CHECK(lr.pp > 760.0 && lr.pp < 900.0, "lin rozkmit %.0f (e: -550 .. +283)", lr.pp);
+        CHECK(lr.rms_in > 120.0 && lr.rms_in < 220.0, "lin sum v dilu %.1f", lr.rms_in);
+        CHECK(fabs(lr.drift * xspan * 1e-9 - 300.0) < 30.0, "lin drift %.2f", lr.drift * xspan * 1e-9);
+        /* korekce: po odecteni tabulky zbyva jen sum (druhy pruchod stejnymi daty) */
+        fpga_v3_lin_t L2;
+        fpga_v3_lin_init(&L2, tu41);
+        s = 777u;
+        for (uint32_t k = 0; k < NE; k++) {
+            const uint64_t x = x0 + (uint64_t)k * 250000u + (k * 7u) % 5u;
+            const double tt = (double)(x - x0) * tu41 + 300.0 * (double)(x - x0) / xspan;
+            const double ph = fmod((double)(t0 % 16384u) + tt, 16384.0) / 16384.0;
+            double nz = 0.0;
+            for (int q = 0; q < 4; q++) { s = s * 6364136223846793005ull + 1442695040888963407ull; nz += (double)(s >> 11) / 9007199254740992.0 - 0.5; }
+            const double e = 400.0 * sin(6.283185307179586 * ph) + 150.0 * cos(12.566370614359172 * ph);
+            const uint64_t tm = t0 + (uint64_t)llround(tt + e + 277.0 * nz);
+            fpga_v3_lin_add(&L2, x, tm - (uint64_t)(int64_t)fpga_v3_lin_corr(tab, tm));
+        }
+        int16_t tab2[FPGA_V3_LIN_NB];
+        fpga_v3_lin_res_t lr2;
+        (void)fpga_v3_lin_table(&L2, 100u, tab2, &lr2);
+        printf("  lin: po korekci rozkmit %.0f (pred %.0f) jednotek\n", lr2.pp, lr.pp);
+        CHECK(lr2.pp < 120.0, "lin po korekci rozkmit %.0f", lr2.pp);
+        /* interpolace: rampa 100*k, stred dilu 5 = 500, mezi 5 a 6 = 550, mezi 63 a 0 (faze 0) = 3150 */
+        int16_t rp[FPGA_V3_LIN_NB];
+        for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) rp[k] = (int16_t)(100 * (int)k);
+        const int32_t c5 = fpga_v3_lin_corr(rp, 7u * 16384u + 5u * 256u + 128u);
+        const int32_t c55 = fpga_v3_lin_corr(rp, 5u * 256u + 256u);
+        const int32_t c0 = fpga_v3_lin_corr(rp, 3u * 16384u);
+        const int32_t cn = fpga_v3_lin_corr(rp, 63u * 256u + 128u);
+        CHECK(c5 == 500 && c55 == 550 && c0 == 3150 && cn == 6300, "lin interpolace %ld %ld %ld %ld",
+              (long)c5, (long)c55, (long)c0, (long)cn);
+        rp[10] = -1001; rp[11] = -1000;
+        CHECK(fpga_v3_lin_corr(rp, 10u * 256u + 128u + 128u) == -1001 || fpga_v3_lin_corr(rp, 10u * 256u + 128u + 128u) == -1000,
+              "lin interpolace zaporna");
+        /* pomala rotace faze (3 otacky za beh) a drift 3000 jednotek: dily se navstevuji v ruznych casech -> bez odstraneni
+         * driftu by tabulka nesla drift (e = 0, ocekava se plocha tabulka) */
+        {
+            static fpga_v3_lin_t L5;
+            const double tus = 163840.0 + (16384.0 * 3.0 / (double)NE) / 250000.0;
+            fpga_v3_lin_init(&L5, tus);
+            for (uint32_t k = 0; k < NE; k++) {
+                const uint64_t x = x0 + (uint64_t)k * 250000u;
+                const double tt = (double)(x - x0) * tus + 3000.0 * (double)k / (double)NE;
+                fpga_v3_lin_add(&L5, x, t0 + (uint64_t)llround(tt));
+            }
+            int16_t t5[FPGA_V3_LIN_NB];
+            fpga_v3_lin_res_t r5;
+            (void)fpga_v3_lin_table(&L5, 10u, t5, &r5);
+            printf("  lin: pomala rotace + drift 3000 -> rozkmit tabulky %.0f jednotek\n", r5.pp);
+            CHECK(r5.pp < 30.0, "lin pomala rotace s driftem: rozkmit %.0f", r5.pp);
+        }
+        /* malo dat: odmitnout */
+        fpga_v3_lin_t L3;
+        fpga_v3_lin_init(&L3, tu41);
+        for (uint32_t k = 0; k < 500u; k++) fpga_v3_lin_add(&L3, x0 + (uint64_t)k * 250000u, t0 + (uint64_t)llround((double)k * 250000.0 * tu41));
+        CHECK(fpga_v3_lin_table(&L3, 100u, tab2, &lr2) == 0, "lin malo dat");
+        /* nekoherentni signal (nahodna prochazka faze): sum v dilu velky -> volajici odmitne */
+        fpga_v3_lin_t L4;
+        fpga_v3_lin_init(&L4, tu41);
+        double rw = 0.0;
+        for (uint32_t k = 0; k < NE; k++) {
+            s = s * 6364136223846793005ull + 1442695040888963407ull;
+            rw += ((double)(s >> 11) / 9007199254740992.0 - 0.5) * 400.0;
+            const uint64_t x = x0 + (uint64_t)k * 250000u;
+            fpga_v3_lin_add(&L4, x, t0 + (uint64_t)llround((double)(x - x0) * tu41 + rw));
+        }
+        (void)fpga_v3_lin_table(&L4, 100u, tab2, &lr2);
+        printf("  lin: nekoherentni signal -> sum v dilu %.0f jednotek\n", lr2.rms_in);
+        CHECK(lr2.rms_in > 1000.0, "lin nekoherentni sum %.0f", lr2.rms_in);
     }
 
     printf(fails ? "FAIL (%d)\n" : "PASS\n", fails);

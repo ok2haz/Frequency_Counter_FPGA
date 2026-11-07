@@ -451,6 +451,9 @@ bool fpga_freq_tdc_cal_start(void);
  *  100 MHz rozlozenou rovnomerne (fpga_v3_calpin_cover); histogram pred zapisem tabulky overi fpga_v3_calpin_check.
  *  @return false = prenos, emulace, v2 nebo FPGA bez CAPS bit24 (pri `pin`). */
 bool fpga_freq_tdc_cal_start_ex(uint8_t mask, bool pin);
+/** v0.45.5: mez odchylky osmin histogramu z pinu proti tabulce z ring oscilatoru [promile], 100..900 (100 = vychozi).
+ *  Plati pro kazdou dalsi kalibraci z pinu, dokud se nevrati 100 (`tdc cal ... mez <N>` ji po kalibraci vraci). */
+void fpga_freq_calpin_lim(int16_t permil);
 /** Precte CAL report (TYPE 0xA0, diagnostika kalibrace). Dve transakce pod
  *  jednim zamkem SPI. @return false = nedorazil platny CAL ramec. */
 bool fpga_freq_tdc_report(fpga_tdc_cal_t *out);
@@ -815,6 +818,37 @@ typedef struct {
     uint16_t seg;             /* SEG_IDX */
     uint8_t  ch, kind, flags, pps_ok;   /* kind FPGA_V3_EV_EDGE / _BURST, flags = FLAGS zaznamu */
 } fpga_ev_rec_t;
+/* v0.45.6 (STATUS #366, t374): surova udalost pro linearitu casovani proti generatoru koherentnimu s taktem FPGA. Cas t_u
+ * [T/16384, osa FPGA] a index hrany x bez prevodu: skutecne hrany generatoru lezi presne na primce t_u = a + b*x, takze
+ * odchylka od ni podle faze taktu (t_u & 0x3FFF) je chyba casovani JEDNOHO kanalu. Kruh FPGA_EV_RAW_N, plni se pri
+ * `fpga ev on`, cte UART `fpga ev raw <od>` (jen nove podle absolutniho indexu). */
+#define FPGA_EV_RAW_N 512u
+typedef struct {
+    uint64_t t_u, x;
+    uint32_t n;               /* hran segmentu (hrana: 1) */
+    uint16_t seg;
+    uint8_t  ch, kind_flags;  /* bity 1..0 kind (FPGA_V3_EV_*), bit 7 = zaznam se znackami pri CS (FLAGS bit3) */
+} fpga_ev_raw_t;
+uint32_t fpga_freq_ev_raw_w(void);                      /* surovych udalosti celkem od `fpga ev on` */
+int      fpga_freq_ev_raw_get(uint32_t idx, fpga_ev_raw_t *o);  /* absolutni index; 0 = jeste neni / uz prepsana */
+/* v0.45.7 (STATUS #366, t374): korekce chyby casovani podle faze taktu (UART `fpga lin`). Tabulka se meri proti generatoru
+ * Si5356 (CLK_2 -> A, CLK_4 -> B) koherentnimu s taktem FPGA a odecita se od casu udalosti pred parovanim A->B. Plati pro
+ * tabulku TDC, se kterou byla zmerena (tdcrun_tab; po nove kalibraci TDC se ma zmerit znovu). */
+typedef struct {
+    uint8_t  on, meas, ok[2];
+    uint32_t tdcrun_tab, tdcrun_now;   /* poradi kalibrace TDC pri mereni tabulky / ted */
+    uint32_t ncorr;                    /* opravenych udalosti */
+    uint32_t n[2];                     /* znacek v poslednim sberu */
+    int16_t  tab[2][FPGA_V3_LIN_NB];               /* [jednotky T/16384], stredy dilu */
+} fpga_lin_info_t;
+void     fpga_freq_lin_start(double tu_a, double tu_b);   /* perioda generatoru na A / B [jednotky T/16384] */
+void     fpga_freq_lin_stop(void);
+/* tabulka z posledniho sberu (po stop); 0 = malo dat */
+int      fpga_freq_lin_result(uint8_t ch, uint32_t nmin, int16_t tab[FPGA_V3_LIN_NB], fpga_v3_lin_res_t *res);
+void     fpga_freq_lin_set(uint8_t ch, const int16_t tab[FPGA_V3_LIN_NB]);
+void     fpga_freq_lin_enable(int on);
+void     fpga_freq_lin_info(fpga_lin_info_t *o);
+#define FPGA_EV_PH_N 16u                              /* v0.45.4: dilu periody taktu pro statistiku podle faze startu */
 typedef struct {
     uint8_t  proto, sim, ev_on, pair, bsrc, echo;     /* bsrc = odeslany SET_CONFIG 0x09, echo = bajt 66 bit3..4 */
     uint16_t fw;
@@ -823,6 +857,10 @@ typedef struct {
     uint32_t ab_n, ab_lost, sk_n;
     uint32_t rec_a, rec_b, inv_a, inv_b, cs_a, cs_b, lone_a, lost_cs, gaps;   /* v0.45.2: zaznamy v parovani (fpga_v3_pr_t) */
     double   ab_mean, ab_sd, ab_min, ab_max;          /* intervaly [ps] */
+    uint32_t ax_n[2];                                 /* v0.45.3: start a stop ve stejne periode taktu [0] / pres hranu [1] */
+    double   ax_mean[2], ax_sd[2];
+    uint32_t ph_n[FPGA_EV_PH_N];                      /* v0.45.4: intervaly podle faze startu v periode taktu */
+    double   ph_mean[FPGA_EV_PH_N], ph_sd[FPGA_EV_PH_N];
     double   sk_mean, sk_sd, sk_min, sk_max;          /* zpozdeni B - A [ps] */
 } fpga_ev_info_t;
 void fpga_freq_ev_enable(int on);                      /* kruh udalosti (zapnuti = vynulovani) */
@@ -832,6 +870,8 @@ int  fpga_freq_ev_pair(uint8_t mode);
 void fpga_freq_ev_info(fpga_ev_info_t *o);
 int  fpga_freq_ev_get(uint32_t back, fpga_ev_rec_t *o);   /* back 0 = nejnovejsi; 0 = neni */
 int  fpga_freq_ab_get(uint32_t back, double *ps);           /* posledni intervaly [ps]; 0 = neni */
+/* v0.45.4: faze startu a stopu intervalu `back` v periode taktu [T/16384]; 0 = neznama (interval mimo prvni 4 zaznamu) */
+int  fpga_freq_ab_ph(uint32_t back, uint16_t *ph_start, uint16_t *ph_stop);
 /* v0.44.5 (okno FUNKCE MERENI): parovani z UiTasku -- SET_CONFIG provede FpgaTask v dalsim pollu (fpga_freq_ev_pair);
  * fpga_freq_ev_pair_rc = jeho vysledek, 127 = jeste neprovedeno. */
 void fpga_freq_ev_pair_req(uint8_t mode);

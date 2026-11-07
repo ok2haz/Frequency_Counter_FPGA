@@ -309,6 +309,141 @@ static void uart_ev_list(uint32_t n)
 		printf("\n");
 	}
 }
+/* v0.45.6 (t374): `fpga ev raw [od]` = surove udalosti od absolutniho indexu `od` (nejvys 256 na volani, PC si dalsi vyzada
+ * od posledniho + 1). Radek: index kanal druh+CS segment x(hex) t_u(hex) N. Cisla 64 b jako 2x %08lX (nano.specs bez %llu).
+ * Kratke davky s pauzou (dlouhy vypis CDC konzole zahodi, viz `inl dump`). */
+static void uart_ev_raw(const char *a)
+{
+	unsigned long from = 0ul;
+	while (*a == ' ') a++;
+	if (*a != '\0') (void)sscanf(a, "%lu", &from);
+	const uint32_t w = fpga_freq_ev_raw_w();
+	uint32_t i = (uint32_t)from, lost = 0u;
+	if (w > FPGA_EV_RAW_N && i < w - FPGA_EV_RAW_N) { lost = (w - FPGA_EV_RAW_N) - i; i = w - FPGA_EV_RAW_N; }
+	if (i > w) i = w;                                    /* kruh vynulovan (`fpga ev on`) -> nic, PC zacne od 0 */
+	uint32_t end = w;
+	if (end - i > 256u) end = i + 256u;
+	printf("EVR w %lu od %lu do %lu ztraceno %lu\n", (unsigned long)w, (unsigned long)i, (unsigned long)end, (unsigned long)lost);
+	for (uint32_t k = 0u; i + k < end; k++) {
+		fpga_ev_raw_t r;
+		if (!fpga_freq_ev_raw_get(i + k, &r)) { printf("EVR prepsano %lu\n", (unsigned long)(i + k)); break; }
+		printf("%lu %u %u %u %08lX%08lX %08lX%08lX %lu\n", (unsigned long)(i + k), (unsigned)r.ch, (unsigned)r.kind_flags,
+		       (unsigned)r.seg, (unsigned long)(r.x >> 32), (unsigned long)(r.x & 0xFFFFFFFFul),
+		       (unsigned long)(r.t_u >> 32), (unsigned long)(r.t_u & 0xFFFFFFFFul), (unsigned long)r.n);
+		if ((k & 15u) == 15u) osDelay(5);
+	}
+	printf("EVR end\n");
+}
+/* v0.45.7 (STATUS #366, t374-t376): chyba casovani kazdeho kanalu podle faze taktu. `fpga lin` = stav, `fpga lin tab` = tabulky
+ * [ps], `fpga lin on|off`, `fpga lin cal [s]` = mereni tabulek proti generatoru Si5356 (kabely CLK_2 -> A, CLK_4 -> B, jako
+ * `tdc cal pin gen`): generator na dobu mereni 10 000 000,041 Hz (faze proti taktu ~0,41 otacky/s), pak puvodni nastaveni.
+ * Hlavne MERENI (rozkmit, sum uvnitr dilu, drift); korekce se nezapina sama (t375b: obecne neplati, viz uart_lin_cal). */
+#define UART_LIN_HZ   10000000u
+#define UART_LIN_MHZ  41u
+static const char *s_lin_on_str(void)
+{
+	fpga_lin_info_t li;
+	fpga_freq_lin_info(&li);
+	return li.on ? "ZAP" : "vyp";
+}
+static int uart_lin_ps(int16_t u)
+{
+	const double v = (double)u * fpga_v3_unit_ps(100u);
+	return (int)((v >= 0.0) ? v + 0.5 : v - 0.5);
+}
+static void uart_lin_show(int tab)
+{
+	fpga_lin_info_t li;
+	fpga_freq_lin_info(&li);
+	printf("FPGA linearita casovani: korekce %s, tabulka A %s, B %s, z kalibrace TDC #%lu (ted #%lu)%s, opraveno udalosti %lu\n",
+	       li.on ? "ZAP" : "vyp", li.ok[0] ? "ano" : "ne", li.ok[1] ? "ano" : "ne", (unsigned long)li.tdcrun_tab,
+	       (unsigned long)li.tdcrun_now, (li.ok[0] || li.ok[1]) && li.tdcrun_tab != li.tdcrun_now ?
+	       "  <== TDC se mezitim kalibrovalo, tabulku zmer znovu" : "", (unsigned long)li.ncorr);
+	for (int c = 0; c < 2; c++) {
+		if (!li.ok[c]) continue;
+		int mn = 1000000, mx = -1000000;
+		double sq = 0.0;
+		for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) {
+			const int v = uart_lin_ps(li.tab[c][k]);
+			if (v < mn) mn = v;
+			if (v > mx) mx = v;
+			sq += (double)v * (double)v;
+		}
+		char b[24];
+		uart_regr_fmt(b, sizeof b, sqrt(sq / (double)FPGA_V3_LIN_NB), 1);
+		printf("  kanal %c: chyba podle faze taktu %d .. %+d ps (spicka-spicka %d ps, rms %s ps)\n", 'A' + c, mn, mx, mx - mn, b);
+		if (tab) {
+			for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) {
+				if ((k & 15u) == 0u) printf("    %4lu:", (unsigned long)(k * 1000u / FPGA_V3_LIN_NB));
+				printf(" %+d", uart_lin_ps(li.tab[c][k]));
+				if ((k & 15u) == 15u) { printf("\n"); osDelay(5); }
+			}
+		}
+	}
+	if (!li.ok[0] && !li.ok[1])
+		printf("  tabulka neni: `fpga lin cal [s]` (vychozi 300 s; kabely CLK_2 -> A, CLK_4 -> B; generator na dobu mereni 10 MHz + 0,041 Hz)\n");
+}
+static void uart_lin_cal(unsigned sec)
+{
+	fpga_v3_info_t vi;
+	memset(&vi, 0, sizeof vi);
+	fpga_freq_v3_info(&vi);
+	if (vi.proto != 3u || vi.sim) { printf("FPGA lin: jen se skutecnym FPGA v3\n"); return; }
+	if (sec < 30u) sec = 30u;
+	if (sec > 900u) sec = 900u;
+	uint32_t sv_f[2]; uint16_t sv_m[2]; uint8_t sv_on[2];
+	for (int c = 0; c < 2; c++) {
+		sv_f[c] = g_si_gen[c].freq_hz; sv_m[c] = g_si_gen[c].mhz; sv_on[c] = g_si_gen[c].on;
+		si5356_gen_request_frac((unsigned)c, UART_LIN_HZ, UART_LIN_MHZ, true);
+	}
+	for (int i = 0; i < 100 && (g_si_gen[0].pend || g_si_gen[1].pend); i++) osDelay(20);
+	osDelay(2500);                                       /* zapis generatoru vypne vystup -> pockat na ustaleni */
+	si5356_ms_t m;
+	double tu = 0.0;
+	if (si5356_gen_calc_frac(UART_LIN_HZ, UART_LIN_MHZ, &m)) tu = fpga_v3_lin_tu(m.p1, m.p2, m.p3, m.rexp);
+	char tb[32];
+	uart_regr_fmt(tb, sizeof tb, tu, 4);
+	printf("FPGA lin: generator CLK2/3 a CLK4/5 %lu,%03u Hz, perioda %s jednotek T/16384, sber %u s...\n",
+	       (unsigned long)UART_LIN_HZ, (unsigned)UART_LIN_MHZ, tb, sec);
+	fpga_freq_lin_start(tu, tu);
+	for (unsigned s = 1u; s <= sec; s++) {
+		osDelay(1000);
+		if (s % 30u == 0u) {
+			fpga_lin_info_t li;
+			fpga_freq_lin_info(&li);
+			printf("  %u s: znacek A %lu, B %lu\n", s, (unsigned long)li.n[0], (unsigned long)li.n[1]);
+		}
+	}
+	fpga_freq_lin_stop();
+	osDelay(200);                                        /* FpgaTask dokonci rozpracovany zaznam */
+	int good = 0;
+	for (int c = 0; c < 2; c++) {
+		int16_t t[FPGA_V3_LIN_NB];
+		fpga_v3_lin_res_t r;
+		/* t375: znacky TDC maji ~150 diskretnich hodnot na periodu -> do dilu 156 ps padnou 2-3 kody a pocty v dilech se
+		 * lisi az 5x (129..690 za 8 min); nejmene 20 v dilu = sum stredu dilu < ~25 ps */
+		const int ok = fpga_freq_lin_result((uint8_t)c, 20u, t, &r);
+		const double up = fpga_v3_unit_ps(100u);
+		char a1[24], a2[24], a3[24], a4[24];
+		uart_regr_fmt(a1, sizeof a1, r.rms_in * up, 1);
+		uart_regr_fmt(a2, sizeof a2, r.pp * up, 0);
+		uart_regr_fmt(a3, sizeof a3, r.rms * up, 1);
+		uart_regr_fmt(a4, sizeof a4, r.drift * up, 1);
+		/* sum uvnitr dilu u koherentniho generatoru ~100 ps; nekoherentni signal (jiny zdroj na vstupu) desitky ns */
+		const int valid = ok && r.n >= 2000u && r.rms_in * up < 300.0;
+		printf("  kanal %c: znacek %lu (nejmene v dilu %lu), sum uvnitr dilu %s ps, chyba podle faze spicka-spicka %s ps "
+		       "(rms %s ps), drift %s ps / 1e9 hran -> %s\n", 'A' + c, (unsigned long)r.n, (unsigned long)r.nmin, a1, a2, a3, a4,
+		       valid ? "TABULKA NASTAVENA" : (ok ? "ODMITNUTO (sum > 300 ps: neni generator na vstupu?)"
+		                                          : "ODMITNUTO (malo dat: v nekterem dilu < 20 znacek, prodluz `fpga lin cal <s>`)"));
+		if (valid) { fpga_freq_lin_set((uint8_t)c, t); good++; }
+	}
+	for (int c = 0; c < 2; c++) si5356_gen_request_frac((unsigned)c, sv_f[c], sv_m[c], sv_on[c] != 0u);
+	/* t375b: tabulka zmerena pri jednom nastaveni generatoru intervalu A->B pri jinem NEPOMOHLA (sigma 232 -> 234 ps, 194 ->
+	 * 183 ps); chyba kanalu B se mezi nastavenimi meni a presluch mezi retezci zavisi na vzajemne fazi A-B (t376). Korekce
+	 * se proto sama nezapina -- `fpga lin on` jen vedome, pro pevne usporadani, ve kterem byla tabulka zmerena. */
+	printf("FPGA lin: generator vracen; tabulek nastaveno %d, korekce %s (`fpga lin on` jen pro pevne usporadani mereni, viz STATUS #366)\n",
+	       good, s_lin_on_str());
+}
 static void uart_ev_pair_rc(int rc, const char *what)
 {
 	if (rc == 1)       printf("FPGA: %s\n", what);
@@ -336,6 +471,25 @@ static void uart_ab_show(uint32_t n, int pw)
 	       pm[ei.pair & 3u], (unsigned)ei.bsrc, (unsigned)ei.echo, (unsigned)ei.fw, ei.sim ? " EMULATOR" : "");
 	const double corr = (pw && ei.sk_n) ? ei.sk_mean : 0.0;
 	if (ei.ab_n) uart_ab_stat(pw ? "sirka pulzu" : "intervalu", ei.ab_n, ei.ab_mean, ei.ab_sd, ei.ab_min, ei.ab_max, corr);
+	for (int g = 0; g < 2; g++) {                       /* v0.45.3: chyba hrany taktu se odecte jen ve stejne periode */
+		if (!ei.ax_n[g]) continue;
+		char a[32], b[24];
+		uart_ps_fmt(a, sizeof a, ei.ax_mean[g] - corr);
+		uart_regr_fmt(b, sizeof b, (ei.ax_sd[g] > 4.0e9) ? 4.0e9 : ei.ax_sd[g], 1);
+		printf("  %s %lu: stredni %s, sigma %s ps\n", g ? "pres hranu taktu" : "ve stejne periode taktu",
+		       (unsigned long)ei.ax_n[g], a, b);
+	}
+	if (ei.ab_n) {                                      /* v0.45.4: zavislost na fazi startu v periode taktu (t368) */
+		printf("  podle faze startu v periode taktu (promile periody: n, odchylka stredu od celku, sigma ps):\n");
+		for (uint32_t g = 0; g < FPGA_EV_PH_N; g++) {
+			if (!ei.ph_n[g]) continue;
+			char a[32], b[24];
+			uart_ps_fmt_i(a, sizeof a, (int64_t)(ei.ph_mean[g] - ei.ab_mean));
+			uart_regr_fmt(b, sizeof b, (ei.ph_sd[g] > 4.0e9) ? 4.0e9 : ei.ph_sd[g], 1);
+			printf("    %4lu: n %lu, %s%s, sigma %s\n", (unsigned long)(g * 1000u / FPGA_EV_PH_N), (unsigned long)ei.ph_n[g],
+			       (ei.ph_mean[g] >= ei.ab_mean) ? "+" : "", a, b);
+		}
+	}
 	printf("  zahozenych startu %lu (bez stopu do 10 s, souhrn B pres start, hrana mohla chybet)\n", (unsigned long)ei.ab_lost);
 	printf("  zaznamy A %lu / B %lu: neplatne %lu / %lu, se znackami pri CS %lu / %lu; A bez B tehoz segmentu %lu, "
 	       "mezery prijmu %lu, intervalu zahozenych kvuli CS (>= 200 us) %lu\n",
@@ -351,7 +505,12 @@ static void uart_ab_show(uint32_t n, int pw)
 		if (!fpga_freq_ab_get(i, &v)) continue;
 		char b[32];
 		uart_ps_fmt(b, sizeof b, v - corr);
-		printf("  -%-3lu %s\n", (unsigned long)i, b);
+		uint16_t p0, p1;
+		if (fpga_freq_ab_ph(i, &p0, &p1))                /* v0.45.4: faze startu/stopu v promile periody taktu */
+			printf("  -%-3lu %s  faze %4lu / %4lu\n", (unsigned long)i, b,
+			       (unsigned long)(p0 * 1000u / 16384u), (unsigned long)(p1 * 1000u / 16384u));
+		else
+			printf("  -%-3lu %s\n", (unsigned long)i, b);
 	}
 	if (ei.pair == FPGA_EVP_OFF) printf("  fpga ab on|off|<n>  fpga pw on|cal|off|<n>\n");
 }
@@ -372,7 +531,7 @@ static void uart_raw_cb(void *ctx, uint32_t i, uint64_t mark_ps, double d_ps)
 #define UART_CALPIN_HZ  11603104u
 static int uart_tdc_cal_ex(const char *a)
 {
-	int pin = 0, gen = 0, bad = 0;
+	int pin = 0, gen = 0, bad = 0, lim = 100, want_lim = 0;
 	uint8_t mask = 0u;
 	char tok[8];
 	while (*a) {
@@ -382,13 +541,24 @@ static int uart_tdc_cal_ex(const char *a)
 		if (n == 0) break;
 		if (n >= sizeof tok) { bad = 1; break; }
 		memcpy(tok, a, n); tok[n] = '\0'; a += n;
-		if      (strcmp(tok, "pin") == 0) pin = 1;
+		if (want_lim) {                                  /* v0.45.5: `mez <N>` = mez odchylky osmin [promile] */
+			char *e = NULL;
+			const long v = strtol(tok, &e, 10);
+			if (e == tok || *e != '\0' || v < 100 || v > 900) { bad = 1; break; }
+			lim = (int)v; want_lim = 0;
+			continue;
+		}
+		if      (strcmp(tok, "mez") == 0) want_lim = 1;
+		else if (strcmp(tok, "pin") == 0) pin = 1;
 		else if (strcmp(tok, "gen") == 0) gen = 1;
 		else if (strcmp(tok, "a") == 0)   mask |= 1u;
 		else if (strcmp(tok, "b") == 0)   mask |= 2u;
 		else bad = 1;
 	}
-	if (bad || (gen && !pin)) { printf("TDC: pouziti `tdc cal [pin] [a|b] [gen]` (gen jen s pin)\n"); return 1; }
+	if (bad || want_lim || (gen && !pin) || (lim != 100 && !pin)) {
+		printf("TDC: pouziti `tdc cal [pin] [a|b] [gen] [mez 100..900]` (gen a mez jen s pin)\n");
+		return 1;
+	}
 	if (mask == 3u) mask = 0u;
 	fpga_v3_info_t vi;
 	memset(&vi, 0, sizeof vi);
@@ -437,6 +607,9 @@ static int uart_tdc_cal_ex(const char *a)
 		fpga_tdccal_info_t c0, c1;
 		fpga_freq_tdccal_info(&c0);
 		const uint32_t want = (mask == 0u) ? 2u : 1u;
+		if (pin && lim != 100)
+			printf("TDC: mez odchylky osmin proti tabulce z ring oscilatoru %d promile (vychozi 100), jen pro tuto kalibraci\n", lim);
+		fpga_freq_calpin_lim((int16_t)lim);
 		if (!fpga_freq_tdc_cal_start_ex(mask, pin != 0)) {
 			printf("TDC: SET_CONFIG se nepodaril (link?)\n");
 		} else {
@@ -461,6 +634,7 @@ static int uart_tdc_cal_ex(const char *a)
 			       (unsigned long)(c1.fails - c0.fails), (unsigned)c1.last_err,
 			       ((c1.runs + c1.fails) - (c0.runs + c0.fails) >= want) ? "" : "  <== nedokonceno do 15 s");
 		}
+		fpga_freq_calpin_lim(100);
 	}
 	if (pin && gen) {
 		for (int c = 0; c < 2; c++) si5356_gen_request_frac((unsigned)c, sv_f[c], sv_m[c], sv_on[c] != 0u);
@@ -2970,12 +3144,27 @@ void UartTask_run(void *argument)
 				  const uint32_t us = (DWT->CYCCNT - c0) / (SystemCoreClock / 1000000u);
 				  printf("FPGA v3 selftest: %s (radek %d), %lu us\n", v3ok ? "PASS" : "FAIL", fpga_v3_selftest_fail_line(), (unsigned long)us);
 			  }
+			  else if (strncmp(RxBuffer, "fpga lin", 8) == 0 && (RxBuffer[8] == '\0' || RxBuffer[8] == ' ')) {
+				  /* v0.45.7 (STATUS #366): korekce chyby casovani podle faze taktu (uart_lin_cal / uart_lin_show) */
+				  const char *a = (RxBuffer[8] == ' ') ? &RxBuffer[9] : "";
+				  if (strcmp(a, "on") == 0)       { fpga_freq_lin_enable(1); uart_lin_show(0); }
+				  else if (strcmp(a, "off") == 0) { fpga_freq_lin_enable(0); uart_lin_show(0); }
+				  else if (strcmp(a, "tab") == 0) uart_lin_show(1);
+				  else if (strncmp(a, "cal", 3) == 0 && (a[3] == '\0' || a[3] == ' ')) {
+					  const char *q = &a[3];
+					  while (*q == ' ') q++;
+					  uart_lin_cal(uart_num(q, 300u, 900u));
+					  uart_lin_show(0);
+				  }
+				  else uart_lin_show(0);
+			  }
 			  else if (strncmp(RxBuffer, "fpga ev", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
 				  /* v0.36.0 (FW 0x0501, docs/PROTOKOL_V3.md kap. 10.5): kruh udalosti -- `fpga ev on|off`, `fpga ev [n]` =
 				   * poslednich n (vychozi 10, nejvys 256): kanal, hrana / souhrn segmentu, cas na ose FPGA, cas od 1PPS. */
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
 				  if (strcmp(a, "on") == 0)       { fpga_freq_ev_enable(1); printf("FPGA udalosti: ZAPNUTO (kruh 256, vynulovan)\n"); }
 				  else if (strcmp(a, "off") == 0) { fpga_freq_ev_enable(0); printf("FPGA udalosti: vypnuto\n"); }
+				  else if (strncmp(a, "raw", 3) == 0 && (a[3] == '\0' || a[3] == ' ')) uart_ev_raw(&a[3]);
 				  else {
 					  fpga_ev_info_t ei;
 					  fpga_freq_ev_info(&ei);

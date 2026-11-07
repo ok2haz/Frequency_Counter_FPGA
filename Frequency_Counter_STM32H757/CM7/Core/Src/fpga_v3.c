@@ -448,7 +448,10 @@ uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, in
         if (!p->armed) {
             if (e->ch == 0u) { p->armed = 1u; p->t_start = e->t_u; }
         } else if (e->ch == 1u && e->t_u > p->t_start) {
-            if (out < max_out) dt_u[out++] = (int64_t)(e->t_u - p->t_start);
+            if (out < max_out) {
+                if (out < FPGA_V3_AB_TST) p->t_st[out] = p->t_start;
+                dt_u[out++] = (int64_t)(e->t_u - p->t_start);
+            }
             p->n++;
             p->armed = 0u;
         }
@@ -467,7 +470,10 @@ uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, in
                 (double)e->t_u + (double)(e->n - 1u) * e->per_u > (double)p->t_start) {
                 const double d = (double)e->t_u + e->per_u - (double)p->t_start;     /* druha hrana souhrnu - start */
                 if (d > 0.0 && p->t_start - e->t_u >= FPGA_V3_AB_GUARD_U) {
-                    if (out < max_out) dt_u[out++] = (int64_t)(d + 0.5);
+                    if (out < max_out) {
+                        if (out < FPGA_V3_AB_TST) p->t_st[out] = p->t_start;
+                        dt_u[out++] = (int64_t)(d + 0.5);
+                    }
                     p->n++;
                 } else {
                     p->lost++;
@@ -517,20 +523,18 @@ void fpga_v3_pr_gap(fpga_v3_pr_t *p)    { p->pa_have = 0u; p->gaps++; ab_reset(&
 
 /* fpga_v3_ab_feed s pravidlem CS: podili-li se na intervalu zaznam se znackami pri CS (cs) nebo muze byt rozpracovany
  * start z takoveho zaznamu (arm_cs), plati jen interval < FPGA_V3_AB_CS_LIM_U (viz fpga_v3.h) */
-static uint32_t pr_feed(fpga_v3_pr_t *p, const fpga_v3_ev_t *ev, uint32_t n, int cs, int64_t *dt_u, uint32_t max_out)
+static uint32_t pr_feed(fpga_v3_pr_t *p, const fpga_v3_ev_t *ev, uint32_t n, int cs, int64_t *dt_u, uint32_t max_out, uint32_t off)
 {
     const int c = cs || (p->ab.armed && p->arm_cs);
     uint32_t k = fpga_v3_ab_feed(&p->ab, ev, n, dt_u, max_out);
-    if (c) {
-        uint32_t j = 0u;
-        for (uint32_t i = 0; i < k; i++) {
-            if ((uint64_t)dt_u[i] < FPGA_V3_AB_CS_LIM_U) dt_u[j++] = dt_u[i];
-            else { p->lost_cs++; p->ab.n--; }
-        }
-        k = j;
+    uint32_t j = 0u;
+    for (uint32_t i = 0; i < k; i++) {
+        if (c && (uint64_t)dt_u[i] >= FPGA_V3_AB_CS_LIM_U) { p->lost_cs++; p->ab.n--; continue; }
+        if (off + j < FPGA_V3_AB_TST) p->t_st[off + j] = (i < FPGA_V3_AB_TST) ? p->ab.t_st[i] : 0u;   /* cas startu k dt_u[j] */
+        dt_u[j++] = dt_u[i];
     }
     p->arm_cs = (uint8_t)(p->ab.armed && c);
-    return k;
+    return j;
 }
 
 uint32_t fpga_v3_pr_rec(fpga_v3_pr_t *p, const fpga_v3_rec_t *r, const fpga_v3_ev_t *e, uint32_t ne, int skew,
@@ -545,7 +549,7 @@ uint32_t fpga_v3_pr_rec(fpga_v3_pr_t *p, const fpga_v3_rec_t *r, const fpga_v3_e
         if (cs) p->cs_a++;
         if (p->pa_have && !skew && !p->skip) {                                          /* A bez B */
             p->lone_a++;
-            out = pr_feed(p, p->pa, p->pan, p->pa_cs, dt_u, max_out);
+            out = pr_feed(p, p->pa, p->pan, p->pa_cs, dt_u, max_out, 0u);
         }
         p->pa_have = 0u;
         if (inv) { p->inv_a++; ab_reset(&p->ab); return out; }
@@ -567,10 +571,10 @@ uint32_t fpga_v3_pr_rec(fpga_v3_pr_t *p, const fpga_v3_rec_t *r, const fpga_v3_e
     } else {
         fpga_v3_ev_t ev[4];
         uint32_t m = 0u;
-        if (p->pa_have && !same) { p->lone_a++; out = pr_feed(p, p->pa, p->pan, p->pa_cs, dt_u, max_out); }
+        if (p->pa_have && !same) { p->lone_a++; out = pr_feed(p, p->pa, p->pan, p->pa_cs, dt_u, max_out, 0u); }
         else if (same) for (uint32_t k = 0; k < p->pan; k++) ev[m++] = p->pa[k];
         for (uint32_t k = 0; k < ne; k++) ev[m++] = e[k];
-        if (m) out += pr_feed(p, ev, m, cs || (same && p->pa_cs), dt_u + out, max_out - out);
+        if (m) out += pr_feed(p, ev, m, cs || (same && p->pa_cs), dt_u + out, max_out - out, out);
     }
     p->pa_have = 0u;
     return out;
@@ -940,6 +944,84 @@ int16_t fpga_v3_calpin_cover(double f_hz, uint32_t n)
         if (ph >= 1.0) ph -= 1.0;
     }
     return (int16_t)worst8(occ, (double)n);
+}
+
+/* ══════════════ v0.45.7: chyba casovani podle faze taktu (STATUS #366, t374) ══════════════ */
+double fpga_v3_lin_tu(uint32_t p1, uint32_t p2, uint32_t p3, uint8_t rexp)
+{
+    if (p3 == 0u) return 0.0;
+    /* f = VCO*128*P3 / ((P1+512)*P3 + P2) / 2^rexp, takt = VCO/22 -> T/T_takt = ((P1+512)*P3 + P2) * 2^rexp / (2816*P3),
+     * v jednotkach T_takt/16384: x 16384/2816 = 64/11 */
+    const double d = ((double)p1 + 512.0) * (double)p3 + (double)p2;
+    return d * (double)(1u << rexp) * 64.0 / (11.0 * (double)p3);
+}
+
+void fpga_v3_lin_init(fpga_v3_lin_t *L, double tu)
+{
+    memset(L, 0, sizeof *L);
+    L->tu = tu;
+}
+
+void fpga_v3_lin_add(fpga_v3_lin_t *L, uint64_t x, uint64_t t_u)
+{
+    if (!(L->tu > 0.0)) return;
+    if (!L->have) { L->have = 1u; L->t0 = t_u; L->x0 = x; }
+    const double d = (double)(int64_t)(x - L->x0);
+    const double r = (double)(int64_t)(t_u - L->t0) - d * L->tu;
+    const double dg = d * 1e-9;                          /* regrese na mensich cislech */
+    const uint32_t k = (uint32_t)(((t_u & 0x3FFFu) * FPGA_V3_LIN_NB) >> 14);
+    L->n[k]++; L->s[k] += r; L->ss[k] += r * r; L->sd[k] += dg;
+    L->N++; L->S_d += dg; L->S_dd += dg * dg; L->S_r += r; L->S_dr += dg * r;
+}
+
+int fpga_v3_lin_table(const fpga_v3_lin_t *L, uint32_t nmin_req, int16_t tab[FPGA_V3_LIN_NB], fpga_v3_lin_res_t *res)
+{
+    fpga_v3_lin_res_t o;
+    memset(&o, 0, sizeof o);
+    o.n = L->N;
+    o.nmin = 0xFFFFFFFFu;
+    for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) if (L->n[k] < o.nmin) o.nmin = L->n[k];
+    if (L->N < 2u || o.nmin < nmin_req || o.nmin == 0u) { if (res) *res = o; return 0; }
+    /* linearni drift odchylky (teplotni putovani zpozdeni, nepresna perioda): sklon regrese r na d */
+    const double N = (double)L->N, den = N * L->S_dd - L->S_d * L->S_d;
+    const double beta = (den > 0.0) ? (N * L->S_dr - L->S_d * L->S_r) / den : 0.0;
+    o.drift = beta;
+    double m[FPGA_V3_LIN_NB], mu = 0.0, vin = 0.0;
+    for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) {
+        const double nk = (double)L->n[k];
+        m[k] = (L->s[k] - beta * L->sd[k]) / nk;
+        mu += m[k];
+        const double raw_mean = L->s[k] / nk;
+        vin += L->ss[k] - nk * raw_mean * raw_mean;
+    }
+    mu /= (double)FPGA_V3_LIN_NB;
+    o.rms_in = sqrt((vin > 0.0 ? vin : 0.0) / N);
+    double mn = 1e300, mx = -1e300, sq = 0.0;
+    for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) {
+        double v = m[k] - mu;
+        if (v > 32767.0) v = 32767.0;
+        if (v < -32767.0) v = -32767.0;
+        tab[k] = (int16_t)((v >= 0.0) ? v + 0.5 : v - 0.5);
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+        sq += v * v;
+    }
+    o.pp = mx - mn;
+    o.rms = sqrt(sq / (double)FPGA_V3_LIN_NB);
+    if (res) *res = o;
+    return 1;
+}
+
+int32_t fpga_v3_lin_corr(const int16_t tab[FPGA_V3_LIN_NB], uint64_t t_u)
+{
+    /* stredy dilu na 256*k + 128 [jednotky]; linearni interpolace mezi sousednimi stredy, periodicky pres periodu taktu */
+    const uint32_t w = 16384u / FPGA_V3_LIN_NB;
+    const uint32_t v = (uint32_t)(t_u & 0x3FFFu) + 16384u - w / 2u;
+    const uint32_t i0 = (v / w) % FPGA_V3_LIN_NB, i1 = (i0 + 1u) % FPGA_V3_LIN_NB;
+    const int32_t f = (int32_t)(v % w);
+    const int32_t a = tab[i0], b = tab[i1];
+    const int32_t num = a * ((int32_t)w - f) + b * f;
+    return (num >= 0) ? (num + (int32_t)w / 2) / (int32_t)w : -((-num + (int32_t)w / 2) / (int32_t)w);
 }
 
 /* ══════════════ v0.42.12: parovani oken A a B ══════════════ */
