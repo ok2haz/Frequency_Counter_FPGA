@@ -948,3 +948,109 @@ Zdroj: Si5356 CLK_2 → A, CLK_4 → B, oba 10 000 000,041 Hz (P1 27647, P2 2130
   - Střední chyba okna ve všech etapách |·| < 0,12 ps (< 5·10⁻¹³).
   - **Ověření posunu 1PPS (2026-11-04, `noc17/kratky`, `fpga ev`: čas hrany na ose FPGA a čas od 1PPS):** `gps tp z` 0…475 ms po 25 ms posouvá hranu 1PPS přesně o −25 ms na krok (pulz o z **dřív**, TP5 `userConfigDelay`), i přes 250 ms. Pozor: osa FPGA i číslo segmentu v `fpga ev` přetékají, rozdíly mezi snímky platí jen uvnitř souvislého úseku.
   - 💡 Provozní důsledek: výchozí stav (TP posun 0) je ten dobrý; amplituda vlivu ~0,1–0,75 ps na okno 0,25 s (~3·10⁻¹² relativně) je pod šumem kanálu (5,4–5,7 ps rms).
+- 🔑 **Noc 2026-11-04/05 (noc17, 22 h, FW 0x050A, CM7 v0.43.2, kabely CLK_4 → A, CLK_2 → B, oba ,041 Hz, `gpsdo off`; `noc_logs/_rozbor/noc17/{kratky,noc}/souhrn.txt`, souhrn `noc17_eval.py` → `noc17/vyhodnoceni.txt`):**
+  - **N1, délka pulzu 1PPS při z125 (j32 A):** 10 ms 0,31 · 50 ms 0,37 · 100 ms 0,54 a 0,60 (noc16b 0,75 a 0,68) · 200 ms 0,71 ps; při z0: 100 ms 0,12 · 200 ms 0,34. Kanál B 0,02–0,22 bez trendu. Pozadí bez 1PPS (noc16b) 0,07–0,27. → ✅ **Rozhoduje doba vysoké úrovně pulzu, ne hrana.** 10ms pulz dá úroveň pozadí. Činnost spouštěná hranou (STM, `pps_cap`) by na délce pulzu nezávisela, takže hypotéza z E1 výše neplatí.
+  - **N2, poloha z250–475 proti noc16b S3 z0–225 (pulz 100 ms):** z | z+250 = 0,12 | 0,22–0,28 · 0,23 | 0,12–0,16 · 0,52 | 0,19–0,36 · 0,57 | 0,38 · 0,58 | 0,43 · 0,54–0,75 | 0,44–0,53 · 0,43 | 0,55 · 0,64 | 0,58–0,74 · 0,38 | 0,47 · 0,38 | 0,34. → profil se opakuje po 250 ms. Rozdíly do ~0,3 ps dává vektorový součet s pozadím, jehož fáze se o 250 ms neotáčí.
+  - **Poloha hrany 1PPS v segmentu** (−dp mod 25 ms z `fpga ev`): **7,60 ms** celou noc (7,604 → 7,596 ms za 22 h, tj. −0,1 ppb = volný OCXO). Kroky z po 25 ms tedy mění jen to, který segment okna hranu obsahuje. Z N1 vychází, že ovlivněná hranice okna leží při z125 asi 70–95 ms za náběžnou hranou (50ms pulz ji nepokryje, 100ms ano). Vliv je velký uvnitř pulzu a doznívá desítky ms po sestupné hraně. Přesnou polohu vůči hranici okna z logů určit nejde, protože osy `fpga ev` přetékají (L-0256). Rozhodne až výstup STATUS #354.
+  - HYPOTÉZA mechanismu: proud do zátěže 1PPS (LED přijímače, buffer) ovlivní přes napájení nebo zem zpoždění cesty CLK4 → A, a to na straně zdroje, nebo vstupu A. Rozhodne prohození kabelů (STATUS #352).
+  - Vzor tříd má za 1 s nulový součet (hranice posunutá o +δ = jedno okno delší, následující kratší). Na τ ≥ 1 s se vliv tedy neprojeví, při 0,25 s jde o ~1–2 % rozptylu okna.
+  - ⚠️ Poloha mřížky oken proti 1PPS je po každém startu jiná: počátek buněk dává první záznam, který STM uvidí (`fpga_v3.c:594`). Věta „výchozí stav (TP posun 0) je ten dobrý“ výše tedy platí jen pro tento běh desky.
+  - **N3, 6 h, A ,042 / B ,041, `gps tp off`, sken posunu A−B (koše 5 ns, `N3_10MHz_bez1PPS_scan_bin5.txt`):** složka 10 ns A 55–153 ps, B 96–159 ps; zbytek A 16–53 ps, B 20–61 ps; A−B MAD 108–202 ps (max při posunu 10 ns, dál při 30, 70 a 20 ns); kolísání střední chyby p-p 2,8 / 2,3 ps. noc18 s 1PPS: A 37–139 ps, B 63–171 ps, MAD 104–185 ps, p-p 4,7 / 3,9 a 3,4 / 2,9 ps. → ✅ **Hrby A−B nejsou od 1PPS.** ⚠️ Vstup 1PPS přitom nebyl tichý: přišlo ~4 240 falešných hran za 6 h (STATUS #355).
+  - **N4 (opakování z050, z300, z125, z000 po N3) NEPOROVNATELNÉ:** přeprogramování generátoru (na N3 a zpět) posunulo fázi A−B ze **7,0 ns** (všech 46 snímků `fpga ev` v K, N1 a N2: 6,6–7,3 ns mod 100 ns) na **29,0 ns** (28,7–29,2 ns, za 2,75 h beze změny, kmitočty tedy shodné). V tomto stavu:
+    - zbytek rms A 5,4 → 7,3 ps, B 5,6 → 8,2 ps; σ(MAD) A−B 94 → 144 ps;
+    - čára 1 s je i v kanálu B, s opačnou fází než v A (vazba A → B závislá na posunu);
+    - střední chyba okna A +0,09 až +0,27 ps, B −0,25 až +0,01 ps.
+    Průměrné kmitočty obou kanálů sedí na ±0,01 mHz. Posun mediánu A−B v `report.txt` (+5 → −25 ps) je jen jiný tvar rozdělení. Kanál B navíc od přeprogramování generátoru potřebuje v každém segmentu opravu X0 o −12 160 hran (STATUS #353).
+  - Střední chyba okna v N1 a N2 (16 etap, A−B 7 ns): A +0,06 ps, B +0,06 ps (2,3·10⁻¹³). Mezi etapami se liší o ±0,15 ps, víc než SE etapy 0,055 ps (k #348).
+  - Etapa z175 se nezměřila. V N4 ji vyloučil časový limit a samostatná dohra se spustila ze špatného adresáře (L-0257). Pokrývá ji ale noc16b S3 z175 (0,64 ps) ≈ z425 (0,58 a 0,74 ps).
+  - Doplněno 2026-11-05 večer: uživatel změřil průběh napětí (3,3 V) při 1PPS – je v pořádku, napájení jako cesta vlivu je vyloučené. HYPOTÉZA o proudu do zátěže 1PPS přes napájení tím padá; zbývá vazba po desce nebo uvnitř FPGA.
+  - Opravy v0.44.1 (⬜ neověřeno na HW, STATUS #352–#354, ověření nocí `noc19.py`): výchozí pulz 1PPS 10 ms; mřížka oken se zarovnává na 1PPS (1PPS na 400 ‰ okna = 100 ms u 0,25 s, `fpga v3 pps`), poloha 1PPS v okně je ve výpisu `fpga v3`; skutečný skok X0 (zápis generátoru vypne výstup na ~1,2 ms) se už neopravuje donekonečna (L-0258).
+- 🔑 **Noc 2026-11-05/06 (noc19, 13 etap po 36 min, CM7 v0.44.2, FW 0x050A, kabely CLK_4 → A, CLK_2 → B, oba ,041 Hz, `gpsdo off`; `noc_logs/_rozbor/noc19/souhrn.txt`, skript `noc19.py`, rozbor `noc19_cary.py` → `noc19/cary.txt`; STATUS #358–#360):**
+  - **1PPS v kanálu A (pulz 10 ms):** j32 A 0,08–0,34 ps ve všech etapách = pozadí (bez 1PPS 0,07–0,27). Nezáleží na poloze 1PPS v okně (V2: 0–150 ms; p000 má hranici okna uvnitř pulzu), na náběžné hraně vůči hranici segmentu (F1–F5: 0,2–24,2 ms; F4 má značku pod vysokou úrovní) ani na pulzu 1 / 10 / 20 ms. → ✅ Výchozí pulz 10 ms (v0.44.1) vliv odstraňuje. Zarovnání mřížky (v0.44.2) drží polohu přesně na cíli (18 posunů, X0 0); pro pulz 10 ms potřeba není.
+  - **Čáry jsou z času FPGA, ne z 1PPS:** konec okna leží vůči UTC sekundě na τ = −(poloha 1PPS + z) mod 250 ms (přesně, z `fpga v3`); t_unix určuje jen bod mřížky. V této soustavě má každá čára ve všech 13 etapách stálou fázi na skutečné frekvenci: B 2,5 Hz → j48 1,56–1,69 ps (sd fáze 2° za 8 h), B 5 Hz → j32 0,45–0,66 ps (dosavadní „čára 1 s v B“), A/B 1,25 Hz → j40 0,42–0,86 ps v protifázi, A 0,3125 a 0,9375 Hz → j10/j30 ~0,5 ps, B 0,625 Hz → j20. Periody = 8, 16, 32, 64, 128 segmentů; model vlastní fáze (K 260) je neodstraní. HYPOTÉZA: kruh záznamů v BSRAM (adresa = bity čísla segmentu). Do souhrnu noc19 se psaly jen j32/j64, nejsilnější čára (j48 B) v něm tedy chyběla.
+  - **Střední chyba okna A podle parity posunu mřížky:** sudý +0,13 ps (5 etap), lichý −0,19 ps (8 etap), 13 ze 13; B +0,05 / −0,01 ps. LSQ přes těžiště segmentů nevyruší složku střídající se po segmentech (sudý počet bodů) → posun sklonu se znaménkem parity. Návrh: regresor parity v LSQ (STATUS #360).
+  - ⚠️ Třídy UTC z t_unix (`val_lines.py`) přeskočí o okno, když latence SSE + odchylka hodin PC projde nulou (p200, p400, p500: −1 až −19 ms; večer +42 až +77 ms, p600 +135 ms). Fáze proto počítat z polohy 1PPS, ne z t_unix.
+  - SEQ FPGA: díry = 1 na posun mřížky + 2 na `gen`, během měření 0 (STATUS #357, opraveno v0.44.3).
+  - Restart v 06:07 (`--od V2_p700_t10`, přidání kontrol K1/K2) čekal na výchozí start 21:00 → V2_p700…K2 neměřeno, deska bez návratu do výchozího stavu (L-0261).
+- 🔑 **Noc 2026-11-06/07 (noc20, 12 etap po 34 min, 22:42–05:46, CM7 v0.45.0, FW 0x050A, oba kanály z generátoru ,041 Hz (kabely jako noc19), `gpsdo off`, 1PPS pulz 10 ms; `noc_logs/_rozbor/noc20/souhrn.txt`).** Etapy: P1–P8 = člen parity LSQ ZAP/VYP při `fpga v3 pps 400` (posun mřížky 3 seg, lichý) a `500` (4 seg, sudý), dvakrát; K1/K2 = `gps tp off`; T1 = `fpga ab on`; V5 = reference.
+  - **Zdraví běhu:** SPI 512 179 transakcí / 0 chyb, díry SEQ 0, I2C4 0 chyb, samokontrola 0 zamítnutých oken, TDC rezerva A 23 / B 28 tapů beze změny, teplotní rekalibrace 0×, chybějící okna 2 (K1). Okno ab_night: 8 139 oken na etapu, A−B sigma(MAD) ~190 ps.
+  - **Člen parity (#360) ověřen:** střední chyba okna A [ps] – VYP: p400 +0,043 / +0,124, p500 −0,049 / −0,103 (rozdíl lichá − sudá +0,16 ± 0,07); ZAP: p400 −0,031 / +0,057, p500 +0,003 / −0,027 (rozdíl +0,025 ± 0,07, kritérium < 0,1 ps splněno). Odhad c (A) −0,07 → −0,13 ps (SE 0,017 po 25 432 oknech), B +0,12 → +0,02 ps; 0,61·c ≈ 0,08 ps sedí na polovinu rozdílu bez členu. Znaménko je proti noc19 opačné – parita mřížky se mění s každým startem (#348). B bez rozdílu (±0,08).
+  - **Bez soustavné chyby:** průměr středních chyb 12 etap A +0,007 ps (3·10⁻¹⁴), B +0,003 ps (1·10⁻¹⁴) na okno 0,25 s. Zbytek rms A 8,8 / B 7,3 ps; jen P1 (prvních 35 min po zapnutí) 12,3 / 10,2 ps.
+  - **Čáry B (#359) beze změny ve všech etapách, i bez 1PPS a s členem parity i bez něj:** j48 (0,67 s = alias 2,5 Hz) 1,61–1,94 ps, j40 (0,8 s) 0,77–1,02 ps, j32 (1 s = alias 5 Hz) 0,52–0,74 ps; šum spektra 0,08 ps. Třídy UTC B (+0,2 −0,6 −0,2 +0,6) stejné v K1/K2. Pozor: `gps tp off` vstup neutiší (#355) – K1 PSEQ +604, z toho 526 odmítnuto, K2 +272/195.
+  - **Interval A→B (T1, `fpga ab on`, 34 min):** 30 424 intervalů (~15/s, tj. ~37 % segmentů), střední 27,583 ns, σ 353,7 ps, min 26,664 / max 28,577 ns. σ je řádově nad šumem, který dává zbytek LSQ okna (7–9 ps). HYPOTÉZA: fázové kolísání mezi dvěma zlomkovými děliči Si5356 (CLK2, CLK4 na ,041 Hz) – STATUS #364.
+  - **σ značky TDC za běhu (#350):** ve všech etapách „koherentní signál“, odhad se nepočítá (generátor ,041 Hz je s taktem 100 MHz koherentní) – očekávané; ověřit na 11 603 104 Hz.
+
+### 2026-11-06 18:43 – 20:57 — osciloskop RTM3004 + aktivní sonda RT-ZS10 (zem pružinou), rozvod hodin a 1PPS
+
+Snímky: `Frequency_Counter_FPGA_Module/Measurement/*.PNG`. Místa podle uživatele a `FPGA_Module_2_1/GPSDO.kicad_sch`.
+
+| místo | signál | Vpp | náběh | střída | poznámka |
+|---|---|---|---|---|---|
+| U16 MIC920 výstup (oddělovač OCXO) | 10 MHz | 1,87 V (0,85–2,72 V) | 22,8 ns, 65 V/µs | 46,5 % | lichoběžník; na prahu U17 strmost ~0,065 V/ns → 1 mV šumu ≈ 15 ps |
+| U17 74LVC1G17 výstup (větev OCXO) | 10 MHz | 3,47 V | 3,0–3,6 ns | 50,4 % | rychle do 2,6 V, pak pomalý dojezd ~8 ns (zátěž) |
+| U22 LMK1C1104 (J11–J14) bez 3,3 pF | 10 MHz | 3,62–3,69 V | 0,58–0,60 ns | 49,8–50,2 % | překmit ~+0,25 V |
+| U22 LMK1C1104 s 3,3 pF (C88–C95) | 10 MHz | 3,57–3,70 V | 1,2–1,4 ns | 49,6–49,8 % | překmit beze změny, hrana 2× pomalejší |
+| Si5356 generátor CLK2/CLK4 | 10 / 100 / 200 MHz | 3,42–3,45 V | 0,66–0,80 ns | 49,6–50 % | čisté, i 200 MHz v plném rozkmitu |
+| pin modulu FPGA (Tang Nano), 100 MHz ref. | 100 MHz | 3,33 V | 2,4 ± 0,27 ns | 47,6 % | **schod na hraně ~1,3–1,5 V** (odraz), tj. v oblasti prahu LVCMOS33 |
+| vstup U7 (J3 pin 2), 1PPS z NEO-7M | 1 Hz | 3,2 V, překmit do 4,17 V | 1,7 ns | 1,00 % | **pulz 10,0 ms = konfigurace TP5 ověřena** (v0.44.1); peak detect ~0,6 Vpp VF šumu na obou úrovních |
+| výstup U7 → FPGA PIN33 | 1 Hz | 3,6 V | 0,62 ns | 1,00 % | zákmit do 2,65 V (nad VIH); ~0,3 Vpp šumu |
+
+- Statistika osciloskopu `f` σ 217 kHz u 100 MHz je rozlišení měření periody přístrojem, ne jitter hodin.
+- Schod na 100 MHz u pinu modulu je u sériově zakončeného vedení na mezilehlém bodě očekávaný; na kuličce FPGA (nedostupná) může být hrana čistá. Kdyby schod v oblasti prahu zůstal i na vstupu, zvyšuje citlivost hodin TDC na šum (STATUS #362).
+- Generátor CLK2/CLK4 je koherentní s referencí: jako zdroj pro odhad σ značky (`TDC SUM ZNACKY`) se při 10/100/200 MHz zneplatní, použitelný je nesoudělný kmitočet (např. 11 603 104 Hz z `tdc cal gen`).
+
+### 2026-11-07 08:42 – 11:16 — t365: interval A→B z generátoru CLK4 (A) / CLK2 (B), CM7 v0.45.1, 6 etap po 25 min
+
+Skript `noc_logs/_rozbor/t365.py`, souhrn `noc_logs/_rozbor/t365/souhrn.txt`. Každou minutu `fpga ab 64`; „rychlý šum“ = sd rozdílů
+sousedních intervalů / √2, „pomalý posun“ = sd středů minutových snímků. I = přesně 10 MHz (koherentní, fáze hrany vůči taktu stojí),
+Z = +0,041 Hz (fáze se otočí za 24 s), Q = +0,25 Hz (za 4 s). Mezi etapami nový `gen`, takže se mění i fáze mezi CLK2 a CLK4.
+
+| etapa | intervalů | střed | σ | rychlý šum | pomalý posun | tempo |
+|---|---|---|---|---|---|---|
+| I1 10 MHz | 30 088 | 46,433 ns | 123,3 ps | 120,2 ps | 16,7 ps | 20,00/s |
+| Z1 ,041 Hz | 30 087 | 55,774 ns | 232,3 ps | 129,8 ps | 74,9 ps | 20,00/s |
+| Q1 ,25 Hz | 30 086 | 7,871 ns | 206,5 ps | 154,0 ps | 92,6 ps | 20,00/s |
+| I2 10 MHz | 30 087 | 1,240 ns | **30,2 ps** | 27,6 ps | 5,5 ps | 20,00/s |
+| Z2 ,041 Hz | 30 097 | 13,086 ns | 199,2 ps | 128,4 ps | 63,2 ps | 20,00/s |
+| Q2 ,25 Hz | 30 089 | 65,529 ns | 249,5 ps | 199,8 ps | 63,7 ps | 20,00/s |
+
+- **Stojící fáze: šum závisí na tom, kde fáze stojí.** I2 = 30 ps, I1 = 123 ps, obojí stejný kmitočet; liší se jen poloha hran
+  A a B vůči taktu (po `gen`). Šum značky tedy není konstantní, ale závisí na kódu TDC – podpora #347 (chyba závislá na fázi;
+  příčinou rozdílu může být šířka binů v místě, kam hrany padnou, nebo blízkost hranice taktu). 30 ps je dolní mez, co sestava umí.
+- **Rotující fáze:** rychlý šum Z 128–130 ps (obě opakování shodně), Q 154–200 ps → s rychlejší rotací roste, jako v t364.
+  Pomalý posun 63–93 ps při rotaci proti 5–17 ps při stojící fázi = chyba značky závislá na fázi se při rotaci promítá do pomalé složky.
+- **Střed se po každém `gen` mění** (1,2 / 7,9 / 13,1 / 46,4 / 55,8 / 65,5 ns): fáze CLK2–CLK4 po přeprogramování není stálá
+  (potvrzeno, viz t364). Kalibrace zpoždění A↔B jen T-kusem z jednoho výstupu.
+- **Tempo přesně 20,00 intervalu/s ve všech etapách, 0 zahozených startů** (40 segmentů/s). Ověření hypotézy CS (STATUS #364):
+pokus 2026-11-07 11:17–11:21 (gen ,041 Hz, každý případ ~62 s od `fpga ab on`): `spi poll 40` + maska CS zap. → 1 239 intervalů (~20/s);
+  `spi poll 100` (10 transakcí/s) → 1 857 (~30/s); `spi poll 40` + `fpga diag mask off` → 1 237 (~20/s). **Potvrzeno: každá SPI transakce
+  stojí jeden segment (40 − transakcí/s; při `spi poll 40` jde reálně ~20 transakcí/s).** Mechanismus přes příznak CS (FLAGS bit3) tím
+  ale potvrzen NENÍ: vypnutí masky tempo nezměnilo – buď `fpga diag mask` na FW v3 nepůsobí, nebo se segment ztrácí jinde
+  (např. na hranici dávky záznamů mezi dvěma čteními). Další krok: v `fpga_v3_pr_rec` spočítat zahozené segmenty podle důvodu
+  (CS / INVALID / mezera / pořadí), pak opravit.
+
+### 2026-11-07 12:08 – 12:41 — t366: šum intervalu A→B při stojící fázi podle délky intervalu (CM7 v0.45.1)
+
+Skript `noc_logs/_rozbor/t366.py`, souhrn `noc_logs/_rozbor/t366/souhrn.txt`. 12× `gen 2/4` přes 10 000 001 Hz na přesně 10 MHz
+(každý `gen` = náhodně jiná fáze CLK2–CLK4), 20 s ustálení, 2 min `fpga ab` (~2 450 intervalů). Otázka z t365 (σ 30 vs 123 ps):
+roste šum s počtem period taktu mezi A a B (hodiny), nebo závisí jen na místě v TDC řetězu?
+
+| interval | period taktu 10 ns | σ | rychlý šum |
+|---|---|---|---|
+| 2,547 ns | 0,25 | 67 ps | 65 ps |
+| 2,903 ns | 0,29 | 64 ps | 53 ps |
+| 7,025 ns | 0,70 | 89 ps | 72 ps |
+| 16,1 / 19,7 ns | 1,6 / 2,0 | 147 / 131 ps | 141 / 110 ps |
+| 56,3 – 60,6 ns (7 běhů) | 5,6 – 6,1 | 113 – 136 ps | 103 – 139 ps |
+| 90,4 ns | 9,0 | 107 ps | 110 ps |
+| (t365 I2) 1,24 ns | 0,12 | 30 ps | 28 ps |
+
+- **Rozhoduje, jestli A a B leží ve stejné periodě taktu, ne délka intervalu ani poloha v řetězu.** Do jedné periody 30–89 ps,
+  od 1,6 periody 107–147 ps a dál už nestoupá (2 periody 131 ps, 9 period 107 ps). Poloha hran v řetězu to není: 60,397 ns
+  (hrany v periodě jen 0,4 ns od sebe) dává 132 ps, kdežto 2,547 ns (2,5 ns od sebe) 67 ps.
+- Výklad (HYPOTÉZA): každá hrana taktu, proti které se značka měří, má vlastní nezávislou chybu (bílá, nehromadí se). Ve stejné
+  periodě se odečte, v různých ne: σ_takt ≈ √((130² − 65²)/2) ≈ **80 ps na hranu**. Na Si5356 je to mnoho; kandidáti: schod na hraně
+  100 MHz u pinu modulu v oblasti prahu (#362, šum → čas), PLL/rozvod hodin ve FPGA, nebo hranice hrubého a jemného času v TDC.
+- Uvnitř jedné periody zbývá složka závislá na poloze (30–89 ps, #347).
+- Ověření: T-kus z jednoho výstupu a dvě délky kabelu (zpoždění < 10 ns a > 10 ns); jestli kód FPGA vede 100 MHz přes PLL;
+  osciloskopem hrana 100 MHz co nejblíž FPGA.

@@ -5889,3 +5889,188 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** `grep -n "alt_m" CM7` — každé použití výšky mimo zobrazení ověřit, zda nečeká elipsoidickou výšku.
 - **Commit:** `c6835e3`
 - **Stav:** aktivní, ⬜ neověřeno na HW
+
+### L-0256 — Poloha mod 250 ms z času, který přetéká s periodou nesoudělnou s 250 ms, je nesmysl
+
+- **Datum:** 2026-11-05
+- **Oblast:** rozbor testů (`noc_logs/_rozbor/noc17.py` `pps_pos`, výpis `fpga ev`)
+- **Symptom:** „poloha 1PPS v okně“ se v každé 40min etapě noci noc17 posunula mezi začátkem a koncem o 68,314 nebo 19,622 ms. „Poloha proti mřížce segmentu“ se posunula o 50 nebo 100 ms. Vypadalo to jako pohyb 1PPS proti oknům.
+- **Příčina:**
+  - Osa `t` ve `fpga ev` začíná surovou hodnotou 48b čítače při `fpga ev on` (`fpga_v3.c:404`) a přetéká po 2^48 · 0,6103515625 ps = 171,799 s. 171,799 s mod 250 ms = 48,692 ms, takže každé přetečení posune polohu o −48,692 ms (14 přetečení za etapu = +68,314 ms, 15 = +19,622 ms mod 250 ms).
+  - Číslo segmentu je 16b (`fpga_v3.c:419`): 65 536 segmentů = 1 638,4 s a 65 536 mod 10 = 6, tedy skok 150 ms.
+  - Deník už varoval, že rozdíly mezi snímky platí jen uvnitř souvislého úseku. Skript přesto dál logoval „absolutní“ polohu.
+- **Oprava:**
+  - Rozbor bere jen −dp mod 25 ms, tedy polohu 1PPS v segmentu. Vyšlo 7,60 ms celou noc.
+  - Poloha vůči hranici okna čeká na výstup z firmwaru (STATUS #354).
+- **Pravidlo:**
+  - Než se z čísla vezme zbytek mod P, ověř, že perioda jeho přetečení je násobkem P, nebo že je rozbalené od skutečného počátku.
+  - Přesně se opakující skoky (48,692 ms) jsou přetečení, ne fyzika.
+- **Detekce:** u každé „polohy mod P“ spočítat (perioda přetečení mod P) a porovnat se skoky v datech.
+- **Commit:** — (rozbor, bez změny kódu)
+- **Stav:** aktivní
+
+### L-0257 — Skript s cestami od `os.getcwd()` spuštěný z jiného adresáře čekal 19 h na soubor, který nikdy nevznikne
+
+- **Datum:** 2026-11-05
+- **Oblast:** testovací skripty (`noc_logs/_rozbor/noc17.py dohra`)
+- **Symptom:** dohra etapy N4_z175 se po konci noci nespustila. Proces běžel dál a čekal.
+- **Příčina:**
+  - `STM = os.getcwd()` a proces se spustil z `noc_logs/_rozbor`, takže hledal `noc_logs/_rozbor/noc_logs/_rozbor/noc17/noc/souhrn.txt`.
+  - Čekací smyčka se neptala, jestli adresář vůbec existuje.
+  - `os.makedirs(OUT)` mezitím tiše založil výstupní adresář na špatném místě.
+- **Oprava:** proces ukončen, etapa z175 vynechána (pokrývá ji noc16b S3 z175).
+- **Pravidlo:**
+  - Cesty ve skriptech odvozuj od `__file__`, ne od pracovního adresáře.
+  - Čekací smyčka musí na začátku ověřit, že adresář čekaného souboru existuje, jinak skončit chybou.
+  - Po spuštění procesu na pozadí do minuty zkontroluj jeho první zápis tam, kde ho čekáš.
+- **Detekce:** `Get-CimInstance Win32_Process` → `CommandLine` a místo, kde vznikl výstupní adresář.
+- **Commit:** — (testovací skript, mimo repozitář)
+- **Stav:** aktivní
+
+### L-0258 — Oprava vadného čtení X0 držela skutečný skok indexu navždy
+
+- **Datum:** 2026-11-05
+- **Oblast:** STM `fpga_v3_grp_feed` (`fpga_v3.c`, oprava X0 o 64·k hran z v0.42.7, L-0247)
+- **Symptom:** noc17 N4: kanál B měl od přeprogramování generátoru (12:44) opravu X0 −12 160 hran v KAŽDÉM záznamu (`x0_fix` B 0 → 397 355 za 2,75 h). Kanál A měl z dřívějška stejnou sérii (392 979 oprav, −12 160).
+- **Příčina:**
+  - `gen` vypíná výstup generátoru bitem OEB po dobu zápisu I2C (`si5356.c:231`), ~1,2 ms = 12 160 hran při 10 MHz. Index hran ve FPGA tedy opravdu skočil.
+  - Oprava X0 počítala jen s osamoceným vadným čtením FPGA (L-0247). Opravený záznam se uložil jako reference (`c->x_prev_raw = r->x0` po `r = &rc`), takže každý další, správně navazující záznam vypadal vadně a opravil se znovu.
+  - Kmitočet to nezkazilo (obě meze okna opravené stejně), ale první záznam mimo předpověď by řetěz vrátil na surová čísla uprostřed okna (okno o 12 160 hran vedle).
+- **Oprava:** v0.44.1: tatáž oprava ve `FPGA_V3_X0_STEP_N` = 4 záznamech po sobě = skutečný skok → surové X0 převzít, rozpracované okno zahodit, čítač `x0_step` (`fpga v3`). Selftest 24 (trvalý posun −640 hran od segmentu 20). `s3_regroup` už nemaže počítadla X0/SX.
+- **Pravidlo:**
+  - Oprava, která přepisuje vstup a opravenou hodnotu bere jako referenci, musí rozlišit osamocenou chybu od trvalého posunu. Když se tatáž oprava opakuje, je špatně předpověď, ne data.
+  - U každé opravy dat se zeptej, co udělá, když je „chyba“ skutečná změna signálu.
+- **Detekce:** `fpga v3`: `X0 ... opraveno` rostoucí s každým segmentem a stejná hodnota `posledni`; nově řádek `X0 skutecny skok`.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0259 — Hystereze větší než polovina kroku: zarovnání nikdy nedojde k nejbližší poloze
+
+- **Datum:** 2026-11-05
+- **Oblast:** STM `s3_ppsw` (`fpga_freq.c`), zarovnání mřížky oken na 1PPS z v0.44.1 (STATUS #354)
+- **Symptom:** deska po power-cyklu v0.44.1: `1PPS v okne A: 83.080 ms`, stabilně (n 201), cíl 100 ms, `posunu 0`. Posun o segment by dal 108,08 ms (chyba 8,1 ms místo 16,9 ms).
+- **Příčina:**
+  - Dosažitelné polohy jsou pos + n·L (krok L = 25 ms). Hystereze „neposouvat do 3/4 L od cíle“ je širší než L/2, takže se nechá i poloha, která NENÍ nejbližší.
+  - Při posunu cíle po L (sweep noc19) by se poloha hýbala jen každý druhý krok – měření by dalo dvojice stejných poloh.
+  - Rozhodovací logika byla ve `fpga_freq.c` (bez host testu), takže ji nic nezkoušelo; selftest 25 testoval jen posun mřížky, ne volbu posunu.
+- **Oprava:** v0.44.2: `fpga_v3_pps_shift` v `fpga_v3.c` – nejbližší násobek L (shoda → menší |n|), posun jen při zlepšení ≥ `FPGA_V3_PPS_HYST_US` (0,5 ms). Selftest 26 včetně sweepu; mutace na starý práh 3/4 L selftest shodí.
+- **Pravidlo:**
+  - U diskrétního kroku musí hystereze ležet KOLEM poloviny kroku (pásmo mrtvé zóny ≪ krok), ne být větší než polovina kroku. Jinak regulace zůstane na sousední poloze.
+  - Rozhodovací logiku (kdy a o kolik posunout) dávej do čisté funkce v modulu s host testem, ne do ovladače.
+- **Detekce:** `fpga v3`: `1PPS v okne A` ustálená dál od cíle než L/2 + 0,5 ms a `posunu 0`.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0260 — Počítadlo děr nerozlišovalo záměrné přerušení od ztráty dat → falešná hláška „FpgaTask nestíhal“
+
+- **Datum:** 2026-11-06
+- **Oblast:** STM `fpga_freq.c` (v3: `s3_win_to_meas`, `poll_v3`), `status` řádek `SEQ FPGA` (STATUS #357)
+- **Symptom:** noc19 (v0.44.2): `SEQ FPGA: diry 23 (zmeskano 47 mereni) <== FpgaTask nestihal`, přitom během 36min měření nevznikla žádná díra. Rozdíl „díry − posuny mřížky“ byl ve všech 11 etapách konstantní (6).
+- **Příčina:**
+  - Ovladač v3 při každém přerušení řady (posun mřížky na 1PPS, zápis generátoru `gen`, regroup, předdělička, ztráta signálu) záměrně zvedá `sequence` aspoň o 2, aby se přerušila statistika (L-0104).
+  - Společné počítadlo děr ale počítalo každý skok `sequence` jako zmeškané měření. Hláška „FpgaTask nestíhal“ tak ukazovala na úlohu, která nic nezmeškala.
+  - Od v0.44.1 se mřížka posouvá automaticky, takže díra přibyla po každém startu i po každé změně `fpga v3 pps`.
+- **Oprava:** v0.44.3: `fpga_meas_t.seq_brk` = skok je ze záměrného přerušení (`s3_brk` bez `s3_brk_loss`). Ztráta dat (plná fronta, mezera v záznamech FPGA) a skok bez známého přerušení se počítají dál jako díra. `status`: `SEQ FPGA: diry … , preruseni N (M oken: …)`. Statistika se při obou přeruší jako dřív (`s_poll_gap`).
+- **Pravidlo:**
+  - Když kód záměrně vyrábí stejný příznak jako porucha (skok v číslování kvůli přerušení řady), musí ho zároveň označit. Jinak počítadlo poruch měří vlastní zásahy.
+  - Hláška s příčinou („FpgaTask nestíhal“) smí padat jen tam, kde je ta příčina jediná možná.
+- **Detekce:** `status` → `SEQ FPGA`: `diry` musí za běhu bez `fpgaloop`/zátěže zůstat 0; `preruseni` roste o 1 s každým posunem mřížky (`fpga v3` → `posunu`) a o 1 s každým zápisem generátoru (`gen 2 …;gen 4 …` = 2).
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0261 — Restart testu s `--od` bez času čekal na výchozí 21:00 a nikdo to 9 h neviděl
+
+- **Datum:** 2026-11-06
+- **Oblast:** testovací skripty (`noc_logs/_rozbor/noc19.py`, hlídač restartu ve scratchpadu)
+- **Symptom:** po restartu noc19 v 06:07 (`--od V2_p700_t10`, kvůli kontrolám K1/K2) nepřibyl do `souhrn.txt` ani řádek. Proces běžel, stdout/stderr prázdné. V 16:35 se zjistilo, že čeká na start ve 21:00. Přišlo se o 12 etap a deska zůstala v testovacím nastavení.
+- **Příčina:**
+  - `hh, mm = (args[0] if args else '21:00')` platilo i pro pokračování `--od`: bez času se čekalo na 21:00 téhož dne.
+  - Hlídač restartu volal `subprocess.run(..., capture_output=True)` na PowerShell `Start-Process`. Nový proces zdědil roury, `run` čekal na jejich konec a hlídač se nikdy neukončil. Kontrola „po skončení hlídače ověřit první zápis“ se tak nespustila.
+  - Pravidlo L-0257 („po spuštění procesu na pozadí do minuty zkontroluj jeho první zápis“) bylo známé, ale kontrola byla navázaná na konec hlídače, ne na vlastní časovač.
+- **Oprava:** `noc19.py`: pokračování bez času startuje hned, start méně než 60 min před END je chyba, čekání se hlásí na stdout. Odstraněn i falešný řádek „!! poloha 1PPS“ ve větvi `gps tp off`.
+- **Pravidlo:**
+  - Výchozí hodnota parametru nesmí platit pro režim, pro který nedává smysl (pokračování = teď).
+  - Kdo spouští proces na pozadí, ověří jeho první zápis s vlastním časovým limitem, nezávisle na tom, jestli spouštěč skončil.
+  - Spouštěč dlouho běžícího procesu nesmí zachytávat jeho výstup rourou (`capture_output`); přesměrovat do souboru nebo `DEVNULL`.
+- **Detekce:** `souhrn.txt` bez řádku `START … POKRACOVANI` do minuty po restartu; `Get-CimInstance Win32_Process` → `CreationDate` procesu a čas posledního zápisu do výstupního adresáře.
+- **Commit:** — (testovací skript, mimo repozitář)
+- **Stav:** aktivní
+
+### L-0262 — LSQ přes sudý počet segmentů převedla střídavou složku značek na posun kmitočtu podle parity mřížky
+
+- **Datum:** 2026-11-06
+- **Oblast:** STM `fpga_v3_grp_feed` (`fpga_v3.c`, LSQ délky okna přes těžiště segmentů), STATUS #360
+- **Symptom:** noc19 (v0.44.2): střední chyba okna kanálu A při sudém posunu mřížky +0,13 ps (5 etap), při lichém −0,19 ps (8 etap), 13 ze 13; rozptyl uvnitř stejné parity = SE etapy. Kanál B jen 0,06 ps rozdíl.
+- **Příčina:**
+  - Značky segmentů mají složku, která se střídá po segmentech (perioda 2 segmenty; původ HYPOTÉZA #359).
+  - LSQ přes K těžišť se sudým K: Σ(i − ī)·(−1)^i = −K/2 ≠ 0, takže se sklon posune o −0,61·δ (K 10) se znaménkem parity prvního segmentu okna. Periodická složka se tím složí do nuly (alias), střední hodnota okna se nevyruší.
+  - Dvoubodový odhad ji vyruší (oba konce okna mají stejnou paritu). Přechod na LSQ (v0.42.x) ji tedy odkryl.
+  - Emulátor se střídavou složkou 5 ps dal přesně ±1,21·10⁻¹¹ = 0,606 · 5 ps / 0,25 s.
+- **Oprava:** v0.44.4: LSQ s členem parity segmentu t = a + b·x + c·p (p = +1 sudý SEG_IDX), jen při ≥ 4 segmentech a r²(x, p) < 0,5 (při K 10 stojí +2 % σ sklonu). Odhad c jako diagnostika v `fpga v3`, přepínač `fpga v3 par on|off|reset`. Emulátor `par_ps`, selftest 27 s negativní kontrolou (bez členu posun je a otočí se s posunem mřížky), host test výchozího stavu a případů bez členu (K 3, 16 Hz), 10 nových mutací (96/96 zachyceno).
+- **Pravidlo:**
+  - Odhad z pravidelně vzorkovaných bodů (LSQ, průměr přes okno) převede periodickou složku dat na posun, když se její perioda neshoduje se symetrií okna. Při změně odhadu se zeptej, které periodické složky starý odhad rušil a nový ne.
+  - Střední hodnota rozdělená podle fáze mřížky (parita, mod n) je levný test aliasu: rozdíl skupin > SE = alias.
+- **Detekce:** `fpga v3` → `LSQ okna: clen parity …, sude segmenty pozdeji o: A … ps (SE …)`; |c| > 3·SE = složka existuje. `fpga v3 par off` / `on` při stejné mřížce posune střední chybu okna o ~0,61·c.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0263 — Okno DVOJKANÁL: kmitočet malým písmem a prázdná místa místo naměřených údajů
+
+- **Datum:** 2026-11-06
+- **Oblast:** `app_gpsdo.c` okno DVOJKANÁL (s_view=46), `app_gpsdo_render_dualch`
+- **Symptom:** kmitočet obou kanálů malým `mono_30`, pravá část zóny čísla a hlavičky karet prázdná (uživatel: „zvětši font, doplň do prázdných míst jen validní informace“).
+- **Příčina:** okno vzniklo pro 64B rámec bez periody/okna/předděličky; údaje, které přístroj dnes měří, se do něj nikdy nedoplnily.
+- **Oprava:** v0.44.5: původní rozložení (kmitočet, RF bargraf, stavový řádek) zůstává. Kmitočet číslicemi `mono_52` (když se nevejde do 510 px, vše `mono_30`), oddělovače a nejisté číslice `mono_30`, jednotka `sans_32` — jen stávající fonty, do velkých subsetů jdou jen číslice. Vpravo od čísla sloupec `mono_16`: perioda (Δt/N, násobitel z `fpga_freq_hires_mul`, stejný počet platných číslic jako kmitočet), okno, N, předdělička (jen v3 s CAPS PRESC). V hlavičce kanálu z primárního slotu „hlavni cislo, rozliseni …“ (`card_relres` platí jen pro něj). Údaje se kreslí jen při platném měření kanálu (link, bez SIGNAL_LOST/přetečení/chyby kanálu, nenulové hodnoty v rámci).
+- **Pravidlo:** rozšíření okna vychází z jeho původní podoby — prvek (RF bargraf) se neodstraňuje jen proto, že dnešní HW pro něj nemá data; nový obsah patří do skutečně prázdných míst. Zvětšení písma se ověří rozpočtem šířky (nejdelší řetězec) a svislým rozpočtem clear obdélníků.
+- **Detekce:** `fpgasim v3 on 10000000 13300161` → MĚŘENÍ → DVOJKANÁL: velké číslo, RF bar, sloupec T/okno/N u obou kanálů, „hlavni cislo“ u CH A; odpojený vstup kanálu → jeho sloupec zmizí, stav „SIGNAL LOST“ / chyba.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0264 — Okno DVOJKANÁL hlásilo „OK“ u kanálu bez signálu
+
+- **Datum:** 2026-11-06
+- **Oblast:** `app_gpsdo.c` `dualch_status` (s_view=46); protokol v3 `s3_win_to_meas` (`fpga_freq.c`)
+- **Symptom:** signál jen na CH A → karta CH B ukazovala stav „OK“, přestože její kmitočet byl neaktivní.
+- **Příčina:** stav se skládal ze SPOLEČNÝCH příznaků rámce. `FPGA_ERR_SIGNAL_LOST` (watchdog) i OVERFLOW ale patří jen kanálu v primárním slotu: v3 skládá měření z oken vybraného kanálu (`s3_emit`) a druhý kanál je jen přibalené okno týchž segmentů (`wb`). Bez signálu na něm přijde `edges_b` = 0 a kmitočet 0 BEZ chybového bitu (`status2` je po `memset` nulový).
+- **Oprava:** v0.44.5: `dualch_status(seen, m, ch, &present)` pro každý kanál zvlášť. Primární kanál: SIGNAL_LOST → „BEZ SIGNALU“, chyba okna, přetečení. Sekundární: kmitočet 0 → „BEZ SIGNALU“; když primární ztratil signál, rámce stojí a o sekundárním nic nevíme → „nemeri se - hlavni bez signalu“ (amber), ne OK. Kanál bez signálu ukazuje kmitočet „--“, sloupec údajů prázdný, výsledek A±B / A/B jen když měří oba.
+- **Pravidlo:** příznak v rámci, který se týká jen jednoho kanálu/slotu, se nesmí použít jako stav všech kanálů. U každého příznaku si ověř, KTERÝ kanál ho nastavuje; chybějící chyba ≠ přítomný signál (kontroluj i to, že kanál opravdu nese hodnotu).
+- **Oprava 2 (STATUS #361):** druhý kanál se měří i bez signálu na vybraném: `fpga_freq_v3_sec()` drží poslední samostatné okno nevybraného kanálu (z `fpga_v3_grp_feed`, platné 2,5 s + hradlo) a okno DVOJKANÁL ho při SIGNAL_LOST dosadí do sekundárního slotu lokální kopie rámce. Šedé zobrazení a skrytí údajů se řídí stavem kanálu, ne společným `g_freq_stale`. Statistika, datalog a IPC dál berou jen vybraný kanál.
+- **Detekce:** signál jen na A (CHAN = A) → CH B „BEZ SIGNALU“, „--“; signál jen na B při CHAN = A → CH A „BEZ SIGNALU“, CH B kmitočet, OK, sloupec T/okno/N.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0265 — σ časové značky TDC byla konstanta vydávaná za měření
+
+- **Datum:** 2026-11-06
+- **Oblast:** `meas_present.h` (`MP_TDC_PS`, `mp_res_floor_rel`), `screen_main.c`, web `/api/state` `tdc_ps`, STATUS #350
+- **Symptom:** web ukazoval „Šum značky TDC 105 ps“ jako živou hodnotu; tatáž konstanta (změřená 2026-10-08 na architektuře 0x041x) řídila rozpočet nejistoty, podlahu přesnosti hlavního čísla (počet platných číslic) i podlahu Allanova grafu.
+- **Příčina:** σ se po změně architektury (v3, LSQ okna) nikdy znovu neměřila a nebyla k dispozici za běhu.
+- **Oprava:** v0.44.5: `s3t_feed` (`fpga_freq.c`) z reziduí segmentů (`fpga_v3_seg_resid`) pro každý kanál: Var(r) = σ²·k, k = (1/n − (1−u))² + (n−1)/n² + u², u = sx/n/dx; σ² = Σr²/Σk s exponenciálním zapomínáním 1/2048 na segment (~50 s), platné od 256 segmentů. Monte Carlo (n 2..300, σ 40 ps): odhad 40,1–40,2 ps. Koherentní signál (pokrytí fází `fpga_v3_calpin_cover` > 250 ‰) odhad zneplatní. `fpga_freq_tdc_sigma_ps()` → `screen_main_tdc_ps()` (náhrada MP_TDC_PS), `mp_res_floor_rel(…, tdc_ps)`, podlaha Allanu, IPC blok `gpsdo` (`tdc_meas`, `tdc_ps_x10` v bývalé výplni, velikost i IPC_VERSION beze změny), web `tdc_ps` + `tdc_meas`, UART `status` → `TDC SUM ZNACKY`.
+- **Pravidlo:** konstanta, která popisuje vlastnost HW, se po změně architektury znovu změří — a když jde měřit za běhu, měří se za běhu a konstanta zůstane jen jako náhrada s viditelným označením. Odhad šumu z dat musí vyloučit koherentní vzorkování (stálá fáze = podhodnocení).
+- **Detekce:** `status` → `TDC SUM ZNACKY: A … ps (segmentu …) | B …`; web karta ČÍTAČ „sigma, zmereno za behu“. Se Si5356 ze stejné reference (koherentní) → „-- (koherentni signal)“.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0266 — Interval A→B se zahodil vždy, když hrana B byla v segmentu první
+
+- **Datum:** 2026-11-07
+- **Oblast:** `fpga_v3.c` `fpga_v3_ab_feed` (párování start/stop, `fpga ab`, funkce Interval/Fáze A–B)
+- **Symptom:** t364: generátor CLK2/CLK4 přesně 10 MHz (koherentní s taktem 100 MHz) → za 4 min 0 intervalů, ~21 zahozených startů/s („bez stopu do 10 s“). Noc20 T1 (,041 Hz): jen ~15 intervalů/s z ~40 segmentů/s, 11 470 zahozených startů.
+- **Příčina:** segment nese u spojitého signálu jen přesný čas PRVNÍ hrany a střední periodu (souhrn, N ≥ 3). Když první hrana B leží před první hranou A, souhrn B „trvá přes start“ a kód start zahodil (hrana B po startu prý neznámá). U spojitých signálů na obou kanálech leží první hrany A i B do jedné periody od začátku segmentu, takže o párování rozhodovala jen fáze začátku segmentu vůči signálu: koherentní signál = vždy, nebo nikdy; ,041 Hz = jen část segmentů. Hostový test to nechytil: emulátor měl ve scénáři se souhrny A vždy první a kontroloval jen chybné intervaly, ne jejich počet.
+- **Oprava:** v0.45.1: leží-li start do jedné periody za první hranou souhrnu B, stop = druhá hrana = T0 + střední perioda (chyba = odchylka jedné periody B od střední, u spojitého signálu jednotky ps). Hrana B blíž startu než `FPGA_V3_AB_GUARD_U` (500 jednotek ≈ 305 ps) je s ním současná v rámci šumu značek → zahodit jako dosud (jinak by B = A dávalo podle šumu 0 nebo celou periodu). Host test: kroky (4)–(6) a scénář „1 kHz, B = A + 950 µs (B v segmentu první)“ s povinností interval z každého startu; 3 nové mutace.
+- **Pravidlo:** test párování/odebírání musí kontrolovat i POČET výsledků, ne jen jejich správnost — kód, který všechno zahodí, má nula chybných výsledků. Scénáře volit tak, aby nastalo pořadí, které v emulátoru se stálou fází jinak nenastane.
+- **Detekce:** `fpga ab on` se spojitým signálem na A i B → `fpga ab`: intervalů ≈ 40/s (segment 25 ms), „zahozených startů“ ~0; i při `gen 2/4 10000000`.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ✅ ověřeno na HW 2026-11-07 (flash + power-cyklus): `gen 2/4 10000000` (koherentní, dřív 0 intervalů) + `fpga ab on` → za ~63 s 1 253 intervalů, zahozených startů 0, střed 70,82 ns, σ 230 ps. Párování ~20/s, ne 40/s, jak se čekalo: start se zjevně bere jen v každém druhém segmentu, ale 0 zahozených znamená, že každý start dostal stop.
+
+### L-0267 — Párování A→B zahazovalo celý segment se značkami při CS a nic se nepočítalo
+
+- **Datum:** 2026-11-07
+- **Oblast:** `fpga_v3.c` `fpga_v3_pr_rec` (párování po záznamech, `fpga ab`, funkce Interval/Fáze A–B)
+- **Symptom:** t365: se spojitým signálem na A i B přesně 20,00 intervalu/s ve všech 6 etapách místo ~40/s (segment 25 ms), „zahozených startů 0“. Pokus: `spi poll 100` (10 transakcí/s) → ~30/s, `spi poll 40` → ~20/s, tedy každá SPI transakce stála jeden interval.
+- **Příčina:** záznam s FLAGS bit3 (značky při CS, maskování hran po dobu transakce) se v párování bral jako neplatný: celý segment pryč přes `ab_reset`, bez počítadla. Se spojitým signálem má bit3 každý segment, ve kterém proběhla transakce. ⚠️ `fpga diag mask off` tempo NEZMĚNILO – mechanismus přes bit3 je proto zatím HYPOTÉZA (buď FPGA nastavuje bit3 i bez masky, nebo se segment ztrácí jinde); rozhodnou nová počítadla.
+- **Oprava:** v0.45.2: záznam s bit3 se páruje; interval, na kterém se podílí (start, stop nebo rozpracovaný start z něj, `arm_cs`), platí jen kratší než `FPGA_V3_AB_CS_LIM_U` = 200 µs. Maska je jedno souvislé okno delší než tato mez (transakce 1024 B při SCK ≤ 40 MHz ≥ 205 µs) a první značky záznamu jsou časované, takže nečasovaná hrana B mezi startem a stopem by vyžadovala celou masku uvnitř intervalu. Delší se zahodí a počítá (`lost_cs`). Nová počítadla v `fpga ab`: záznamy A/B, neplatné, s bit3, A bez B téhož segmentu, mezery příjmu. Host test: 7 případů CS (krátký/dlouhý interval, start z CS záznamu bez B, čistý interval nad mezí platí, neplatný B); 5 nových mutací.
+- **Pravidlo:** každé zahození dat musí mít počítadlo s důvodem. Hláška „zahozených 0“ tady skrývala polovinu dat, protože zahození šlo cestou, která se nepočítala.
+- **Detekce:** `fpga ab on` se spojitým signálem → `fpga ab`: tempo ~40/s; řádek „záznamy A / B“: podíl záznamů s bit3 ≈ transakcí/s ÷ 40.
+- **Commit:** `57e3f37` (souhrnný commit v0.44.1–v0.45.2, tag v0.45.2)
+- **Stav:** ✅ ověřeno na HW 2026-11-07 (flash + power-cyklus, A i B přes T-kus z externího OCXO): `spi poll 40` → 2 492 intervalů/62 s = **40/s** (dřív 20/s), záznamy s bit3 1 247 z 2 494 (50 % = 20 transakcí/s z 40 segmentů/s); `spi poll 100` → 2 507/63 s, s bit3 627 z 2 508 (25 %); zahozeno kvůli CS 0, A bez B 0, mezery 0. Mechanismus přes bit3 tím potvrzen. Otevřené: proč `fpga diag mask off` (t365) tempo nezměnil – FPGA zřejmě nastavuje bit3 i bez masky, nebo příkaz na v3 nepůsobí (zkontrolovat RTL / echo bajt 66 bit0).

@@ -47,7 +47,7 @@
 | Hradlo 0,05 / 0,1 / **0,25** / 0,5 / 1 s | ✅ | footer GATE, `SENS:FREQ:GATE` |
 | Hi-res kmitočet z dvojice hrany/hradlo (až 15 číslic) | ✅ | velké číslo, SCPI `MEAS:FREQ?` |
 | FREQ ↔ PERIOD přepínač (s … ps) | ✅ | footer |
-| Okno **FUNKCE MĚŘENÍ**: Frekvence A/B, Perioda A/B | 🟡 | od v0.28.0 (B = FREQ/PERIOD + CHAN B); zbylé funkce šedé s důvodem, limity v kap. 12 |
+| Okno **FUNKCE MĚŘENÍ**: Frekvence A/B, Perioda A/B; od v0.45.0 i Interval A–B, Fáze A–B, Poměr A/B, Totalizace A, Šířka pulzu A, Střída A | 🟡 | B = FREQ/PERIOD + CHAN B (v0.28.0); rozšířené funkce ⬜ neověřeno na HW, limity v kap. 12.1 |
 | Detekce ztráty signálu, auto‑restart, kontrola oken (samokontrola FPGA) | ✅ | `status` → FPGA SAMOKONTROLA |
 | Kalibrace TDC (code density) po startu, po teplotě, po výpadku hodin | ✅ | UART `tdc`, `tdc cal` |
 | Kalibrace TDC ze vstupního pinu (krok 1 STATUS #347): histogram ze signálu na vstupu místo ring oscilátoru, kontrola rovnoměrnosti fáze před sběrem i po něm | 🟡 v0.43.0 | UART `tdc cal [pin] [a\|b] [gen]`; potřebuje FPGA FW 0x0509 (CAPS bit24), ⬜ neověřeno na HW |
@@ -182,9 +182,11 @@
 |---|---|---|---|
 | Frekvence A, Perioda A | ✅ | hodnota na velkém čísle je vždy jeden kanál; perioda je 1/f (kap. 12.2) | přesnější perioda (12.2) |
 | **Frekvence B, Perioda B** | 🟡 od v0.28.0 | je to totéž co FREQ/PERIOD + tlačítko CHAN B: FPGA vybraný kanál dá do primárního slotu, **jen A má regresní blok** (`rg_*`; u 10 MHz z GPSDO regrese stejně nic nepřidá, TDC_MATEMATIKA); přepnutí kanálu **nenuluje Allan** (kanály mají jinou podlahu, po přepnutí RESET ALLAN) | po přepnutí kanálu zlom pyramidy (jako při změně signálu), nebo oddělená pyramida B |
-| Poměr A/B | ⬜ data JSOU (oba kanály v rámci současně: `edge_count/gate_ps` a `edges_b/dt_b_ps`) | chybí **režim zobrazení**: poměr dvou 10 MHz je 1 ± 10⁻¹⁰, tedy 12+ desetin, formátovač velkého čísla umí 7 (`FREQ_FRAC_HIRES`); a třetí funkce nevejde do 1 bitu `st.mode` v `g_ui_cfg` | `ratio = f_A/f_B` v `double` → odchylka od 1 v ppt/ppb jako „Odchylka ×N"; persistence funkce na 2 bity |
-| Časový interval A–B, Fáze A–B | ⬜ | rámec nese délky oken (`dt_a`, `dt_b`) a kódy TDC, ale **ne společné razítko hran A a B** vůči stejnému taktu 100 MHz; konstantní offset kanálů (STA 6,23 vs 6,14 ns) se kalibruje relé vstupního modulu | protokol v3 (razítko A a B), kalibrace offsetu A↔B |
-| Totalize, šířka pulzu, střída | ⬜ | FPGA to neměří (gap‑free okna, měření šířky pulzu) | RTL |
+| Poměr A/B | 🟡 v0.45.0 (⬜ HW) | f_A/f_B z hi‑res dvojic obou kanálů jednoho rámce, až 12 desetin; nejistota = podlahy obou kanálů (`mp_res_floor_rel`, jedno okno) | průměr přes víc oken |
+| Časový interval A–B, Fáze A–B | 🟡 v0.45.0 (⬜ HW) | párování hran A→B (FW 0x0501, `FPGA_EVP_AB`): první časovaná hrana A segmentu → první hrana B po ní, ~1 interval na segment 25 ms; zobrazen průměr intervalů jednoho hradla (nejvýš 64), nejistota σ/√n, nejméně √2·σ značky/√n. Fáze = interval · f_A · 360° (mod 360). **Neodečítá se zpoždění mezi kanály** (STA ~90 ps + kabely) | odečet kalibrace `FPGA_EVP_SKEW` (B = pin A) |
+| Totalizace A | 🟡 v0.45.0 (⬜ HW) | hrany A od výběru funkce z absolutního indexu X0 záznamů segmentů × předdělička — mezery v příjmu hrany neztrácí; skok X0 (restart FPGA, změna předděličky) = navázání bez přičtení (`přerušení N`) | tlačítko nulování, totalizace B |
+| Šířka pulzu A, Střída A | 🟡 v0.45.0 (⬜ HW) | párování A → A invertovaný na vstupu B (`FPGA_EVP_PW`, SET_CONFIG 0x09 = 3): **kanál B mezitím neměří svůj vstup**; střída = šířka · f_A · 100 % | — |
+| Šířka pulzu B, Střída B | ⬜ | FPGA umí na vstup B přivést jen invertovaný pin A, ne naopak | RTL (zdroj A = pin B) |
 
 ### 12.2 Perioda — jak se počítá a proč by šla přesněji
 

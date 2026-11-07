@@ -407,13 +407,16 @@ delší sled hran **RAW_CAPTURE**. ⬜ Ověřeno simulací (FPGA) a host testem 
   1PPS: PTS (FW 0x0500) = hrubý čas → čas hrany proti 1PPS s rozlišením **10 ns**.
 - **Maskování při CS** (výchozí zapnuto, `fpga diag mask`): hrana během CS (~330 µs na transakci, ≤ 25 transakcí/s ≈ 0,8 %
   času) se nečasuje, záznam má FLAGS bit3. Pro jednorázové děje buď `fpga diag mask off` (riziko rušení značek při CS),
-  nebo počítat se ztrátou (párování takový záznam zahodí, `fpga ev` ho označí `[CS]`).
+  nebo počítat se ztrátou (`fpga ev` takový záznam označí `[CS]`; párování ho od v0.45.2 použije jen pro interval < 200 µs).
 
 **Párování start/stop (`fpga_v3_ab_feed`, `fpga_v3_pr_rec`):** start = první přesně známá hrana A po předchozím stopu,
 stop = první hrana B po startu (čas > start). FPGA posílá segment jako A, pak B; události A čekají na záznam B téhož
 segmentu a předají se spolu (seřazené v čase). Start se zahodí (`zahozenych startu`), když: (a) do 10 s nepřišel stop;
 (b) souhrn B (N ≥ 3) začal před startem a trvá přes něj – první hrana B po startu je neznámá; (c) záznam je neplatný
-(FLAGS bit0) nebo se značkami při CS (bit3) – hrana mohla chybět; (d) mezera v příjmu. Po přepnutí zdroje B se páruje
+(FLAGS bit0); (d) mezera v příjmu. Záznam se značkami při CS (bit3) se páruje, ale interval, na kterém se podílí
+(start, stop nebo rozpracovaný start z něj), platí jen < 200 µs (`FPGA_V3_AB_CS_LIM_U`; maska je souvislé okno delší
+než mez, takže nečasovaná hrana B by musela ležet celá uvnitř intervalu); delší se zahodí a počítá zvlášť (v0.45.2, L-0267;
+do v0.45.1 se celý segment zahodil bez počítadla → u spojitého signálu jeden interval za každou transakci SPI). Po přepnutí zdroje B se páruje
 až za záznamem B s držením (starší záznamy v kruhu jsou z původního zdroje).
 
 **Šířka pulzu (`SET_CONFIG 0x09`, CAPS bit20):** B = pin A invertovaný (p1 = 3) → kanál A časuje náběžné, kanál B
