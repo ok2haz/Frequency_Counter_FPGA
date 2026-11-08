@@ -6183,3 +6183,24 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   („znaménko/velikost K?"), musí být ověřená měřením, ne domněnka — tady K bylo správně.
 - **Commit:** (necommitováno v době psaní)
 - **Stav:** ✅ (ověřeno na HW po power cyklu, STATUS #370)
+
+### L-0274 — Změna významu indexu v UKLÁDANÉM bajtu: staré uložené hodnoty se tiše přečtou jinak
+
+- **Datum:** 2026-11-08
+- **Oblast:** `g_ui_cfg` / `ipc_uicfg_norm` (`ipc_shared.h`), presety hradla v0.45.12, STATUS #371
+- **Symptom:** (nalezeno auditem, ne hlášením) po změně tabulky hradla z 0,05/0,1/0,25/0,5/1 s na 0,05/0,1/0,25/1/10/100 s
+  by uložený index 4 (dříve 1 s) nastartoval jako 10 s a index 3 (dříve 0,5 s) jako 1 s. Přístroj s hradlem 10 s zobrazí jedno
+  měření za 10 s, což vypadá jako zamrzlý displej.
+- **Příčina:** bajt se ukládá do BKP DR1, flash (syscfg) i profilů SETUP, ale nesl jen index a příznak formátu v2. Změna
+  významu indexu bez změny ZNAČKY formátu je pro staré uložené hodnoty nerozlišitelná od nové. Stejná chyba už jednou
+  vznikla při přechodu v1→v2 (tehdy ošetřena příznakem bitu 7) a opakovala se, protože příznak byl jen jeden.
+- **Oprava (v0.45.14):** bit 6 = „nová tabulka“, `ipc_uicfg_norm` starou migruje (0..2 beze změny, 0,5 a 1 s → 1 s).
+  Každý, kdo bajt skládá OD NULY (`ui_cfg_pack`, výchozí hodnota), musí bit nastavit; ostatní (SCPI, IPC) skládají nad
+  aktuálním bajtem a bit zachovávají (hlídá host test `t_uicfg_norm.c`, 5 mutací).
+- **Pravidlo:** kdykoli se mění tabulka, na kterou ukazuje UKLÁDANÝ index, zavedení nové značky formátu je součástí téže
+  změny. Před změnou grepni všechny cesty, které hodnotu načítají (`ipc_uicfg_norm` volají 3), i všechny, které ji
+  skládají od nuly. Vedlejší nález téhož auditu: kopie tabulky popisků (`el_gate_name`) zastarala už při přechodu na v2
+  a nikdo si toho nevšiml, protože ji nic netestuje → jednu tabulku sdílet, ne kopírovat.
+- **Detekce:** host test `t_uicfg_norm`; v provozu záznam chyb „brana X -> Y“ hned po startu bez zásahu uživatele.
+- **Commit:** (doplnit)
+- **Stav:** ✅ host test + mutace; ⬜ načtení starého uloženého bajtu z BKP na desce neověřeno (ukládá jen firmware)

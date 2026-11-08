@@ -132,7 +132,7 @@ struct scpi_src {
     uint8_t  channel_id;            /* kanal hlaseny ramcem */
     /* NASTAVENY stav mereni (SET/readback: `SENS:FREQ:GATE?/CHAN?`, `INIT:CONT?`).
      * Zdroj je `g_ui_cfg` (CM7) resp. snapshot (CM4) — NE posledni FPGA ramec. */
-    uint8_t  set_gate_idx;          /* 0..4 */
+    uint8_t  set_gate_idx;          /* 0..5 */
     uint8_t  set_chan;              /* 0/1 */
     uint8_t  set_running;           /* 0 STOP / 1 RUN */
     uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
