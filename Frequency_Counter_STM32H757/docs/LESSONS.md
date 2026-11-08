@@ -6122,3 +6122,43 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** výsledek dlouhého příkazu chybí, další příkaz vrací cizí text.
 - **Commit:** `349de01` (fix v0.45.3–v0.45.7, tag v0.45.7)
 - **Stav:** ✅ (t375b proběhl správně).
+
+### L-0271 — Korekce podle fáze taktu interpolovala kruhově přes hranici periody, kde má chyba časování skok
+
+- **Datum:** 2026-11-08
+- **Oblast:** `fpga_v3_lin_corr` (`CM7/Core/Src/fpga_v3.c`), korekce `fpga lin` (v0.45.7)
+- **Symptom:** t377: intervaly A→B přes sousední hranu taktu měly střed o +47 ps výš i se zapnutou korekcí (+40 ps bez ní);
+  ve stejné periodě taktu korekce fungovala (rozkmit 22 ps).
+- **Příčina:** tabulka 64 dílů se interpolovala mezi středy dílů a mezi dílem 63 a 0 PERIODICKY (fáze je modulo 16384).
+  Chyba časování jednoho kanálu má ale na přechodu fáze 16383 → 0 skok (surové značky t374/t376: −110 až +89 ps podle
+  kanálu a kalibrace TDC), takže kruhová interpolace dala značkám v krajních půldílech průměr obou stran skoku.
+- **Oprava:** v0.45.9 – pod středem dílu 0 a nad středem dílu 63 lineární extrapolace ze dvou dílů na téže straně.
+  Host test: pila se skokem 160 jednotek na hranici (chyba korekce ≤ 1 jednotka), 3 nové mutace. Přehrání na surových
+  datech (tabulka z 1. půlky, korekce 2. půlky): B_sam krajní půldíly −18 / +29 → −1 / +11 ps, Boff −8 / +12 → −2 / +2 ps.
+  Celých +47 ps to nevysvětluje (zbytek je TODO STATUS #369 bod 6).
+- **Pravidlo:** fáze je periodická, ale veličina nad ní nemusí být spojitá přes hranici periody. Před periodickou
+  interpolací nebo vyhlazením ověř na datech, že na hranici není skok (porovnej krajní díly).
+- **Detekce:** rozdíl krajních dílů tabulky výrazně větší než rozdíl sousedních dílů uvnitř; interval přes hranu taktu
+  posunutý proti intervalům ve stejné periodě.
+- **Commit:** (zatím necommitováno)
+- **Stav:** ⬜ neověřeno na HW
+
+### L-0272 — Bitstream prošel branou časování, ale na křemíku rozbil funkci (non-APP_OSC: nižší šum značky, rozbitý A→B)
+
+- **Datum:** 2026-11-08
+- **Oblast:** FPGA v3, varianta bez APP_OSC (doména aplikace/SPI z 100 MHz místo vnitřního oscilátoru); měření t386/t387
+- **Symptom:** řádný bitstream 0x050A bez APP_OSC prošel `fpga_release.py --v3` (setup +0,042 až +0,141 ns i s nejistotou
+  0,9 ns, 0 porušení, TDC rozmístění PASS). V SRAM ale interval A→B měl σ v desítkách ns (skoky o ~10 period taktu), ačkoli
+  šum značky byl naopak NIŽŠÍ než u appOsc (3–40 proti 24 ps) a TDC byl kalibrovaný s koherencí OK.
+- **Příčina:** non-APP_OSC natlačí na doménu 100 MHz TDC, FIFO oken kanálu B (`u_sb/fh`) i SPI PHY (`u_phy/cs`). Rezerva
+  nejlepšího seedu +0,141 ns je proti nejistotě křemíku příliš těsná na cestách, které brána nehodnotí jako celek: během SPI
+  transakce (CS, ~50 % značek) se hrana občas přepočítá → párování A↔B chytne hranu o ~10 period dál. Sweep 8 seedů: 3 záporné,
+  medián +0,045 ns → varianta se zavírá špatně, není to výkyv.
+- **Oprava:** APP_OSC ve flash ponechán (odsouvá aplikaci/SPI z 100 MHz, uvolní cesty TDC/okna/PHY) za cenu ~3× vyššího šumu
+  značky. Nižší šum bez rozbití A→B vyžaduje zmenšit logiku na 100 MHz doméně – budoucí práce, ne výměna bitstreamu.
+- **Pravidlo:** brána časování (worst setup slack s nejistotou) je NUTNÁ, ne POSTAČUJÍCÍ. Těsně kladná rezerva (< ~0,3 ns)
+  na cestách měřicí logiky se na křemíku projeví jako občasná funkční chyba (miscount, rozbité párování), ne jako čitelné
+  selhání. Nový bitstream s těsnou rezervou OVĚŘ na desce měřením té funkce, nejen branou. (Táž třída jako L-0138/L-0152:
+  STA prošla, křemík selhal.)
+- **Commit:** (necommitováno; zkušební bitstreamy v ab_test/, NEnahrávat do flash)
+- **Stav:** ✅ (uzavřeno měřením, APP_OSC zůstává)

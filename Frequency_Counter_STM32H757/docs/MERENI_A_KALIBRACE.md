@@ -1258,3 +1258,269 @@ Zapojení: CLK_2 → A, CLK_4 → B (+1 m RG174).
 - **Rozpočet chyby jednorázového intervalu A–B se strmými hranami (CM7 v0.45.7, FPGA 0x050A):** náhodně ~50 ps na řetězec
   + ~80 ps společně (hrana taktu); systematicky e_c(φ) 300–650 ps š–š (závisí na kalibraci TDC i cestě signálu); přeslech
   B → A ±330 ps podle vzájemné fáze. Se slabou / pomalou hranou e_c(φ) roste (OCXO ±2 ns).
+
+### 2026-11-07 22:52 – 23:17 — t378: odezva kanálu A na JEDNU hranu signálu B (přeslech mezi řetězci, CM7 v0.45.8)
+
+A = CLK_2 10 MHz + 0,041 Hz (přesná přímka), B = CLK_4 na nízkém kmitočtu, takže hrany B jsou daleko od sebe. Odchylka značek
+A (minus e_A(φ)) podle času od poslední náběžné hrany B (z přímky značek B). `noc_logs/_rozbor/t378.py`, profily po 5 ns
+v `t378/<etapa>_odezva.txt`. 8 min na etapu, 19 250 značek A.
+
+| B | perioda | profil po 10 ns od náběžné hrany B [ps] (průměr profilu = 0) |
+|---|---|---|
+| 1 MHz | 1000 ns | −13 **+134 +343 +282 +83** −15 +51 **+193 +179 +72** −19 … (~−20 až 500 ns) … +28 **+111 +274 +323 +110** −47 … |
+| 2 MHz | 500 ns | −40 **+122 +318 +258 +64** −36 +23 **+174 +170 +48** … (~−50) … +67 **+261 +302 +70** … |
+| 5 MHz | 200 ns | −94 +47 **+230 +171** −26 −137 −77 +78 +64 −63 −76 −19 **+193 +247** +19 −118 … (překryv) |
+
+- **Po náběžné hraně B je značka A pozdě**: hrb ~+360 ps (proti klidu) s vrcholem 20–30 ns po hraně, druhý ~+210 ps v 70–90 ns,
+  po ~100 ns klid. **Po sestupné hraně jen první hrb** (~+350 ps v 20–35 ns). Žádné záporné zákmity – jen zpoždění.
+- Výklad (HYPOTÉZA): první hrb = přepnutí řetězce B a jeho 268 vzorkovacích FF (je u obou hran), druhý = zpracování
+  ČASOVANÉ hrany (dekodér, tabulka, součty v DSP – jen náběžná). Proudový impulz se přes napájení FPGA projeví jako pokles
+  napětí se zpožděním ~25 ns a zpomalí řetězec A nebo rozvod taktu. Ověření: osciloskop na napájení jádra Tang Nano při
+  signálu na B; t379 (vzdálenost řetězců na čipu).
+- **Důsledek i pro měření kmitočtu:** běží-li na A a B různé kmitočty, přeslech moduluje značky A rozdílovým kmitočtem
+  (spur / zvýšená podlaha ADEV kanálu A, když je na B jiný signál) – patří do #367.
+- Rozložení na čipu dnes: řetězy A R26, B R27 (sousední řádky, `pins.cst`). Zkušební bitstreamy s B v R9 / R20 jsou
+  sestavené (časování i rozmístění PASS), ale nahrát je nešlo: JTAG kabel Tang Nano není připojen k PC → `t379_fpga.py`.
+
+### 2026-11-07 23:17 – 2026-11-08 05:15 — t377: korekce `fpga lin` při STÁLÉM odstupu A–B, 6 h (CM7 v0.45.8)
+
+Generátor nastaven JEDNOU (CLK_2 → A i CLK_4 → B 10 MHz + 0,041 Hz, B o 1 m delší koax) a celou noc se nepřeprogramoval,
+takže odstup výstupů zůstal stejný. Každou hodinu `fpga lin cal 300 keep` (nová tabulka při témže odstupu), pak 5× [5 min
+`fpga ab` korekce VYP, 5 min ZAP]. 7 cyklů, 32 bloků VYP + 32 ZAP po ~11 640 intervalech. `noc_logs/_rozbor/t377.py`,
+souhrn `t377/souhrn.txt`. Teplota desky 29,3 → 28,4 °C, OCXO 47,4 → 46,8 °C, modul FPGA ~37,2 °C; kalibrace TDC během noci
+žádná (stále č. 2).
+
+| | korekce VYP | korekce ZAP |
+|---|---|---|
+| střední interval A→B | 0,275 ns (0,258 … 0,293, sd 10,5 ps) | 0,294 ns (0,286 … 0,306, sd 5,2 ps) |
+| σ intervalu | **104,0 ps** (98,4 … 108,5) | **94,4 ps** (86,9 … 100,3) |
+| rozkmit středu podle fáze startu (16 dílů) | **203 ps** (197 … 209) | **22 ps** (16 … 30) |
+
+- **Korekce funguje, pokud se nezmění zapojení ani nastavení generátoru:** rozkmit podle fáze klesl ~9×. Odstraněná část
+  σ je √(104,0² − 94,4²) = 44 ps; zbylých ~94 ps je náhodný šum značek (šum uvnitř dílu tabulky 98–112 ps na kanál).
+- **Chyba podle fáze je stabilní v čase:** profil bez korekce (16 dílů) se během 6 h liší od průměru nejvýš o **6 ps**
+  (C01 +111 +71 +35 +80 … proti C07 +114 +70 +32 +80 …), při změně teploty desky o 0,9 °C. Hodinová rekalibrace tabulky
+  tedy není nutná; tabulka z C01 by platila celou noc (tabulky C01..C07: A 367–397 ps, B 433–459 ps špička-špička).
+- Se zapnutou korekcí zůstává ve zbytku malý systematický člen: nejvyšší díl fáze startu je vždy +11 … +19 ps a rozkmit
+  během hodiny po kalibraci mírně roste (C06 23 → 30 ps). Je to pod šumem; HYPOTÉZA: lineární interpolace tabulky
+  (64 dílů po 156 ps) nezachytí skok chyby u přechodu fáze taktu 16383 → 0.
+- σ v čase kolísá s periodou ~20 min o ±4 ps (VYP 108/100/107/102/107, ZAP 99/91/100/90/97), nezávisle na čísle bloku –
+  příčina neznámá (TODO, kandidáti: smyčka GPSDO / dither DAC, teplotní regulace OCXO).
+- Střed se s korekcí posune o +19 ps (HYPOTÉZA: rozdíl středních hodnot tabulek A a B váhovaných rozložením fází).
+  Tabulka odstraňuje jen závislost na fázi, absolutní nulu intervalu neurčuje.
+
+### 2026-11-08 05:16 – 05:52 — t380: korekce `fpga lin` při VELKÉM odstupu A–B (CM7 v0.45.8)
+
+Jako t377, ale výstup CLK4 přepsán tak, aby A a B byly v různé fázi taktu: interval A→B 83,14 ns (mod 10 ns = 3,14 ns,
+hned první pokus). `fpga lin cal 300 keep` (A 267 ps, B 445 ps špička-špička), pak 3× [5 min VYP, 5 min ZAP], ~11 640
+intervalů na blok. `noc_logs/_rozbor/t380.py`, `t380/souhrn.txt`.
+
+| | korekce VYP | korekce ZAP |
+|---|---|---|
+| σ intervalu | **236,7 ps** (234 … 240) | **162,5 ps** (155 … 168) |
+| rozkmit středu podle fáze startu | **558 ps** | **35 ps** (29 … 39) |
+| střed | 83,152 ns | 83,131 ns |
+
+- **Při odstupu mimo stejnou fázi taktu je chyba podle fáze ~2,7× větší než v t377** (558 proti 203 ps): chyby kanálů
+  A a B se už nevyruší, protože každý kanál je v jiné části své tabulky. Korekce ji stáhne ~16× a odstraní
+  √(236,7² − 162,5²) = **172 ps** z σ.
+- **Zbytkový náhodný šum je ale 162 ps proti 94 ps v t377.** Rozdíl √(162,5² − 94,4²) = 132 ps připadá na to, že značky
+  A a B leží v RŮZNÝCH periodách taktu (83 ns = 8 period): šum hrany taktu, který se v t377 (obě značky v téže periodě)
+  vyrušil, se tu sčítá. Sedí to s dřívějším odhadem společného šumu ~80 ps na značku (√2·80 ≈ 113 ps) –
+  **šum hodin FPGA (nebo jejich rozvodu/napájení) je dnes největší zdroj chyby intervalu delšího než jedna perioda.**
+  ⚠️ **Vyvráceno 2026-11-08** (záznam „osciloskop: hodiny 100 MHz…“ níže): přechod přes sousední hranu taktu přidá ≤ 31 ps,
+  rozhoduje čas mezi značkami (přeslech t378 / napájení), ne počet hran taktu.
+  HYPOTÉZA, ověření: osciloskop na CLK0 (Si5356 → FPGA) a na napájení jádra Tang Nano; měřit totéž s odstupem
+  1, 2, 4, 8 period (jestli zbytek roste s délkou intervalu = fázový šum, nebo je konstantní = jitter hrany).
+- Interval je 83 ns, ne ~3 ns: `fpga ab` párovala hranu A s hranou B o 8 period později – pozůstatek po přepisu CLK4
+  (TODO: zkontrolovat pravidlo párování při odstupu blízko celé periody).
+
+### 2026-11-08 08:45 – 12:02 — osciloskop: hodiny 100 MHz a napájení modulu Tang Nano + rozbor t377 „přes hranu taktu“ (STATUS #368, #369)
+
+Snímky `Frequency_Counter_FPGA_Module/Measurement/` (RTM3004, aktivní sonda RT-ZS10, zem pružinkou), deska po power-cyklu,
+zátěž jako v t380 nebyla nastavena. K tomu nový rozbor už uložených dat (t377 bloky, t374/t376 surové značky).
+
+**Hodiny 100 MHz (Si5356 CLK0 → R66 33 Ω → pin 35 modulu):**
+
+| místo | tr 10–90 % | schod na hraně | poznámka |
+|---|---|---|---|
+| výstup Si5356 (6. 11., `Si5356-out-100MHz`) | 0,66 ns | žádný | čistá hrana, 4 GV/s |
+| R66 na straně U9 (`R66_CLK100MHz-*`) | 1,76 – 1,95 ns | **2,3 V po ~0,8 ns** | dělič R_out + R66 proti Z0 do návratu odrazu |
+| pin 35 na hlavičce modulu (`FPGA_PIN35_CLK100MHz-*`) | 2,0 – 2,7 ns | **1,55 – 1,65 V po ~0,4 ns** (sestupná ~1,7 V) | Vpp 3,3–3,4 V, střída 47,6–48,6 % |
+
+- Výklad (HYPOTÉZA): vedení má ~0,4 ns jedním směrem. Hlavička modulu je UPROSTŘED vedení (k pouzdru QFN vede ještě spoj
+  modulu ~0,2 ns), takže schod 1,6 V je dopadající vlna před návratem odrazu od vstupu FPGA. Na vývodu čipu (otevřený konec)
+  se vlna zdvojí → hrana bez schodu. Z výšek schodů Z0 ~75 Ω, R_out ~45 Ω (předpoklad: R66 měřen na straně U9). Ověření:
+  hrot přímo na vývod 35 pouzdra QFN.
+- Statistika 3 101 průběhů (6. 11., `FPGA_Ref_100MHz_clk`): σ periody ~22 ps = mez osciloskopu (svislý šum / strmost),
+  skutečný jitter je menší.
+- Snímky „Jitter_*“ jsou spouštěné na téže hraně (ne hrana o 80 ns dál). Šířka obálky na hranách odpovídá svislému šumu
+  (~0,15 V š–š / ~1,5 V/ns ≈ 100 ps š–š), jitter z nich vyčíst nejde.
+
+**t377 znovu: intervaly přes SOUSEDNÍ hranu taktu** (odstup 0,28 ns, start v posledních ~3 % periody; 32 + 32 bloků, n ~280–390 / blok):
+
+| | ve stejné periodě | přes hranu taktu |
+|---|---|---|
+| korekce VYP: σ | 104 ps | **92 ps** (podmnožina fází s menší chybou) |
+| korekce ZAP: σ | 94 ps | **99 ps** |
+| korekce VYP / ZAP: střed | 0,274 / 0,288 ns | **0,314 / 0,335 ns (+40 / +47 ps)** |
+
+- **Přechod přes hranu taktu přidá nejvýš √(99² − 94²) ≈ 31 ps → nezávislý bílý šum hrany taktu ≤ ~22 ps.** Hypotéza
+  „~80 ps na hranu taktu“ (t366, t376, t380, STATUS #368) tím **NEPLATÍ**. Kdyby každá hrana měla 80 ps, intervaly přes hranu
+  by měly √(94² + 113²) ≈ 147 ps.
+- **Nová systematická chyba:** interval přes hranu taktu má střed o **+40 až +47 ps** výš (s korekcí i bez ní). Sedí s TODO
+  „zbytek +15 ps v nejvyšším dílu fáze“ (t377). Chyba je soustředěná u přechodu fáze 16383 → 0 (hranice jemného/hrubého času nebo
+  konce kalibrační tabulky TDC). TODO #369.
+- Co tedy zvyšuje šum delších intervalů (t366: do 1 periody 30–89 ps, od 1,6 periody 107–147 ps; t380 83 ns: 163 ps)?
+  **Čas mezi značkami, ne počet hran taktu.** Kandidát: přeslech z t378. Hrana jednoho kanálu zpozdí značky druhého o
+  +360 ps za 20–30 ns a o +210 ps za 70–90 ns. V t380 leží značka B 83 ns po A (2. hrb) a značka A 17 ns po předchozí hraně B
+  (náběh 1. hrbu). Velikost hrbu závisí na datech (počet překlopených FF) → náhodná složka. V t366 má každý delší interval
+  aspoň jednu značku v hrbu, krátké (< 10 ns) ani jednu. Totéž by vysvětlil širokopásmový šum napájení jádra s korelační
+  dobou ~10 ns. Rozhodne mapa σ podle odstupu (TODO #369, t381).
+
+**Napájení modulu (AC, hrot na pinu modulu, zem pružinkou):**
+
+| větev | 50 Hz š–š | další | VF šum |
+|---|---|---|---|
+| 1,2 V jádro | 18 – 23 mV (HR 22,8 mV) | – | peak detect 69 mV š–š, σ 13 – 14,5 mV (vč. 50 Hz) |
+| 3,3 V (pin modulu, 3,40 V DC) | ~40 mV | pila ~20 kHz ~15 mV š–š (regulátor v PFM?) | σ 3 – 4 mV, ojedinělý zákmit ~20 mV |
+| 5 V (pin 31) | ~35 mV | čáry 10 / 30 / 100 MHz ve FFT | σ 9 – 10 mV |
+
+- **50 Hz NA ZPOŽDĚNÍ TDC NEPŮSOBÍ** (`scratchpad hum50.py` nad t374 A_sam / B_sam / AB, t376 Boff: značky jednoho kanálu proti
+  koherentnímu generátoru po 25 ms, fs 40 Hz → 50/150 Hz se zrcadlí na 10 Hz, 100 Hz na 20 Hz). Čára na 10 Hz ≤ 4,5 ps
+  amplitudy při pozadí 1,3 ps, na 20 Hz ≤ 5,5 ps. Skutečných 20 mV na jádře by podle odhadu citlivosti zpoždění CMOS
+  (~0,08 %/mV, HYPOTÉZA) dalo desítky ps. 50 Hz na všech třech větvích včetně 1,2 V za regulátorem je proto nejspíš zemní smyčka
+  osciloskop ↔ deska. Ověření: nulové měření (hrot na GND u pružinky).
+- VF šum 1,2 V (σ ~13 mV) je na 10 mV/dílek s děličem sondy 10:1 blízko šumu osciloskopu – bez nulového měření se nedá
+  oddělit. Rozhodující snímek z plánu (1,2 V spouštěné hranou B, průměrování) zatím chybí.
+- Vedlejší: ve stejných datech jsou pomalé složky 0,010–0,025 Hz (20–45 ps, kanál B víc) a liché harmonické rozmítání fáze
+  0,041 Hz (0,45 / 0,53 / 0,62 / 0,86 Hz, ~12 ps = jemná struktura e(φ) pod rozlišením 64 dílů). Na intervaly A–B vliv nemají.
+
+### 2026-11-08 11:18 – 12:01 — t381: šum intervalu A→B podle odstupu A–B 0–100 ns (CM7 v0.45.8)
+
+CLK_2 → A, CLK_4 → B (+1 m RG174), oba 10 MHz + 0,041 Hz, korekce `fpga lin` vypnuta. 30× přepis CLK4 (každý = jiný odstup,
+tu vyšel krok ~1 ns a cyklus ~20 ns), pokaždé 75 s `fpga ab` (~3 040 intervalů). σ uvnitř dílu fáze = medián σ 16 dílů fáze
+startu (bez chyby podle fáze). `noc_logs/_rozbor/t381.py`, `t381/souhrn.txt`.
+
+| odstup d (B po A; A je 100 − d po B) | 8–10 ns | 11–13 ns | 28–33 ns | 48–53 ns | 58 ns | 68–73 ns | 88–94 ns |
+|---|---|---|---|---|---|---|---|
+| σ uvnitř dílu fáze | 100 – 117 | 124 – 143 | **149 – 177** | 133 – 165 | 162 | **154 – 186** | 98 – 143 (většinou ~105) |
+| rozkmit podle fáze (š–š) | 216 – 357 | 305 – 634 | 337 – 838 | 380 – 449 | 379 | 356 – 861 | 257 – 422 |
+
+- **Šum závisí na odstupu A–B se dvěma maximy (~30 a ~70 ns) a minimy u ~10 a ~90 ns**, souměrně podle d ↔ 100 − d. Sedí to na
+  hrby přeslechu z t378 (hrana jednoho kanálu zpozdí značky druhého za 20–30 a 70–90 ns). Konstantní šum hrany taktu by dal
+  plochý průběh → **potvrzeno: šum intervalů nad ~10 ns dělá přeslech mezi kanály uvnitř FPGA** (STATUS #369 bod 1 hotov).
+- Nejlépe ~100 ps (≈ t377 ve stejné periodě). Nejhůř 186 ps a systematická chyba podle fáze až 861 ps (d ≈ 73 ns).
+- Plochých ~135–145 ps u d ≈ 50 ns: obě značky jsou mezi hrby, ale ne v klidu (profil t378 tam +51 / +83 ps).
+- Důsledky: pro jednorázový interval je přesnost dnes funkcí vzájemné fáze signálů A a B. Náprava je ve FPGA (t379 rozmístění,
+  aktivita po zásahu nezávislá na datech). Ze strany STM jen omezení spínání nepoužitého kanálu (t383, předdělička).
+
+### 2026-11-08 12:02 – 12:20 — t382: šum značky jednoho kanálu při stojící fázi – značky jsou NÁHODNĚ OPOŽDĚNÉ (CM7 v0.45.9)
+
+Jen kanál A (CLK_2), CLK4/5 vypnut. INT0..2 = `gen 2 10000000` (celočíselný dělič, fáze proti taktu stojí, 3 různé fáze),
+FRAC = +0,041 Hz. Surové značky `fpga ev raw` po 25 ms proti přímce generátoru. `noc_logs/_rozbor/t382.py`, rozklad
+`scratchpad int_levels.py`.
+
+| etapa | σ celkem | rozložení značek (odchylka od nejčastější hodnoty, podíl) |
+|---|---|---|
+| INT0 | 98,9 ps | 0 (63 %), +110 (19 %), +214 (10 %), +328 (6 %), +162 (1,4 %) |
+| INT1 | 107,4 ps | 0 (45 %), +85 (30 %), +183 (13 %), +328 (11 %), +265 (1,7 %) |
+| INT2 | 72,9 ps | 0 (73 %), +168 (12 %), +69 (3,7 %), +106 (3,2 %), −53 (2,3 %), +256 (2,2 %), −126 (1,9 %) |
+| FRAC | 126,4 ps | σ uvnitř dílu fáze 93 ps |
+
+- **Při stojící fázi dává značka jen několik diskrétních hodnot (kódy TDC ~100 ps od sebe), každou s rozptylem < 6 ps.** Šum
+  ~100 ps tedy není gaussovský šum hrany: značka je buď „čistá“, nebo **opožděná o 85–330 ps** (ojediněle dřívější).
+  Sousední vzorky nezávislé (lag-1 ≈ 0), bez závislosti na SPI transakci (záznamy při CS ±2 ps), bez signálu na B.
+- Generátor (zlomkový MultiSynth) to není – celočíselný dělič má tentýž obraz.
+- HYPOTÉZA: asynchronní spínání uvnitř FPGA. Nahraný bitstream je zkušební varianta **APP_OSC** (FPGA DIAG „koherence
+  neplatné“): doména aplikace a SPI běží z vnitřního oscilátoru ~10 MHz asynchronně ke 100 MHz (`top_v3.v:61`), takže její
+  proudové impulzy padají na hrany v náhodné fázi (hrb zpoždění ~30 ns po impulzu, t378). Ověření: t384 (stejné etapy
+  s řádným bitstreamem bez APP_OSC, jen do SRAM).
+
+### 2026-11-08 12:41 – 12:58 — t383: předdělička nepoužitého kanálu B proti přeslechu (CM7 v0.45.9) → ochrana v0.45.10
+
+A = CLK_2 10 MHz + 0,041 Hz, B = CLK_4 10 MHz + 0,113 Hz (vzájemná fáze se točí = nesouvisející signál). Surové značky A,
+σ uvnitř dílu fáze (64 dílů). `noc_logs/_rozbor/t383.py`, `t383/souhrn.txt`.
+
+| předdělička B | σ uvnitř dílu | přebytek nad B vypnuto (kvadraticky) |
+|---|---|---|
+| 1 (dosud vždy u 10 MHz) | 211 ps | 189 ps |
+| 4 | 143 ps | 108 ps |
+| **16** | **128 ps** | **87 ps** |
+| B vypnuto | 94 ps | – |
+
+- Předdělička krmí řetěz TDC až signálem c[p−1] → řetěz B spíná P× méně často a přeslech na A klesne. Zbytek (87 ps) dělá
+  vstupní čítač na plném kmitočtu (c[0]) a sonda /16 v doméně 100 MHz.
+- **v0.45.10 – ochrana proti přeslechu (`fpga presc guard on|off`, výchozí ZAP):** v automatu dostane kanál, který se právě
+  neměří (≠ zvolený kanál UI), P = 16, když jeho sonda ukazuje ≥ 1 MHz (vypnutí pod 0,5 MHz). Neuplatní se při událostech
+  (`fpga ev`), párování (`fpga ab/pw`), `fpga lin cal` a sběru kalibrace TDC; `tdc cal pin` ji na 30 s pozdrží. Ověřeno
+  na desce: P_B 1/16 při měření A, při `fpga ev on` 1/1, `guard off` 1/1, `fpga v3` řádek „ochrana proti přeslechu“.
+  Cena: nečinný kanál měří s P 16 (méně hran v okně, ⬜ okno DVOJKANÁL a web ukazují B s menším rozlišením).
+
+### 2026-11-08 13:05 – 13:27 — t385: přínos ochrany proti přeslechu pro kmitočet kanálu A (CM7 v0.45.10)
+
+A = CLK_2 10 MHz + 0,041 Hz, B = CLK_4 10 MHz + 0,113 Hz. Bloky 5 min střídavě `fpga presc guard on` / `off`, kmitočet A
+z `sdramlog dump` (brána 249 ms; dump vrátil jen posledních 200 měření = 50 s na blok). 2 ze 3 cyklů (3. přerušen kvůli
+restartu PC). `noc_logs/_rozbor/t385.py`, `t385/souhrn.txt`.
+
+| | ochrana ZAP (P_B 16) | ochrana VYP (P_B 1) |
+|---|---|---|
+| ADEV(0,25 s) | 4,51 / 5,19 ·10⁻¹⁰ | 5,61 / 6,27 ·10⁻¹⁰ |
+| ADEV(1 s) | 2,21 / 2,24 ·10⁻¹⁰ | 2,64 / 2,61 ·10⁻¹⁰ |
+| σ kmitočtu | 4,20 / 4,96 mHz | 5,42 / 5,97 mHz |
+
+- **Ochrana zlepší ADEV kanálu A o ~17–20 % (0,25 s) a ~15 % (1 s)**, když je na druhém kanálu nesouvisející signál; obě
+  dvojice bloků shodně. Malý vzorek (200 měření na blok) – opakovat s delším výpisem (`sdramlog dump` vrací nejvýš 200?).
+
+### 2026-11-08 13:42 – 13:56 — t384: APP_OSC je hlavní zdroj náhodných zpoždění značek (CM7 v0.45.10)
+
+Odpověď na t382 (při stojící fázi je značka opožděna o diskrétní 85–330 ps). Řádný bitstream **FW 0x0508 bez APP_OSC**
+(doména aplikace/SPI z 10 MHz, koherentní se 100 MHz) nahrán do **SRAM** FPGA (`programmer_cli --run 2`, flash FPGA
+nedotčena), změřeny značky kanálu A (B vypnut), pak rekonfigurace z flash (= návrat k APP_OSC). `noc_logs/_rozbor/t384.py`,
+offline rozbor `scratchpad t384_ofs.py` (per-blokový fit, oříznuté glitche z rozjezdu generátoru).
+
+| etapa | FW 0x0508 BEZ APP_OSC (SRAM) | flash APP_OSC (t382) |
+|---|---|---|
+| stojící fáze σ (3 nastavení) | **30 / 30 / 48 ps** | 99 / 107 / 73 ps |
+| žebřík zpoždění (stojící fáze) | do +120 ps | **do +320 ps** |
+| točící se fáze (FRAC) σ | 115 ps | 126 ps |
+
+- **APP_OSC zhruba ZTROJNÁSOBUJE šum značky při stojící fázi** (30–48 proti 73–107 ps) a prodlužuje žebřík diskrétních
+  zpoždění z ±120 na +320 ps. Potvrzeno: doména aplikace z vnitřního oscilátoru (asynchronní ke 100 MHz) je hlavní zdroj
+  náhodných zpoždění z t382. Bez ní je značka z velké části „čistá“.
+- Šum točící se fáze klesl jen o ~9 % (115 proti 126 ps), protože ten je ovládán chybou podle fáze e(φ) (žebřík 300–650 ps
+  přejetý přes 64 dílů), ne diskrétními zpožděními.
+- ⚠️ **Deska má dnes ve flash FPGA zkušební APP_OSC bitstream** (`TEST_FW_0x050A_v3_appOscS6`, FPGA DIAG „koherence 100/10 MHz
+  neplatné“). Řádná cesta je bez APP_OSC. **Doporučení: sestavit a do flash FPGA nahrát řádný bitstream 0x050A BEZ APP_OSC**
+  (dnes vydán jen 0x0508 b3fbc32; 0x0509/0x050A existují jen jako appOsc zkušební) a znovu změřit σ intervalu A→B.
+- Technika: každé spuštění `programmer_cli` nechá viset proces držící FTDI kanál → další spuštění „Cable failed to open via
+  the channel“. Před každým během programátor zabít (`Stop-Process programmer_cli`); rekonfigurace z flash `--run 1` vrací
+  desku do výchozího stavu bez power-cyklu.
+
+### 2026-11-08 14:00 – 14:56 — t386/t387: řádný bitstream BEZ APP_OSC – nižší šum značky, ale ROZBITÝ interval A→B (CM7 v0.45.10)
+
+Na t384 (0x0508 bez APP_OSC do SRAM snížil šum značky) navázáno sestavením **řádného 0x050A bez APP_OSC** (`gw_sh
+v3/build_v3.tcl`, bez `define APP_OSC`; brána `fpga_release.py --v3` PASS: setup +0,042 ns i s nejistotou 0,9 ns, CLS 80 %,
+rozmístění TDC PASS, identita 60747e3). Seedový sweep `pnr_seeds run base 8`: **non-APP_OSC se zavírá špatně** – 3 z 8 seedů
+záporná rezerva, medián +0,045 ns, nejlepší **@6 +0,141 ns**; systematická kritická cesta `u_tdca/lut_lut_0_0_s` (vyhledání
+v kalibrační tabulce TDC) a `u_sb/fh` (FIFO okna kanálu B). Oba kladné seedy nahrány do SRAM a změřeny (t386 = seed +0,042,
+t387 = @6 +0,141).
+
+| metrika | flash APP_OSC | t386 (+0,042) | t387 @6 (+0,141) |
+|---|---|---|---|
+| šum značky uvnitř dílu (INT, stojící fáze) | ~24 ps | 7,8 / 29 / 25 ps | **40 / 3,4 / 20 ps** |
+| šum značky FRAC (točící se fáze) | 93 ps | 150 ps | 102 ps |
+| interval A→B, σ (6 odstupů) | **98–186 ps** | 22–56 **ns** | 3,7–37 **ns** |
+| koherence 100/10 MHz (DIAG) | neplatné | OK | OK |
+| TDC kalibrace | OK | OK | OK (největší bin A 292 ps, B 219 ps) |
+
+- **Non-APP_OSC sníží šum značky (koherence obnovena, stojící fáze 3–40 ps proti 24 ps), ALE ROZBIJE interval A→B:**
+  σ v desítkách ns, odlehlé hodnoty skoky o ~10 period taktu (ab2: interval 77 ns, max 177 ns). Vzniká, i když je TDC
+  kalibrovaný a bez obřího binu. **Platí pro OBA kladné seedy** (0,042 i 0,141 ns) → není to výkyv seedu.
+- Příčina: non-APP_OSC natlačí na doménu 100 MHz TDC, FIFO oken i SPI PHY. Půlka značek padá do SPI transakce (CS); na
+  přetížené doméně se hrana během SPI aktivity občas přepočítá → párování A↔B chytne hranu o ~10 period dál. APP_OSC tomu
+  předchází tím, že doménu aplikace/SPI odsune na vnitřní oscilátor – za cenu ~3× vyššího šumu značky.
+- **VERDIKT: non-APP_OSC 0x050A NENÍ použitelná náhrada** – hlavní funkce přístroje (interval A→B) se rozbije. APP_OSC ve
+  flash zůstává. Nižší šum značky bez rozbití A→B by vyžadoval zmenšit logiku na 100 MHz doméně (rezerva pro cesty TDC / okna /
+  PHY) = větší zásah do FPGA (budoucí práce). Vydané zkušební bitstreamy: `ab_test/FW_0x050A_v3_20261108-1301_60747e3.fs`
+  a `ab_test/TEST_FW_0x050A_v3_base_noAppOsc_s6_20261108-1332.fs` (NEnahrávat do flash FPGA).
