@@ -147,8 +147,12 @@ M = [
     ('lin: dil z faze x misto t', 'const uint32_t k = (uint32_t)(((t_u & 0x3FFFu) * FPGA_V3_LIN_NB) >> 14);',
      'const uint32_t k = (uint32_t)(((x & 0x3FFFu) * FPGA_V3_LIN_NB) >> 14);'),
     ('lin: tabulka bez odecteni prumeru', 'double v = m[k] - mu;', 'double v = m[k];'),
-    ('lin: interpolace bez posunu na stred', 'const uint32_t v = (uint32_t)(t_u & 0x3FFFu) + 16384u - w / 2u;',
-     'const uint32_t v = (uint32_t)(t_u & 0x3FFFu) + 16384u;'),
+    ('lin: interpolace bez posunu na stred', 'const int32_t p = (int32_t)(t_u & 0x3FFFu) - (int32_t)(w / 2u);',
+     'const int32_t p = (int32_t)(t_u & 0x3FFFu);'),
+    ('lin: pod stredem dilu 0 drzet misto extrapolace', 'const int32_t f = p - i0 * (int32_t)w;',
+     'const int32_t f = (p < 0) ? 0 : p - i0 * (int32_t)w;'),
+    ('lin: kruhove pres hranici periody (pred v0.45.9)', 'const int32_t a = tab[i0], b = tab[i0 + 1];',
+     'const int32_t a = (p < 0) ? tab[FPGA_V3_LIN_NB - 1] : tab[i0], b = (p < 0) ? tab[0] : tab[i0 + 1];'),
     ('lin: bez kontroly nejmene v dilu', 'if (L->N < 2u || o.nmin < nmin_req || o.nmin == 0u)', 'if (L->N < 2u || o.nmin == 0u)'),
 ]
 # prekladac: CC (napr. "zig cc"), jinak cc; na Windows spustitelny soubor s .exe

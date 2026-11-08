@@ -720,6 +720,8 @@ typedef struct {
     uint8_t  presc[2], pr_mode[2];     /* v0.38.0: PRESC A/B (bit7 ceka), volba (0xFF auto, jinak pevne log2 P) */
     uint16_t probe[2];                 /* sonda /16 za 1 ms */
     uint32_t pr_sw[2];                 /* pocet prepnuti P */
+    uint8_t  pr_guard;                 /* v0.45.10: ochrana proti presluchu zapnuta (P 16 na nemerenem kanalu) */
+    uint32_t pr_guard_n[2];            /* kolikrat ochrana zvedla P kanalu */
     uint8_t  deep_st, deep_wsel;       /* v0.39.0: PSRAM (FPGA_V3_DS_*, latence zapisu) */
     uint32_t deep_n;
     int8_t   pps_d;                    /* jemny - hruby [takty] */
@@ -794,6 +796,11 @@ void fpga_freq_v3_seg_reset(void);
 /* v0.38.0 (FW 0x0503): predelicka kanalu ch (0 A, 1 B): mode 0xFF = automaticky podle sondy, 0..4 = pevne log2 P.
  * @return 1 ok, 0 FPGA bez CAPS bit18 (volba se ulozi, uplatni se, az ji FPGA umi), -1 spatny parametr */
 int  fpga_freq_presc(uint8_t ch, uint8_t mode);
+/* v0.45.10 (STATUS #369, t383): ochrana proti presluchu -- v automatu P = 16 na kanalu, ktery se prave nemeri (od 1 MHz,
+ * ne pri udalostech / parovani / kalibracich). Vychozi zapnuto, nepersistuje se. */
+void fpga_freq_presc_guard(uint8_t on);
+/* Pozdrzi ochranu na ms (kalibrace TDC z pinu potrebuje P = 1 na obou kanalech). */
+void fpga_freq_presc_guard_hold(uint32_t ms);
 /** Emulator FPGA v3 (`fpgasim v3 on <Hz> [Hz_B] [faze_B_ns] [uzka]`): ramce 1024 B ze zaznamu segmentu (fpga_v3_emu), ACK
  *  zpracovany az po slozeni dalsiho ramce jako u RTL; 1PPS z emulatoru v2 (smycka GPSDO). ph_b_s > 0 = prvni hrana B
  *  o tolik po prvni hrane A (jednorazove deje). on = 0 vypne. */

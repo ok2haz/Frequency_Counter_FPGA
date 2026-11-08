@@ -819,15 +819,32 @@ int main(void)
         (void)fpga_v3_lin_table(&L2, 100u, tab2, &lr2);
         printf("  lin: po korekci rozkmit %.0f (pred %.0f) jednotek\n", lr2.pp, lr.pp);
         CHECK(lr2.pp < 120.0, "lin po korekci rozkmit %.0f", lr2.pp);
-        /* interpolace: rampa 100*k, stred dilu 5 = 500, mezi 5 a 6 = 550, mezi 63 a 0 (faze 0) = 3150 */
+        /* interpolace: rampa 100*k, stred dilu 5 = 500, mezi 5 a 6 = 550. v0.45.9: na hranici periody NE kruhove (skok 6300
+         * mezi dily 63 a 0 by dal 3150) -- faze 0 = extrapolace z dilu 0,1 = -50, faze 16383 = z dilu 62,63 = 6350 */
         int16_t rp[FPGA_V3_LIN_NB];
         for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) rp[k] = (int16_t)(100 * (int)k);
         const int32_t c5 = fpga_v3_lin_corr(rp, 7u * 16384u + 5u * 256u + 128u);
         const int32_t c55 = fpga_v3_lin_corr(rp, 5u * 256u + 256u);
         const int32_t c0 = fpga_v3_lin_corr(rp, 3u * 16384u);
         const int32_t cn = fpga_v3_lin_corr(rp, 63u * 256u + 128u);
-        CHECK(c5 == 500 && c55 == 550 && c0 == 3150 && cn == 6300, "lin interpolace %ld %ld %ld %ld",
-              (long)c5, (long)c55, (long)c0, (long)cn);
+        const int32_t ce = fpga_v3_lin_corr(rp, 5u * 16384u + 16383u);
+        const int32_t c1 = fpga_v3_lin_corr(rp, 2u * 16384u + 64u);
+        CHECK(c5 == 500 && c55 == 550 && c0 == -50 && cn == 6300 && ce == 6350 && c1 == -25,
+              "lin interpolace %ld %ld %ld %ld %ld %ld", (long)c5, (long)c55, (long)c0, (long)cn, (long)ce, (long)c1);
+        /* v0.45.9: pila e = 160*(faze - 0,5) jednotek (skok 160 = ~98 ps na hranici periody, jako t374 kanal B); tabulka =
+         * prumery dilu. Korekce v krajnich puldilech musi sedet (kruhova interpolace tam chybovala az o 80 jednotek). */
+        {
+            int16_t sw[FPGA_V3_LIN_NB];
+            for (uint32_t k = 0; k < FPGA_V3_LIN_NB; k++) sw[k] = (int16_t)lround(160.0 * (((double)k + 0.5) / FPGA_V3_LIN_NB - 0.5));
+            double wmax = 0.0;
+            for (uint32_t q = 0; q < 16384u; q++) {
+                const double e = 160.0 * ((double)q / 16384.0 - 0.5);
+                const double d = fabs((double)fpga_v3_lin_corr(sw, 9u * 16384u + q) - e);
+                if (d > wmax) wmax = d;
+            }
+            printf("  lin: pila se skokem 160 na hranici periody -> nejvetsi chyba korekce %.1f jednotek\n", wmax);
+            CHECK(wmax < 3.0, "lin pila pres hranici periody: chyba %.1f", wmax);
+        }
         rp[10] = -1001; rp[11] = -1000;
         CHECK(fpga_v3_lin_corr(rp, 10u * 256u + 128u + 128u) == -1001 || fpga_v3_lin_corr(rp, 10u * 256u + 128u + 128u) == -1000,
               "lin interpolace zaporna");

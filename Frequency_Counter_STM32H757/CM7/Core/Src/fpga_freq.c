@@ -1181,6 +1181,17 @@ static uint8_t s3_tdc_v2(const fpga_v3_hdr_t *h)
 static uint8_t  s3_pr_mode[2] = { 0xFFu, 0xFFu };
 static uint8_t  s3_pr_cand[2] = { 0xFFu, 0xFFu };
 static uint32_t s3_pr_sw[2];
+/* v0.45.10 (STATUS #369, t383): ochrana proti presluchu. Spinani retezu TDC jednoho kanalu zpozduje znacky druheho (t378,
+ * t381); predelicka krmi retez az signalem c[p-1], takze P = 16 na kanalu, ktery se prave NEMERI, presluch na meeny kanal
+ * stahne (t383: sum A v dilu faze pri 10 MHz na B 211 -> 128 ps, B vypnuto 94 ps). Jen v automatu, jen od 1 MHz na sonde
+ * (vypnuti pod 0,5 MHz), ne pri udalostech / parovani / `fpga lin cal` / sberu kalibrace TDC (ty potrebuji P = 1 nebo
+ * oba kanaly) a ne behem pozdrzeni (`tdc cal pin`). Cena: necinny kanal meri s P = 16 (mene hran v okne). */
+#define S3_GUARD_LOG2   4u
+#define S3_GUARD_ON_HZ  1.0e6
+#define S3_GUARD_OFF_HZ 0.5e6
+static volatile uint8_t  s3_pr_guard = 1u;
+static volatile uint32_t s3_pr_hold_until = 0u;
+static uint32_t s3_pr_guard_n[2];
 static bool s3_cfg_any(uint8_t id, uint8_t v1, uint8_t v2);
 static void s3_range_ctl(const fpga_v3_hdr_t *h);
 
@@ -3181,10 +3192,20 @@ static bool s3_cfg_any(uint8_t id, uint8_t v1, uint8_t v2)
 static void s3_range_ctl(const fpga_v3_hdr_t *h)
 {
     if (!(h->caps & FPGA_V3_CAP_PRESC)) return;
+    const uint8_t gblock = (uint8_t)(!s3_pr_guard || s3e_on || s3e_pair != FPGA_EVP_OFF || s_lin_meas ||
+                                     ((h->tdc_status[0] | h->tdc_status[1]) & 4u) ||
+                                     (int32_t)(s3_pr_hold_until - HAL_GetTick()) > 0);
     for (uint8_t ch = 0u; ch < 2u; ch++) {
         const uint8_t cur = (uint8_t)(h->presc[ch] & 0x07u);
         if (h->presc[ch] & FPGA_V3_PRESC_PEND) { s3_pr_cand[ch] = 0xFFu; continue; }
         uint8_t want = (s3_pr_mode[ch] != 0xFFu) ? s3_pr_mode[ch] : fpga_v3_range_probe(cur, h->probe[ch]);
+        if (s3_pr_mode[ch] == 0xFFu && !gblock && ch != (s3_chan & 1u) && want < S3_GUARD_LOG2) {
+            const double hz = FPGA_V3_PROBE_HZ(h->probe[ch]);
+            if (hz >= ((cur >= S3_GUARD_LOG2) ? S3_GUARD_OFF_HZ : S3_GUARD_ON_HZ)) {
+                want = S3_GUARD_LOG2;
+                if (cur != S3_GUARD_LOG2 && s3_pr_cand[ch] == S3_GUARD_LOG2) s3_pr_guard_n[ch]++;
+            }
+        }
         if (ch == 1u && (h->cfg_echo & 0x18u)) want = 0u;
         if (want == cur) { s3_pr_cand[ch] = 0xFFu; continue; }
         if (s3_pr_cand[ch] != want) { s3_pr_cand[ch] = want; continue; }
@@ -3198,6 +3219,18 @@ int fpga_freq_presc(uint8_t ch, uint8_t mode)
     if (ch > 1u || (mode != 0xFFu && mode > FPGA_V3_RANGE_MAXLOG2)) return -1;
     s3_pr_mode[ch] = mode; s3_pr_cand[ch] = 0xFFu;
     return (s3_h_ok && (s3_h.caps & FPGA_V3_CAP_PRESC)) ? 1 : 0;
+}
+
+void fpga_freq_presc_guard(uint8_t on)
+{
+    s3_pr_guard = (uint8_t)(on ? 1u : 0u);
+    s3_pr_cand[0] = s3_pr_cand[1] = 0xFFu;
+}
+
+void fpga_freq_presc_guard_hold(uint32_t ms)
+{
+    s3_pr_hold_until = HAL_GetTick() + ms;
+    s3_pr_cand[0] = s3_pr_cand[1] = 0xFFu;
 }
 
 static bool v3_cfg(uint8_t id, uint8_t v1, uint8_t v2)
@@ -3738,6 +3771,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     o->gap_recs = s3_link.gap_recs; o->resync = s3_link.resync; o->wins = s3_wins; o->qdrop = s3_qdrop; o->pages = s3_pages;
     o->k = s3_grp.k_target; o->seg_ms = s3_grp.seg_ms; o->chan = s3_chan; o->expect = s3_link.expect;
     o->pr_mode[0] = s3_pr_mode[0]; o->pr_mode[1] = s3_pr_mode[1]; o->pr_sw[0] = s3_pr_sw[0]; o->pr_sw[1] = s3_pr_sw[1];
+    o->pr_guard = s3_pr_guard; o->pr_guard_n[0] = s3_pr_guard_n[0]; o->pr_guard_n[1] = s3_pr_guard_n[1];
     if (s3_h_ok) {
         o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->rec_head = s3_h.rec_head; o->rec_first = s3_h.rec_first;
         o->ring_fill = s3_h.ring_fill; o->rx_crc_err = s3_h.rx_crc_err; o->rx_len_err = s3_h.rx_len_err;

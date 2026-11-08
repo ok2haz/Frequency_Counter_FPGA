@@ -337,7 +337,8 @@ static void uart_ev_raw(const char *a)
 /* v0.45.7 (STATUS #366, t374-t376): chyba casovani kazdeho kanalu podle faze taktu. `fpga lin` = stav, `fpga lin tab` = tabulky
  * [ps], `fpga lin on|off`, `fpga lin cal [s]` = mereni tabulek proti generatoru Si5356 (kabely CLK_2 -> A, CLK_4 -> B, jako
  * `tdc cal pin gen`): generator na dobu mereni 10 000 000,041 Hz (faze proti taktu ~0,41 otacky/s), pak puvodni nastaveni.
- * Hlavne MERENI (rozkmit, sum uvnitr dilu, drift); korekce se nezapina sama (t375b: obecne neplati, viz uart_lin_cal). */
+ * Hlavne MERENI (rozkmit, sum uvnitr dilu, drift); korekce se nezapina sama (t375b: obecne neplati, viz uart_lin_cal).
+ * v0.45.8: `fpga lin cal [s] keep` = generator se neprepisuje (stejny odstup vystupu A-B jako pri naslednem mereni). */
 #define UART_LIN_HZ   10000000u
 #define UART_LIN_MHZ  41u
 static const char *s_lin_on_str(void)
@@ -381,9 +382,10 @@ static void uart_lin_show(int tab)
 		}
 	}
 	if (!li.ok[0] && !li.ok[1])
-		printf("  tabulka neni: `fpga lin cal [s]` (vychozi 300 s; kabely CLK_2 -> A, CLK_4 -> B; generator na dobu mereni 10 MHz + 0,041 Hz)\n");
+		printf("  tabulka neni: `fpga lin cal [s] [keep]` (vychozi 300 s; kabely CLK_2 -> A, CLK_4 -> B; generator na dobu mereni 10 MHz\n"
+		       "  + 0,041 Hz, s `keep` beze zmeny generatoru = tentyz odstup A-B jako pri mereni)\n");
 }
-static void uart_lin_cal(unsigned sec)
+static void uart_lin_cal(unsigned sec, int keep)
 {
 	fpga_v3_info_t vi;
 	memset(&vi, 0, sizeof vi);
@@ -392,20 +394,29 @@ static void uart_lin_cal(unsigned sec)
 	if (sec < 30u) sec = 30u;
 	if (sec > 900u) sec = 900u;
 	uint32_t sv_f[2]; uint16_t sv_m[2]; uint8_t sv_on[2];
+	double tuc[2] = { 0.0, 0.0 };
 	for (int c = 0; c < 2; c++) {
 		sv_f[c] = g_si_gen[c].freq_hz; sv_m[c] = g_si_gen[c].mhz; sv_on[c] = g_si_gen[c].on;
-		si5356_gen_request_frac((unsigned)c, UART_LIN_HZ, UART_LIN_MHZ, true);
+		/* v0.45.8 (t377): `keep` = generator se NEPREPISUJE (kazdy zapis MultiSynthu da nahodny odstup vystupu A-B, t375b);
+		 * meri se s tim, co na CLK2/3 a CLK4/5 bezi -- perioda z jejich nastaveni (musi byt zapnute a nesoudelne s taktem) */
+		if (!keep) si5356_gen_request_frac((unsigned)c, UART_LIN_HZ, UART_LIN_MHZ, true);
 	}
-	for (int i = 0; i < 100 && (g_si_gen[0].pend || g_si_gen[1].pend); i++) osDelay(20);
-	osDelay(2500);                                       /* zapis generatoru vypne vystup -> pockat na ustaleni */
-	si5356_ms_t m;
-	double tu = 0.0;
-	if (si5356_gen_calc_frac(UART_LIN_HZ, UART_LIN_MHZ, &m)) tu = fpga_v3_lin_tu(m.p1, m.p2, m.p3, m.rexp);
-	char tb[32];
-	uart_regr_fmt(tb, sizeof tb, tu, 4);
-	printf("FPGA lin: generator CLK2/3 a CLK4/5 %lu,%03u Hz, perioda %s jednotek T/16384, sber %u s...\n",
-	       (unsigned long)UART_LIN_HZ, (unsigned)UART_LIN_MHZ, tb, sec);
-	fpga_freq_lin_start(tu, tu);
+	if (!keep) {
+		for (int i = 0; i < 100 && (g_si_gen[0].pend || g_si_gen[1].pend); i++) osDelay(20);
+		osDelay(2500);                                   /* zapis generatoru vypne vystup -> pockat na ustaleni */
+	}
+	for (int c = 0; c < 2; c++) {
+		si5356_ms_t m;
+		const uint32_t f = keep ? sv_f[c] : UART_LIN_HZ;
+		const uint16_t mh = keep ? sv_m[c] : (uint16_t)UART_LIN_MHZ;
+		if ((!keep || sv_on[c]) && si5356_gen_calc_frac(f, mh, &m)) tuc[c] = fpga_v3_lin_tu(m.p1, m.p2, m.p3, m.rexp);
+		char tb[32];
+		uart_regr_fmt(tb, sizeof tb, tuc[c], 4);
+		printf("FPGA lin: kanal %c = generator CLK%u/%u %lu,%03u Hz%s, perioda %s jednotek T/16384\n", 'A' + c, 2u + 2u * (unsigned)c,
+		       3u + 2u * (unsigned)c, (unsigned long)f, (unsigned)mh, keep ? " (beze zmeny, `keep`)" : "", tb);
+	}
+	printf("FPGA lin: sber %u s...\n", sec);
+	fpga_freq_lin_start(tuc[0], tuc[1]);
 	for (unsigned s = 1u; s <= sec; s++) {
 		osDelay(1000);
 		if (s % 30u == 0u) {
@@ -437,12 +448,12 @@ static void uart_lin_cal(unsigned sec)
 		                                          : "ODMITNUTO (malo dat: v nekterem dilu < 20 znacek, prodluz `fpga lin cal <s>`)"));
 		if (valid) { fpga_freq_lin_set((uint8_t)c, t); good++; }
 	}
-	for (int c = 0; c < 2; c++) si5356_gen_request_frac((unsigned)c, sv_f[c], sv_m[c], sv_on[c] != 0u);
+	if (!keep) for (int c = 0; c < 2; c++) si5356_gen_request_frac((unsigned)c, sv_f[c], sv_m[c], sv_on[c] != 0u);
 	/* t375b: tabulka zmerena pri jednom nastaveni generatoru intervalu A->B pri jinem NEPOMOHLA (sigma 232 -> 234 ps, 194 ->
 	 * 183 ps); chyba kanalu B se mezi nastavenimi meni a presluch mezi retezci zavisi na vzajemne fazi A-B (t376). Korekce
 	 * se proto sama nezapina -- `fpga lin on` jen vedome, pro pevne usporadani, ve kterem byla tabulka zmerena. */
-	printf("FPGA lin: generator vracen; tabulek nastaveno %d, korekce %s (`fpga lin on` jen pro pevne usporadani mereni, viz STATUS #366)\n",
-	       good, s_lin_on_str());
+	printf("FPGA lin: %s; tabulek nastaveno %d, korekce %s (`fpga lin on` jen pro pevne usporadani mereni, viz STATUS #366)\n",
+	       keep ? "generator beze zmeny" : "generator vracen", good, s_lin_on_str());
 }
 static void uart_ev_pair_rc(int rc, const char *what)
 {
@@ -570,6 +581,16 @@ static int uart_tdc_cal_ex(const char *a)
 	}
 	uint32_t sv_f[2] = { 0u, 0u }; uint16_t sv_m[2] = { 0u, 0u }; uint8_t sv_on[2] = { 0u, 0u };
 	if (pin) {
+		/* v0.45.10: ochrana proti presluchu drzi nemereny kanal na P 16 -> na dobu kalibrace pozdrzet a pockat na P 1 */
+		fpga_freq_presc_guard_hold(30000u);
+		for (int i = 0; i < 30; i++) {
+			int need = 0;
+			for (int c = 0; c < 2; c++)
+				if ((!mask || (mask & (1u << c))) && vi.pr_mode[c] == 0xFFu && (vi.presc[c] & 0x0Fu) != 0u) need = 1;
+			if (!need) break;
+			osDelay(100);
+			fpga_freq_v3_info(&vi);
+		}
 		for (int c = 0; c < 2; c++) {
 			if (mask && !(mask & (1u << c))) continue;
 			if ((vi.presc[c] & 0x0Fu) != 0u) {
@@ -3070,11 +3091,19 @@ void UartTask_run(void *argument)
 					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
 					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", (unsigned long)vi.probe[c] * 16ul,   /* bez %f (nano.specs, F-0276) */
 					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
+				  printf("  ochrana proti presluchu (`fpga presc guard on|off`): %s, P 16 nastaveno A %lu x, B %lu x\n",
+				         vi.pr_guard ? "ZAP" : "VYP", (unsigned long)vi.pr_guard_n[0], (unsigned long)vi.pr_guard_n[1]);
 				  printf("  PSRAM: %s, latence zapisu %u B, faze cteni %u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
 				         (vi.deep_st & FPGA_V3_DS_RDY) ? "pripravena" : (vi.deep_st & FPGA_V3_DS_BAD) ? "KALIBRACE SELHALA" : "neni",
 				         (unsigned)(FPGA_V3_PS_W0 + (vi.deep_wsel & 0x1Fu)), (unsigned)((vi.deep_wsel >> 5) & 1u),
 				         (unsigned long)vi.deep_n, (vi.deep_st & FPGA_V3_DS_OVF) ? ", PRETECENI" : "",
 				         (vi.caps & FPGA_V3_CAP_PSRAM) ? "ano" : "ne");
+			  }
+			  else if (strcmp(RxBuffer, "fpga presc guard on") == 0 || strcmp(RxBuffer, "fpga presc guard off") == 0) {
+				  /* v0.45.10 (STATUS #369, t383): ochrana proti presluchu -- P 16 na kanalu, ktery se prave nemeri */
+				  fpga_freq_presc_guard(RxBuffer[17] == 'o' && RxBuffer[18] == 'n');
+				  printf("ochrana proti presluchu: %s (nemereny kanal od 1 MHz na P 16; ne pri udalostech, parovani, kalibracich)\n",
+				         (RxBuffer[18] == 'n') ? "ZAP" : "VYP");
 			  }
 			  else if (strncmp(RxBuffer, "fpga presc ", 11) == 0) {
 				  /* v0.38.0 (FW 0x0503): predelicka -- `fpga presc a|b auto|0..4` (log2 P: 0 = primo, 4 = /16; auto = podle sondy) */
@@ -3153,7 +3182,10 @@ void UartTask_run(void *argument)
 				  else if (strncmp(a, "cal", 3) == 0 && (a[3] == '\0' || a[3] == ' ')) {
 					  const char *q = &a[3];
 					  while (*q == ' ') q++;
-					  uart_lin_cal(uart_num(q, 300u, 900u));
+					  const unsigned sec = uart_num(q, 300u, 900u);
+					  while (*q >= '0' && *q <= '9') q++;
+					  while (*q == ' ') q++;
+					  uart_lin_cal(sec, strcmp(q, "keep") == 0);
 					  uart_lin_show(0);
 				  }
 				  else uart_lin_show(0);

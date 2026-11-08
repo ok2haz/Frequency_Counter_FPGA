@@ -1014,12 +1014,16 @@ int fpga_v3_lin_table(const fpga_v3_lin_t *L, uint32_t nmin_req, int16_t tab[FPG
 
 int32_t fpga_v3_lin_corr(const int16_t tab[FPGA_V3_LIN_NB], uint64_t t_u)
 {
-    /* stredy dilu na 256*k + 128 [jednotky]; linearni interpolace mezi sousednimi stredy, periodicky pres periodu taktu */
+    /* stredy dilu na 256*k + 128 [jednotky]; linearni interpolace mezi sousednimi stredy. v0.45.9 (STATUS #369): NE periodicky
+     * pres prechod faze 16383 -> 0 -- chyba casovani ma na hranici periody skok (t374: -63 az +80 ps podle kanalu a kalibrace),
+     * kruhova interpolace mezi dilem 63 a 0 ho rozmazala do krajnich puldilu (t377: interval pres hranu taktu +47 ps i s
+     * korekci). Pod stredem dilu 0 a nad stredem dilu 63 se extrapoluje ze dvou dilu na teze strane hranice. */
     const uint32_t w = 16384u / FPGA_V3_LIN_NB;
-    const uint32_t v = (uint32_t)(t_u & 0x3FFFu) + 16384u - w / 2u;
-    const uint32_t i0 = (v / w) % FPGA_V3_LIN_NB, i1 = (i0 + 1u) % FPGA_V3_LIN_NB;
-    const int32_t f = (int32_t)(v % w);
-    const int32_t a = tab[i0], b = tab[i1];
+    const int32_t p = (int32_t)(t_u & 0x3FFFu) - (int32_t)(w / 2u);   /* -128 .. 16255 */
+    int32_t i0 = (p < 0) ? 0 : p / (int32_t)w;
+    if (i0 > (int32_t)FPGA_V3_LIN_NB - 2) i0 = (int32_t)FPGA_V3_LIN_NB - 2;
+    const int32_t f = p - i0 * (int32_t)w;                    /* -128 .. 2*w-1 (mimo 0..w-1 = extrapolace) */
+    const int32_t a = tab[i0], b = tab[i0 + 1];
     const int32_t num = a * ((int32_t)w - f) + b * f;
     return (num >= 0) ? (num + (int32_t)w / 2) / (int32_t)w : -((-num + (int32_t)w / 2) / (int32_t)w);
 }
