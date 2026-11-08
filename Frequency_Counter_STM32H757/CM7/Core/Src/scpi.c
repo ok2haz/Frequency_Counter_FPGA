@@ -202,7 +202,7 @@ static int scpi_parse3(const char *s, int *a, int *b, int *cc)
  * branu z vlastni kopie tabulky (dve tabulky = dve pravdy, viz `fmt_scpi_hz_d`). */
 double scpi_gate_s(uint8_t idx)
 {
-    static const double G[IPC_GATE_N] = {0.05, 0.1, 0.25, 0.5, 1.0};
+    static const double G[IPC_GATE_N] = {0.05, 0.1, 0.25, 1.0, 10.0, 100.0};
     return G[(idx < IPC_GATE_N) ? idx : IPC_GATE_DEFAULT];
 }
 /* Sekundy -> index brany. @return 0..3, nebo -1 kdyz hodnota neodpovida presetu.
@@ -1263,20 +1263,22 @@ int scpi_selftest(void)
 
     /* ── Instrument SET + readback (2026-08-15). Do teto chvile bylo SCPI mimo
      * Math read-only, takze prave tohle je jadro noveho chovani. ── */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.5", b, sizeof b);
-    ok &= (src.set_gate_idx == 3);                       /* 0,5 s = index 3 */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b, sizeof b);
-    ok &= (strncmp(b, "0.500000", 8) == 0);              /* readback = nastavena hodnota */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 1", b, sizeof b);
-    ok &= (src.set_gate_idx == 4);                       /* 1 s = index 4 (nejdelsi) */
+    ok &= (src.set_gate_idx == 3);                       /* 1 s = index 3 */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE?", b, sizeof b);
+    ok &= (strncmp(b, "1.000000", 8) == 0);              /* readback = nastavena hodnota */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 100", b, sizeof b);
+    ok &= (src.set_gate_idx == 5);                       /* 100 s = index 5 (nejdelsi) */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
+    ok &= (src.set_gate_idx == 4);                       /* 10 s = index 4 */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 5E-2", b, sizeof b);
     ok &= (src.set_gate_idx == 0);                       /* 0,05 s; toleranci 1 % projde i "5E-2" */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 3.7", b, sizeof b);
     ok &= (src.set_gate_idx == 0);                       /* mimo preset -> SET se NEaplikuje */
-    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 10", b, sizeof b);
-    ok &= (src.set_gate_idx == 0);                       /* 10 s uz preset NENI (nejdelsi 1 s) */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.5", b, sizeof b);
+    ok &= (src.set_gate_idx == 0);                       /* 0,5 s uz preset NENI (vyrazen) */
     scpi_process_ctx(&x, &src, "SENS:FREQ:GATE 0.25", b, sizeof b);
-    ok &= (src.set_gate_idx == IPC_GATE_DEFAULT);        /* vychozi 0,25 s */
+    ok &= (src.set_gate_idx == IPC_GATE_DEFAULT);        /* vychozi 0,25 s = index 2 */
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN 1", b, sizeof b);
     ok &= (src.set_chan == 1);
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN?", b, sizeof b);

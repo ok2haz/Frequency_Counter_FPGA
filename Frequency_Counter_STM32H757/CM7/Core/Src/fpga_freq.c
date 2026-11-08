@@ -14,6 +14,7 @@
 #include "watchdog.h"    /* watchdog_kick_fpga — behem kalibrace TDC (~0,6 s) */
 #include "fpga_crc.h"    /* optimalizace 6: kontrola CRC prijateho ramce (SW tabulka, volitelne HW jednotka FPGA_CRC_USE_HW) */
 #include "fpga_v3.h"     /* protokol v3 (krok 4c): ramec 1024 B, prijem zaznamu, okna, emulator */
+#include "ipc_shared.h"  /* IPC_GATE_N / IPC_GATE_DEFAULT -- presety hradla (sdilene s UI/SCPI/web) */
 #include "si5356.h"      /* v0.43.3: g_si_gen_epoch -- zapis generatoru (`gen`) zneplatni okna */
 /* Optimalizace 6: datova faze SPI pres DMA. 0 = blokujici HAL_SPI_TransmitReceive jako dosud. 1 az po konfiguraci CubeMX
  * (DMA streamy SPI2, NVIC, sekce FPGA_DMA_SECTION, callbacky) -- 2026-10-20_CRC_DMA_zadani_CLI.md. */
@@ -2803,14 +2804,16 @@ bool fpga_freq_set_window(uint8_t mode)
 
 uint8_t fpga_gate_idx_to_win(uint8_t idx)
 {
-    static const uint8_t W[5] = { FPGA_WIN_50MS, FPGA_WIN_100MS, FPGA_WIN_250MS, FPGA_WIN_500MS, FPGA_WIN_1S };
-    return W[(idx < 5u) ? idx : 2u];
+    /* Jen v2 (legacy): FPGA ma pevna HW okna do 1 s -> 10 a 100 s na v2 nejdou, mapuji na 1 s (dnesni deska je v3,
+     * kde se okno sklada ze segmentu ve STM, viz fpga_gate_idx_ms). */
+    static const uint8_t W[IPC_GATE_N] = { FPGA_WIN_50MS, FPGA_WIN_100MS, FPGA_WIN_250MS, FPGA_WIN_1S, FPGA_WIN_1S, FPGA_WIN_1S };
+    return W[(idx < IPC_GATE_N) ? idx : IPC_GATE_DEFAULT];
 }
 
 uint32_t fpga_gate_idx_ms(uint8_t idx)
 {
-    static const uint32_t MS[5] = { 50u, 100u, 250u, 500u, 1000u };
-    return MS[(idx < 5u) ? idx : 2u];
+    static const uint32_t MS[IPC_GATE_N] = { 50u, 100u, 250u, 1000u, 10000u, 100000u };
+    return MS[(idx < IPC_GATE_N) ? idx : IPC_GATE_DEFAULT];
 }
 
 bool fpga_freq_set_channel(uint8_t ch)
@@ -2852,7 +2855,7 @@ bool fpga_freq_cfg_sync(uint8_t want_chan, uint8_t want_gate_idx)
     if (s_proto == 3u || s_sim_v3) {
         /* v3: FPGA meri oba kanaly vzdy a po segmentech -> kanal i hradlo voli STM lokalne (okna ze segmentu) */
         want_chan &= 1u;
-        if (want_gate_idx > 4u) want_gate_idx = 2u;
+        if (want_gate_idx >= IPC_GATE_N) want_gate_idx = IPC_GATE_DEFAULT;
         if (want_chan == s3_chan && want_gate_idx == s3_gate) return false;
         s3_chan = want_chan; s3_gate = want_gate_idx;
         s3_regroup();

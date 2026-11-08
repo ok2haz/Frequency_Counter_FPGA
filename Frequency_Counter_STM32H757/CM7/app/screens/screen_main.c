@@ -123,9 +123,9 @@ static prim_rect_t s_btn_rect[SCR_BTN_COUNT];
  * oddelene udaje — uzivatel mysli „frekvence A", ne „frekvence, kanal A". */
 static const char *MODE_NAME[2] = {"FREKVENCE", "PERIODA"};
 static const char *CHAN_NAME[2] = {"A", "B"};
-/* Hradlo: index = `IPC_UICFG_GATE` (0,05 / 0,1 / 0,25 / 0,5 / 1 s, vychozi 0,25 s = index 2). DO FPGA ho
+/* Hradlo: index = `IPC_UICFG_GATE` (0,05 / 0,1 / 0,25 / 1 / 10 / 100 s, vychozi 0,25 s = index 2). DO FPGA ho
  * posila FpgaTask (`fpga_freq_cfg_sync`) podle `g_ui_cfg`; vyber kanalu tak same. */
-static const char *GATE_VAL[IPC_GATE_N] = {"0,05 s", "0,1 s", "0,25 s", "0,5 s", "1 s"};
+static const char *GATE_VAL[IPC_GATE_N] = {"0,05 s", "0,1 s", "0,25 s", "1 s", "10 s", "100 s"};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
     st = {0, 0, (int8_t)IPC_GATE_DEFAULT, true};    /* FREQUENCY, CH A, 0,25 s, RUNNING po bootu (tlacitko "STOP") */
 /* Zabaleni `st` do kodovani `g_ui_cfg` (format v2, viz ipc_shared.h). */

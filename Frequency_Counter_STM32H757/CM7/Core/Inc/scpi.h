@@ -113,7 +113,7 @@ enum {
     /* ── Instrument SET (2026-08-15): nejdou do `meas_cfg_t`, ale do stavu mereni
      * (`g_ui_cfg`), takze je backend obsluhuje zvlast — `scpi_cfg_apply()` je NEzna.
      * ⚠️ Poradi MUSI sedet s `IPC_CFG_*` (hlida `_Static_assert` v ipc.c). */
-    SCPI_CFG_GATE,         /* vu = index brany 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s) */
+    SCPI_CFG_GATE,         /* vu = index brany 0..5 (0,05 / 0,1 / 0,25 / 1 / 10 / 100 s) */
     SCPI_CFG_CHAN,         /* vu = kanal 0/1 (A/B) */
     SCPI_CFG_RUN,          /* vu = 0 STOP / 1 RUN */
     SCPI_CFG_STATS_CLR,    /* akce `CALC:AVER:CLE`: vynulovat statistiku stability (Allan/histogram/trend), 2026-10-16 */
@@ -176,11 +176,11 @@ struct scpi_src {
     int (*read_log)(scpi_src_t *s, uint32_t from_newest, datalog_rec_t *out);
 };
 
-/** Presety brány [s] -> index 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s); <0 = mimo presety.
+/** Presety brány [s] -> index 0..5 (0,05 / 0,1 / 0,25 / 1 / 10 / 100 s); <0 = mimo presety.
  *  Vystaveno kvuli sdilenemu IPC backendu (CM4 validuje branu lokalne, viz ipc_scpi.c). */
 int scpi_gate_idx_from_s(double sec);
 
-/** Index brány 0..4 -> sekundy (opak `scpi_gate_idx_from_s`). Sdíleno s JSON
+/** Index brány 0..5 -> sekundy (opak `scpi_gate_idx_from_s`). Sdíleno s JSON
  *  v `httpd_min.c`, aby web nedržel vlastní kopii tabulky presetů. */
 double scpi_gate_s(uint8_t idx);
 

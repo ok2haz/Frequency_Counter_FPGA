@@ -34,13 +34,13 @@
 #define IPC_MAGIC    0x31435049u   /* "IPC1" (LE) */
 /* ── g_ui_cfg / `ipc_snapshot_t.ui_cfg` — FORMAT v2 (2026-10-09) ──────────────
  * bit0 mode (0 FREKVENCE / 1 PERIODA), bit1 KANAL (0 = A / 1 = B), bity3:2 + bit5 = INDEX BRANY
- * 0..4 (bit5 je bit 2 indexu), bit4 RUN, bit7 = priznak formatu v2. Index -> sekundy: 0 = 0,05 s,
- * 1 = 0,1 s, 2 = 0,25 s (VYCHOZI), 3 = 0,5 s, 4 = 1 s (`scpi_gate_s`). Format v1 (4 presety
- * 0,1/1/10/100 s, bez bitu 7) se pri nacteni z BKP/flash prevede `ipc_uicfg_norm`: ponecha mode a RUN,
+ * 0..5 (bit5 je bit 2 indexu, 3 bity -> 0..7), bit4 RUN, bit7 = priznak formatu v2. Index -> sekundy:
+ * 0 = 0,05 s, 1 = 0,1 s, 2 = 0,25 s (VYCHOZI), 3 = 1 s, 4 = 10 s, 5 = 100 s (`scpi_gate_s`). Format v1
+ * (4 presety 0,1/1/10/100 s, bez bitu 7) se pri nacteni z BKP/flash prevede `ipc_uicfg_norm`: ponecha mode a RUN,
  * kanal vrati na A a hradlo na vychozi (stary index by znamenal jinou delku).
  * IPC_VERSION 21: stejny layout, ale JINY VYZNAM bajtu `ui_cfg` -> CM4 musi byt ze stejne verze. */
 #define IPC_UICFG_V2             0x80u
-#define IPC_GATE_N               5u
+#define IPC_GATE_N               6u
 #define IPC_GATE_DEFAULT         2u
 #define IPC_UICFG_GATE(c)        ((uint8_t)((((c) >> 2) & 3u) | (((c) >> 3) & 4u)))
 #define IPC_UICFG_SET_GATE(c, g) ((uint8_t)(((c) & ~0x2Cu) | (((g) & 3u) << 2) | ((((g) >> 2) & 1u) << 5)))
@@ -50,7 +50,7 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
          : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
 }
 
-#define IPC_VERSION  30u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
+#define IPC_VERSION  31u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit
                                        cfg mirror ve snapshotu + IPC_CMD_CFG_SET (config sync CM4<->CM7);
                                        v4 (2026-08-13): sens_valid (maska platnosti) + t_fpga_c100;
                                        v5 (2026-08-22, F1): stav ETH linky/IP v ipc_cm4_status_t;
@@ -159,7 +159,10 @@ static inline uint8_t ipc_uicfg_norm(uint8_t c)
                                        v29 (2026-10-18): `ipc_gpsdo_t` 40 -> 48 B (`ref_ppb_x100`, `ref_meas`): nejistota reference podle stavu smycky pro web;
                                        blok lezi ZA `cm4`, `raw` za nim se posouva. ⚠️⚠️ Flashnout OBE banky.
                                        v30 (2026-10-27, TODO #249): blok `push` (webhook alarmu: nastaveni CM7 -> CM4 a vysledky CM4 -> CM7) NA KONCI za `raw`;
-                                       layout pred `cm4` beze zmeny. ⚠️⚠️ Flashnout OBE banky. */
+                                       layout pred `cm4` beze zmeny.
+                                       v31 (2026-11-08): presety brany 0..5 (0,05/0,1/0,25/1/10/100 s) misto 0..4 (0,05/0,1/0,25/0,5/1 s) --
+                                       IPC_GATE_N 5 -> 6, `scpi_gate_s` tabulka; layout `ui_cfg` beze zmeny (3b index), meni se VYZNAM indexu 3..5 ->
+                                       CM4 (validuje branu, web) musi byt ze stejne verze. ⚠️⚠️ Flashnout OBE banky. */
 
 /* ── Maska platnosti hodnot ve snapshotu (`sens_valid`) ──────────────────────
  * ⚠️ Bitove pozice jsou ZAMERNE SHODNE s `SCPI_V_*` (scpi.h), aby CM4 SCPI
@@ -748,7 +751,7 @@ enum {
     /* Instrument SET (2026-08-15) — stav mereni, ne Math. ⚠️ Poradi 1:1 se `SCPI_CFG_*`.
      * Rozsireni VYCTU nemeni layout `ipc_cmd_t` (klic je uint8_t), takze `IPC_VERSION`
      * se NEZVYSUJE: stara CM4 nove klice neposila a nova CM7 jim rozumi. */
-    IPC_CFG_GATE,         /* arg = index brany 0..4 (0,05 / 0,1 / 0,25 / 0,5 / 1 s) */
+    IPC_CFG_GATE,         /* arg = index brany 0..5 (0,05 / 0,1 / 0,25 / 1 / 10 / 100 s) */
     IPC_CFG_CHAN,         /* arg = kanal 0/1 */
     IPC_CFG_RUN,          /* arg = 0 STOP / 1 RUN */
     IPC_CFG_STATS_CLR,    /* akce: vynulovat statistiku stability (Allan/histogram/trend) -> g_stats_reset_req (2026-10-16) */
