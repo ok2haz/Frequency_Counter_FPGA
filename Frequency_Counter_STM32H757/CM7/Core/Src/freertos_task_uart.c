@@ -1118,10 +1118,10 @@ static void gpsdo_print_status(void)
     long y  = gp_round(s.y * 1e12);          /* y v 1e-12 = ppt */
     long cd = gp_round(s.code * 100.0);      /* kod v setinach LSB */
     long k  = gp_round(s.kdac * 1e13);       /* K v 1e-13 */
-    printf("GPSDO: %s%s%s%s | %lu s | y %c%ld.%03ld ppb | faze %+ld ns | kod %ld.%02ld | K %ld.%02lde-11 | tau %lu s\n",
+    printf("GPSDO: %s%s%s%s | %lu s | y %c%ld.%03ld ppb | faze %+ld ns | TIE %+ld ns | kod %ld.%02ld | K %ld.%02lde-11 | tau %lu s\n",
            gpsdo_state_name(s.state), s.locked ? " (ZAMCENO)" : "",
            (s.why != GPSDO_WHY_NONE) ? " - " : "", gpsdo_why_text(s.why), (unsigned long)s.state_s,
-           (y < 0) ? '-' : '+', labs(y) / 1000, labs(y) % 1000, gp_round(s.x_ns),
+           (y < 0) ? '-' : '+', labs(y) / 1000, labs(y) % 1000, gp_round(s.x_ns), gp_round(s.x_raw_ns),
            cd / 100, labs(cd) % 100, k / 100, labs(k) % 100, (unsigned long)gp_round(s.tau_s));
     static const char *const sw[] = { "vypnuta", "+q", "-q", "bez dat TIM-TP" };
     printf("GPSDO: 1PPS prijato %lu, odmitnuto %lu, diry %lu, roztrzena cteni %lu | FLL okno %lu s | sawtooth %s "

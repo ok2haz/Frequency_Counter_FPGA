@@ -452,7 +452,7 @@ typedef struct {
     uint8_t  settle, fll_steps, rail;
     double   x, xf, integ, code_lock, yf;   /* LOCK: faze [ns], filtr faze, integrator [rel], kod pri zamceni */
     uint32_t good, bad_run;
-    uint8_t  locked, diverged;
+    uint8_t  locked, diverged, div_run;   /* div_run: pocet po sobe jdoucich podezrelych oken FLL (STATUS #370) */
     double   pm_ns;              /* audit 2026-10-20: sum odectu faze 1PPS [ns] (0 = GPSDO_PM_NS_INIT); plni obal z gp_pm_update */
 } gp_core_t;
 
@@ -485,7 +485,7 @@ static int core_step(gp_core_t *c, double e_ns, uint32_t n)
          * rozdil dvou oken sqrt(2)x vic. Maly krok (napr. -73 LSB = 1,2e-9 pri K 1,7e-11) by dal nahodne K, i zaporne,
          * a smycka by vyhlasila falesnou divergenci. Zmena, kterou by dala i nejmensi verohodna strmost (0,25x K0),
          * musi sum prevysit GPSDO_FLL_K_SIGMAS-krat; jinak se K nemeri a plati dosavadni odhad. */
-        int kupd = 0;
+        int kupd = 0, trip = 0;
 #if GPSDO_FLL_USE_MEASURED_PM
         double pm = (c->pm_ns > 0.0) ? c->pm_ns : GPSDO_PM_NS_INIT;
 #else
@@ -496,11 +496,16 @@ static int core_step(gp_core_t *c, double e_ns, uint32_t n)
         double s_dif = sqrt(s_cur * s_cur + s_prv * s_prv);
         if (c->fll_steps > 0u && fabs(c->last_dc) > 50.0 && fabs(c->last_dc) * 0.25 * c->k0 > GPSDO_FLL_K_SIGMAS * s_dif) {
             double ko = (ya - c->fll_prev_y) / c->last_dc;
-            if (ko <= 0.0) { c->diverged = 1u; return 1; }
-            if (ko > 0.25 * c->k0 && ko < 4.0 * c->k0) { c->kdac = ko; kupd = 1; }
+            if (ko <= 0.0) trip = 1;                   /* zaporna strmost = kandidat na divergenci */
+            else if (ko > 0.25 * c->k0 && ko < 4.0 * c->k0) { c->kdac = ko; kupd = 1; }
         }
-        /* Odchylka po kroku vetsi nez 1,5x pred nim (a K se tim nevysvetlilo) = divergence. */
-        if (!kupd && c->fll_steps > 0u && fabs(ya) > 1e-8 && fabs(ya) > 1.5 * fabs(c->fll_prev_y)) { c->diverged = 1u; return 1; }
+        /* Odchylka po kroku vetsi nez 1,5x pred nim (a K se tim nevysvetlilo) = kandidat na divergenci. */
+        if (!kupd && !trip && c->fll_steps > 0u && fabs(ya) > 1e-8 && fabs(ya) > 1.5 * fabs(c->fll_prev_y)) trip = 1;
+        /* v0.45.11 (STATUS #370): divergenci vyhlasit az po DVOU po sobe jdoucich podezrelych oknech. Jedno okno s glitchem
+         * 1PPS / prechodem pri studenem startu smycku falesne vyplo NATRVALO (zmereno 2026-11-08: K je spravne +3,56e-11/LSB,
+         * z dobreho kodu se smycka zamkne). Trvala divergence (spatne znamenko, rostouci chyba) se chyti o okno pozdeji. */
+        if (trip) { if (++c->div_run >= 2u) { c->diverged = 1u; return 1; } }
+        else c->div_run = 0u;
         double old = c->code;
         c->code = gp_clamp(c->code - ya / c->kdac, 0.0, c->code_max);
         c->last_dc = c->code - old;
