@@ -6162,3 +6162,24 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   STA prošla, křemík selhal.)
 - **Commit:** (necommitováno; zkušební bitstreamy v ab_test/, NEnahrávat do flash)
 - **Stav:** ✅ (uzavřeno měřením, APP_OSC zůstává)
+
+### L-0273 — Regulační smyčka vyhlásila divergenci z JEDNOHO okna → jednorázový zákmit ji vypnul natrvalo
+
+- **Datum:** 2026-11-08
+- **Oblast:** GPSDO FLL (`core_step`, `freertos_task_fpga.c`), STATUS #370
+- **Symptom:** `GPSDO: OFF - FLL divergovala (znamenko/velikost K?)`, OCXO −306 ppb mimo, smyčka trvale vypnutá, nutný ruční
+  zásah (`dac <dobry kod>` + `gpsdo on`). Hláška obviňovala K.
+- **Příčina:** FLL vyhlašovala divergenci z JEDINÉHO podezřelého okna (záporně změřené K nebo odchylka > 1,5× předchozí).
+  Při studeném startu (OCXO se zahřívá → rychlý drift; GPS teprve chytá fix → neklidné/chybějící 1PPS) jedno okno s glitchem
+  falešně shodilo smyčku NATRVALO. Změřeno: strmost EFC je +3,56e-11/LSB (KLADNÁ), sedí na K ve smyčce znaménkem i velikostí →
+  K bylo celou dobu správně, hláška zaváděla.
+- **Oprava (v0.45.11):** (1) `gpsdo` tiskne živé TIE (`x_raw_ns`, pasivní monitor i při OFF) — bez živé fáze nešlo měřit
+  strmost EFC (`y` ve výpisu bylo při OFF zamrzlé). (2) Divergenci vyhlásit až po DVOU po sobě jdoucích podezřelých oknech
+  (čítač `div_run`); jednorázový zákmit se zahodí a smyčka pokračuje. Trvalá divergence (špatné znaménko, nedostatečný rozsah)
+  se chytne přes rail / rostoucí chybu o okno později. Ověřeno na HW po power cyklu: studený start, FLL přežil přechody bez
+  „divergovala" a zamkl se.
+- **Pravidlo:** detektor poruchy v regulační smyčce nesmí shazovat z JEDNOHO vzorku, zvlášť když vstup (GPS 1PPS, zahřívající
+  OCXO) má přechodové glitche. Vyžaduj potvrzení (N po sobě jdoucích oken). A chybová hláška, která hádá příčinu
+  („znaménko/velikost K?"), musí být ověřená měřením, ne domněnka — tady K bylo správně.
+- **Commit:** (necommitováno v době psaní)
+- **Stav:** ✅ (ověřeno na HW po power cyklu, STATUS #370)
