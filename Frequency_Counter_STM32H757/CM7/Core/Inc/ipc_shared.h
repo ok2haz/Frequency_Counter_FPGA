@@ -40,14 +40,23 @@
  * kanal vrati na A a hradlo na vychozi (stary index by znamenal jinou delku).
  * IPC_VERSION 21: stejny layout, ale JINY VYZNAM bajtu `ui_cfg` -> CM4 musi byt ze stejne verze. */
 #define IPC_UICFG_V2             0x80u
+/* v0.45.14: bit 6 = hradlo v NOVE tabulce (0,05/0,1/0,25/1/10/100 s). Bajt se uklada do BKP DR1, syscfg a profilu SETUP;
+ * bez znacky by se starsi ulozeny index 3 (0,5 s) a 4 (1 s) po zmene tabulky v0.45.12 tise cetl jako 1 s a 10 s. Kazdy,
+ * kdo bajt SKLADA OD NULY (`ui_cfg_pack`, vychozi `g_ui_cfg`), musi bit nastavit; SET_GATE ho zachovava. */
+#define IPC_UICFG_GT             0x40u
 #define IPC_GATE_N               6u
 #define IPC_GATE_DEFAULT         2u
 #define IPC_UICFG_GATE(c)        ((uint8_t)((((c) >> 2) & 3u) | (((c) >> 3) & 4u)))
 #define IPC_UICFG_SET_GATE(c, g) ((uint8_t)(((c) & ~0x2Cu) | (((g) & 3u) << 2) | ((((g) >> 2) & 1u) << 5)))
 static inline uint8_t ipc_uicfg_norm(uint8_t c)
 {
-    return (c & IPC_UICFG_V2) ? c
-         : (uint8_t)(IPC_UICFG_V2 | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
+    if (!(c & IPC_UICFG_V2))              /* v1: 4 stare presety 0,1/1/10/100 s -> vychozi hradlo */
+        return (uint8_t)(IPC_UICFG_V2 | IPC_UICFG_GT | (c & 0x11u) | (uint8_t)(IPC_GATE_DEFAULT << 2));
+    if (!(c & IPC_UICFG_GT)) {            /* v2 se starou tabulkou 0,05/0,1/0,25/0,5/1 s: 0..2 platne dal, 0,5 a 1 s -> 1 s */
+        const uint8_t g = IPC_UICFG_GATE(c);
+        c = (uint8_t)(IPC_UICFG_SET_GATE(c, (g >= 3u) ? 3u : g) | IPC_UICFG_GT);
+    }
+    return c;
 }
 
 #define IPC_VERSION  31u           /* v2: plna sada senzoru+kalibrace; v3 (2026-08-09): Math/limit

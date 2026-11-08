@@ -128,10 +128,22 @@ static const char *CHAN_NAME[2] = {"A", "B"};
 static const char *GATE_VAL[IPC_GATE_N] = {"0,05 s", "0,1 s", "0,25 s", "1 s", "10 s", "100 s"};
 static struct { int8_t mode; int8_t chan; int8_t gate; bool running; }
     st = {0, 0, (int8_t)IPC_GATE_DEFAULT, true};    /* FREQUENCY, CH A, 0,25 s, RUNNING po bootu (tlacitko "STOP") */
+/* v0.45.14 (audit): vzorek statistiky = max(1 s, hradlo) (`fpga_acc_add`: soucet hradel >= 1 s). Hradla do 1 s davaji vzorek
+ * 1 s, hradla 10 a 100 s vzorek po cele delce. Zmena delky vzorku nesmi michat dve ruzna τ0 do JEDNE pyramidy (osa τ se skaluje
+ * podle prumerneho τ0 -- `tau0_scale` -- a smes by ji zkreslila; zmereno: τ0 kolisalo az o 160 %). Prepinani 0,05..1 s (stejny
+ * vzorek 1 s) se statistiky nedotyka. Vola UiTask na obou mistech, kde se hradlo meni. */
+static void stats_on_gate_change(int8_t og, int8_t ng)
+{
+    const uint32_t a = fpga_gate_idx_ms((uint8_t)og), b = fpga_gate_idx_ms((uint8_t)ng);
+    if ((a > 1000u ? a : 1000u) != (b > 1000u ? b : 1000u)) {
+        screen_main_stats_reset();
+        fpga_stat_flush();          /* i vzorky, ktere FpgaTask uz slozil nebo sklada (jina delka) */
+    }
+}
 /* Zabaleni `st` do kodovani `g_ui_cfg` (format v2, viz ipc_shared.h). */
 static uint8_t ui_cfg_pack(void)
 {
-    uint8_t c = (uint8_t)(IPC_UICFG_V2 | (st.mode & 1) | ((st.chan & 1) << 1) | ((st.running ? 1 : 0) << 4));
+    uint8_t c = (uint8_t)(IPC_UICFG_V2 | IPC_UICFG_GT | (st.mode & 1) | ((st.chan & 1) << 1) | ((st.running ? 1 : 0) << 4));
     return IPC_UICFG_SET_GATE(c, (unsigned)st.gate);
 }
 static uint8_t s_disp_recalc = 0;   /* 1 = prepnul se FREQ/PERIOD -> vynut rebuild formatu velkeho cisla */
@@ -380,6 +392,7 @@ void screen_main_button_action(int idx)
         int8_t og = st.gate;
         st.gate = (int8_t)((st.gate + 1) % (int)IPC_GATE_N);
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)st.gate, (uint32_t)og, "brana");
+        stats_on_gate_change(og, st.gate);
         break;
     }
     case 3: {                                             /* CH A <-> CH B */
@@ -419,8 +432,10 @@ int screen_main_apply_cfg_req(void)
         if (s_fx >= SM_FX_TI) fx_enter(mode, s_fx); /* dalkove FREQ/PER ukonci rozsirenou funkci */
         s_fx = mode;
     }
-    if (st.gate != gate)
+    if (st.gate != gate) {
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_GATE, (uint32_t)gate, (uint32_t)st.gate, "brana");
+        stats_on_gate_change(st.gate, gate);
+    }
     if (st.chan != chan)
         (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_CHAN, (uint32_t)chan, (uint32_t)st.chan, "kanal");
     st.mode = mode; st.chan = chan; st.gate = gate; st.running = run;
@@ -1336,6 +1351,19 @@ static void num_build_for(uint64_t x100000, uint64_t edges, uint64_t gate_ps, in
             num_layout(int_digits, frac, freq_uncertain_frac(x100000, gate_ps, frac));
             if (s_num_w <= FREQ_MAX_W || frac == 0) break;
         }
+        /* v0.45.13: UKOTVENI desetinne carky. Pri drobnem kolisani kolem mocniny 10 (10.000.000 Hz <-> 9.999.999) se menil
+         * pocet celych cislic (8<->7) a centrovane cislo poskakovalo carkou o pul cislice -- neslo cist. Nominalni pocet
+         * cislic bereme z hodnoty ZVYSENE o ~0,2 % (whole >> 9), takze hodnota tesne pod mocninou 10 ma stejny nominal jako
+         * nad ni; x_center se posune o (nominal - aktualni)*sirka_cislice/2 a carka drzi misto, cela cast se meni jen vlevo. */
+        {
+            uint64_t wr = whole + (whole >> 9);
+            int nom_int = 1;
+            for (uint64_t t = wr; t >= 10ull; t /= 10ull) nom_int++;
+            const int dw = prim_text_width("0", &ui_font_mono_75);          /* sirka cislice (monospace) */
+            const int sw = prim_text_width(".", &ui_font_mono_25);          /* sirka tecky mezi trojicemi (sep_font) */
+            const int dots = (nom_int - 1) / 3 - (s_disp_int - 1) / 3;      /* o kolik tecek ma nominalni format vic */
+            s_num.x_center = (int16_t)(UI_DIM_SCREEN_W / 2 + ((nom_int - s_disp_int) * dw + dots * sw) / 2);
+        }
         s_freq_unc_last = freq_uncertain_frac(x100000, gate_ps, s_disp_frac);  /* #1: zapamatuj pro trigger prestavby */
         /* 🔴 2026-10-21: kmitocet (`s_freq_n`, `s_freq_frac`) si NECHAVA plne rozliseni zdroje (max_frac) -- cte ho Math/limity, okno
          * Odchylka xN (nasobi az 1e6) i SIM; zobrazene cislo `s_disp_n` se na `s_disp_frac` desetin orizne v disp_update (stejne jako
@@ -1737,7 +1765,11 @@ static void stats_push(double y)
     s_y_head = (s_y_head + 1) % STAT_N;
     if (s_y_count < STAT_N) s_y_count++;
     if (s_adev_gate_open) {               /* V1: neustalena reference (nabeh, FLL) do pyramidy nepatri */
-        if (s_adev_last_s != 0u && (uint32_t)(g_uptime_s - s_adev_last_s) > ADEV_GAP_S) adev_break_all();   /* V2 */
+        /* v0.45.14 (audit): vzorek prichazi jednou za delku hradla, takze pevnych 30 s zlomilo pyramidu pri KAZDEM vzorku hradla
+         * 100 s (statistika by se nikdy nenashromazdila). Mez = max(30 s, 3x hradlo): do 10 s beze zmeny, 100 s -> 300 s. */
+        const uint32_t g3 = 3u * (fpga_gate_idx_ms((uint8_t)st.gate) / 1000u);
+        const uint32_t gap = (g3 > ADEV_GAP_S) ? g3 : ADEV_GAP_S;
+        if (s_adev_last_s != 0u && (uint32_t)(g_uptime_s - s_adev_last_s) > gap) adev_break_all();   /* V2 */
         s_adev_last_s = g_uptime_s ? g_uptime_s : 1u;
         adev_feed_filtered(y);            /* decimacni pyramida (dlouhodoby Allan), pres filtr izolovanych odlehlych */
     }

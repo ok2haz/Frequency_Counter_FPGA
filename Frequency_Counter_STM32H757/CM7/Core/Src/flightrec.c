@@ -6,6 +6,7 @@
 #include "w25q.h"
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* g_rtos_*, g_sensors, g_uptime_s, qspiMutexHandle */
+#include "ipc_shared.h"       /* IPC_GATE_N -- popisky presetu hradla (el_gate_name) */
 #include "cmsis_os2.h"
 #include "stm32h7xx_hal.h"
 #include <stdio.h>
@@ -938,12 +939,10 @@ void errlog_boot_record(void)
  * zvlast (displej, a nyni i IPC kanal pro web — viz `ipc_errlog_service`). */
 static const char *el_gate_name(uint8_t idx)
 {
-    switch (idx & 3u) {
-    case 0:  return "0,1s";
-    case 1:  return "1s";
-    case 2:  return "10s";
-    default: return "100s";
-    }
+    /* v0.45.14 (audit): tabulka byla ze zaniklého formatu v1 (0,1/1/10/100 s, index `& 3`), takze popisky prepnuti hradla
+     * v zaznamech lhaly uz od formatu v2 (0,05/0,1/0,25/0,5/1 s). Nyni stejna tabulka jako `scpi_gate_s` / `GATE_VAL`. */
+    static const char *const N[IPC_GATE_N] = { "0,05s", "0,1s", "0,25s", "1s", "10s", "100s" };
+    return (idx < IPC_GATE_N) ? N[idx] : "?";
 }
 
 void errlog_fmt_detail(const errlog_rec_t *r, char *buf, size_t n)

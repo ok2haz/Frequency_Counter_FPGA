@@ -206,7 +206,7 @@ volatile uint8_t g_tz_auto       = 0;       /* 1 = AUTO CET/CEST (EU pravidlo), 
 /* Ulozene UI nastaveni (persist v BKP_DR1): default = {FREQ, CH B, GATE 1s, RUN}
  * = bit1(chan=1) | bit2(gate=1) | bit4(run=1) = 0x16. MX_RTC_Init ho prepise
  * z BKP, pokud tam je platny magic (warm reset s drzenou backup domenou). */
-volatile uint8_t g_ui_cfg        = 0x98;   /* format v2 (ipc_shared.h): mode 0, kanal A, hradlo idx 2 = 0,25 s, RUN */
+volatile uint8_t g_ui_cfg        = 0xD8;   /* format v2 + IPC_UICFG_GT (ipc_shared.h): mode 0, kanal A, hradlo idx 2 = 0,25 s, RUN */
 volatile uint8_t g_ui_cfg_dirty  = 0;
 
 /* Systemove nastaveni (jas + mute + auto-dim), persist v BKP_DR2. MX_RTC_Init prepise z BKP. */
