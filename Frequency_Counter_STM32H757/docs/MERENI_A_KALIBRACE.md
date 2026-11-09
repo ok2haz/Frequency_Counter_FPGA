@@ -1524,3 +1524,49 @@ t387 = @6 +0,141).
   flash zůstává. Nižší šum značky bez rozbití A→B by vyžadoval zmenšit logiku na 100 MHz doméně (rezerva pro cesty TDC / okna /
   PHY) = větší zásah do FPGA (budoucí práce). Vydané zkušební bitstreamy: `ab_test/FW_0x050A_v3_20261108-1301_60747e3.fs`
   a `ab_test/TEST_FW_0x050A_v3_base_noAppOsc_s6_20261108-1332.fs` (NEnahrávat do flash FPGA).
+
+### 2026-11-08 22:04 – 2026-11-09 15:50 — noc1109: 18hodinový běh, hradla 100 s / 10 s / 1 s, kanál A = externí GPSDO, B = CLK_2 (CM7 v0.45.14)
+
+Jeden skript držel COM10 (`noc_logs/_rozbor/noc1109.py`, výstup `noc1109/`: `log.csv` 219 řádků po 5 min, `bloky.txt`, hodinové `raw_*.txt`,
+rozbor `noc1109_rozbor.py`). Deska po power-cyklu 21:38, GPSDO od startu v LOCK. Bez zásahu, bez resetu.
+
+**Robustnost (celých 18 h):** 0 resetů, GPSDO ve stavu LOCK celou dobu (y −0,29 … +0,12 ppb, od ustálení |y| ≤ 0,14 ppb, TIE −109 … +28 ns,
+po ustálení ±28 ns), kód DAC 24969 → 24982 (+13 LSB za 18 h ≈ 2,5·10⁻¹¹/h), volný zásobník všech úloh konstantní (FpgaTask 1392 B, Ui 5512,
+default 1720, Uart 5360, I2C4 924), halda min 21104 B beze změny (žádný únik), SEQ FPGA díry 0, GPS fix 2 s 8–12 družicemi, OCXO 46,7 → 45,9 °C,
+deska 28,9 → 27,5 °C. SELFTEST 16/16 na konci. Žádný záznam `stall:` / IWDG.
+
+**Ověření nových hradel:**
+| hradlo | kontrola | výsledek |
+|---|---|---|
+| 100 s | čas do prvního vzorku po přepnutí (3 pokusy) | **210 s, 305 s, 305 s** (2–3 délky okna, ne ≤ 115 s) |
+| 100 s | pyramida se mezi vzorky neláme (oprava `ADEV_GAP_S`) | **✅ prokázáno**: po 70 vzorcích po 100 s (2,5 h) jsou v pyramidě všechny, řádek pro τ = 1000 s (stage 1) existuje; se starou mezí 30 s by se pyramida lámala při každém vzorku |
+| 100 s / 10 s | počet vzorků proti očekávání | **~77 % (100 s: 70 z ~91) a ~82 % (10 s: 591 z ~718)**; u 1 s 97 % (A) a ~100 % (B) → ⬜ viz STATUS #373 |
+| 10 s | `tau0 = 10000 ms`, hromadění | ✅ |
+
+⚠️ **Čtení `status full` při dlouhém hradle:** řádky `STATISTIKA: ADEV(1/10/100/1000 s)` mají PEVNÉ popisky (`TS[]` ve `freertos_task_uart.c`), nikoli skutečné τ.
+Při hradle 100 s je `ADEV(1 s)` ve skutečnosti τ = 100 s a `ADEV(10 s)` τ = 1000 s, při 10 s je `ADEV(1 s)` τ = 10 s (STATUS #374).
+
+**ADEV (relativní, jednotky 10⁻¹⁵ z `bloky.txt`):**
+| blok | kanál / signál | τ = 1 s | 10 s | 100 s | 1000 s |
+|---|---|---|---|---|---|
+| PODLAHA_B 15:02–15:32 (1 s) | B = CLK_2 (náš OCXO, koherentní) | **9 250** | **1 459** | **428** | – |
+| HLAVNI_1S 03:32–15:00 (1 s) | A = externí GPSDO | 7 137 537 | 28 314 062 | 34 502 964 | 39 888 528 |
+| HRADLO10 (hradlo 10 s) | A | – | 2,5·10⁻⁹ | 9,2·10⁻¹⁰ | – |
+| HRADLO100 (hradlo 100 s) | A | – | – | 2,6·10⁻⁹ | 3,5·10⁻¹⁰ |
+| ZAKLAD_B 22:04–22:35 (1 s) | B = CLK_2 | 4 173 273 | 20 912 110 | 13 317 922 | – |
+| KONEC 15:32–15:48 (hradlo 0,25 s) | A | 5 925 319 | 43 250 748 | 46 403 876 | – |
+
+- **Podlaha přístroje (kanál B, 15:02):** ADEV 9,3·10⁻¹² @ 1 s, 1,5·10⁻¹² @ 10 s, 4,3·10⁻¹³ @ 100 s – shoduje se s dřívějšími měřeními a s predikcí
+  √2·tdc/τ.
+- 🔴 **Kanál A (externí GPSDO) má šum o ~3 řády horší než B (3·10⁻⁹ … 7·10⁻⁹ @ 1 s) a ADEV z 1s vzorků ROSTE s τ (7·10⁻⁹ → 4·10⁻⁸ @ 1000 s).**
+  Přímá měření dlouhými hradly (2,6·10⁻⁹ @ 100 s, 3,5·10⁻¹⁰ @ 1000 s) vycházejí o řád lépe než pyramida z 1s vzorků v téže τ. Z těchto dat se
+  **nedá vyvodit stabilita našeho zamčeného OCXO proti externímu GPSDO**: dominuje šum cesty A (nebo samotného zdroje), ne stabilita reference.
+  ⚠️ I kanál B byl 22:04–22:35 špatný (4,2·10⁻⁹) a v 15:02 dobrý (9·10⁻¹²) při téže konfiguraci (A externí, ochrana ÷16 na A) → příčina souvisí s ČASEM,
+  ne jen s kanálem. HYPOTÉZY (žádná neověřena): amplituda / hrana externího signálu na vstupu A (dříve ±2 ns u slabého signálu, t370), přeslech A→B při
+  nekoherentních signálech (t374/t378), nestabilita samotného externího GPSDO během dne.
+- **Rozhodující levné měření:** (1) osciloskop na vstupu A (amplituda, hrana, DC), (2) PROHODIT kabely (externí GPSDO na B, CLK_2 na A) a opakovat 1 h –
+  ukáže, zda šum následuje signál, nebo kanál.
+
+**Záznam flight recorderu `stack (pretekl zasobnik tasku)`, dump při uptime 13870 s:** byl v přístroji uložený už před touto nocí (`status` ho hlásil 8. 11.
+odpoledne, před úpravami hradla); neodpovídá žádnému resetu této noci a `stack_min` v něm je 920 B (nejhorší úloha I2C4), přetečení z něj nevyčtu.
+Příčinu neznám (STATUS #375).
