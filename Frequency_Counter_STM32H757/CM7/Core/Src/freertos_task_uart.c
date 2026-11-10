@@ -4366,9 +4366,13 @@ void UartTask_run(void *argument)
 					  	  printf("STATISTIKA: filtr izolovanych odlehlych (31 vzorku, 7 MAD) %s: vyrazeno %lu z %lu posouzenych\n",
 					  	         g_adev_hampel_en ? "ZAP" : "VYP", (unsigned long)ho, (unsigned long)hs);
 					  	  static const unsigned long TS[4] = {1ul, 10ul, 100ul, 1000ul};
+					  	  /* tau stage = nominalni nasobek * skutecne tau0 vzorku (jako osa grafu); bez mereni nominal. */
+					  	  float t0m = 0.0f, t0s = 0.0f;
+					  	  const float t0 = (screen_main_tau0(&t0m, &t0s) && t0m > 0.0f) ? t0m : 1.0f;
 					  	  for (int q = 0; q < 4; q++) { float fa = 0.0f, ra = 0.0f;
 					  	    if (screen_main_adev_compare(q, &fa, &ra))
-					  	      printf("STATISTIKA: ADEV(%lu s): filtrovana %ld e-15, surova %ld e-15\n", TS[q], (long)(fa * 1e15f), (long)(ra * 1e15f)); }
+					  	      printf("STATISTIKA: ADEV(%lu ms): filtrovana %ld e-15, surova %ld e-15\n",
+					  	             (unsigned long)((float)TS[q] * t0 * 1000.0f + 0.5f), (long)(fa * 1e15f), (long)(ra * 1e15f)); }
 					  	}
 					  	/* Bod 6: skutecne τ0 vzorku statistiky (Σ hradel za tik). Osa τ
 					  	 * i tabulky pocitaji s 1 s; tady je videt, o kolik se lisi.
