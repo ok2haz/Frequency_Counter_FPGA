@@ -1616,3 +1616,16 @@ monitor `x_raw_ns` sčítá fázi 1PPS proti OCXO) → `gpsdo on`. Teplota OCXO 
   teplotě); lineární odhad z y₀ (−81 ns / −325 ns) je spodní mez. Skutečnou 6–24h bilanci změří až holdover test přes noc.
 - Po znovuzapnutí smyčka fázi −100 ns nevrací: fáze je RELATIVNÍ (nová nula při návratu do LOCK), TIE hned po zámku −9 → +2 ns.
 - Rubidium proti OCXO: pro holdover v řádu hodin při ppb přesnosti NEpotřebné; smysl má od µs/den nebo sub-10⁻¹¹ kmitočtu během výpadku GPS.
+
+### 2026-11-10 16:41 - 18:45 - remeasure1110: znovu po power-cyklu a fixu (CM7 v0.45.14, A = CLK_2 nas, B = externi GPSDO)
+
+`noc_logs/_rozbor/remeasure1110.py` (vystup `remeasure1110/`, rozbor `remeasure_rozbor.py`): cekani na zamek nasi smycky (zamceno 156 s, fix 2, 11 druzic),
+pak 30 min B a 30 min A, hradlo 1 s, ochrana ZAP.
+
+| veliCina | B (externi GPSDO) | A (nas CLK_2) |
+|---|---|---|
+| offset proti 10 MHz | -392 ... +129 ppb, stred -129 ppb, sd 85 ppb | -0,28 ... +0,26 ppb, sd 0,04 ppb |
+| ADEV 1 s / 10 s / 100 s | 6,6e-9 / 2,1e-8 / 2,7e-8 | 3,65e-11 / 6,5e-12 / 2,1e-12 |
+
+- B: 46 skoku vetsich nez 0,05 Hz za 30 min, rozsah az 5 Hz; jedno 10min okno drzelo -182 ppb s rozsahem 0,0027 Hz (stabilni, ale mimo nominal = ztrata zamku / holdover).
+- Externi GPSDO se po power-cyklu a fixu NEstabilizoval; sum je v nem, ne v citaci (potvrzuje #372, #377).
