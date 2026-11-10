@@ -6204,3 +6204,11 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** host test `t_uicfg_norm`; v provozu záznam chyb „brana X -> Y“ hned po startu bez zásahu uživatele.
 - **Commit:** (doplnit)
 - **Stav:** ✅ host test + mutace; ⬜ načtení starého uloženého bajtu z BKP na desce neověřeno (ukládá jen firmware)
+
+### L-0275 - popisek měření se škáloval jinde než hodnota (UART ADEV)
+
+- **Příznak:** `status full` psal `ADEV(1 s)` i při hradle 100 s, kdy stage 0 má τ ≈ 100 s.
+- **Příčina:** pevná tabulka popisků nezávislá na skutečném τ0, který už používal graf.
+- **Oprava:** τ = nominální násobek × střední τ0 (`screen_main_tau0`), výpis v ms.
+- **Pravidlo:** popisek veličiny bere osu ze stejného zdroje jako hodnotu. Vedlejší: `FIX:n` v `gps` je kvalita GGA, ne režim 2D/3D.
+- **Stav:** ✅ na desce (popisky); hodnoty po resetu pocházejí z rekonstrukce, neposuzovat.
