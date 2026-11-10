@@ -1570,3 +1570,27 @@ Při hradle 100 s je `ADEV(1 s)` ve skutečnosti τ = 100 s a `ADEV(10 s)` τ = 
 **Záznam flight recorderu `stack (pretekl zasobnik tasku)`, dump při uptime 13870 s:** byl v přístroji uložený už před touto nocí (`status` ho hlásil 8. 11.
 odpoledne, před úpravami hradla); neodpovídá žádnému resetu této noci a `stack_min` v něm je 920 B (nejhorší úloha I2C4), přetečení z něj nevyčtu.
 Příčinu neznám (STATUS #375).
+
+### 2026-11-09 19:42 – 2026-11-10 15:50 — noc1110: kabely PROHOZENY (A = CLK_2, B = externí GPSDO), ochrana přeslechu ZAP/VYP (CM7 v0.45.14)
+
+`noc_logs/_rozbor/noc1110.py` (výstup `noc1110/`, rozbor `noc1110_rozbor.py`): 17 bloků po 70 min, hradlo 1 s, `meas reset` na začátku každého,
+cyklicky A+ochrana ZAP, B+ZAP, A+VYP, B+VYP; každých 5 min i skutečný kmitočet kanálu. 0 resetů, GPSDO celou dobu LOCK (y −0,16 … +0,21 ppb),
+SELFTEST 16/16, zásobníky, halda a SEQ díry beze změny jako v noci 1109.
+
+**1) Šum SLEDUJE SIGNÁL, ne kanál.** Náš CLK_2 je na kanálu A čistý, externí GPSDO na B je o 2–3 řády horší:
+| signál (kanál) | ADEV 1 s | 10 s | 100 s |
+|---|---|---|---|
+| náš CLK_2 (A), ochrana ZAP, 5 bloků | **3,1·10⁻¹¹** (28,6–33,6) | 6,3·10⁻¹² | 1,9·10⁻¹² |
+| náš CLK_2 (A), ochrana VYP, 4 bloky | 1,18·10⁻¹⁰ (90–142) | 2,5·10⁻¹¹ | 6,6·10⁻¹² |
+| externí GPSDO (B), 8 bloků | 3,4·10⁻⁹ … 7,9·10⁻⁹ | 1,4·10⁻⁸ … 3,3·10⁻⁸ | 1,2·10⁻⁸ … 3,8·10⁻⁸ |
+Noc 1109 (A = externí) tedy NEmohla měřit šum přístroje: kanál A byl v pořádku, vadil signál.
+
+**2) Externí GPSDO nemá stabilní kmitočet.** Kanál B v čase (ppb proti 10 MHz): −172,5 (20:53, 21:43) → −80 (23:39) → −5 (01:35) → +30 (02:25) → +2 (04:20) →
++40 (06:16) → −171,9 (07:06) → −172,8 (09:02) → −0,5 (10:58) → −172,5 (11:48) → +0,8 (13:44); rozsah kmitočtu 1,7–2,8 Hz v každém bloku B, sd 0,91 Hz za noc.
+Uvnitř stavu je stabilní (1·10⁻¹⁰ za 2 min), pak skočí. Hypotéza (neověřená): relokace / ztráta zámku externího GPSDO (okenní anténa, malý horizont, viz paměť
+`gps-antennas-setup`). Náš GPSDO ve stejné době drží |y| ≤ 0,21 ppb → jako reference je dnes použitelný náš, ne externí.
+
+**3) Ochrana proti přeslechu (`fpga presc guard`, v0.45.10) je velmi účinná:** na měřeném kanálu s naším signálem sníží ADEV **3,8× @ 1 s, 4,0× @ 10 s, 3,5× @ 100 s**
+(5 bloků ZAP proti 4 blokům VYP, rozdíl větší než rozptyl uvnitř skupin, drží se přes noc). t385 (−15 až 20 %) ukázal jen slabý případ s jinou konfigurací.
+Zbytek: s ochranou je ADEV(1 s) našeho signálu 3·10⁻¹¹, o ~3× nad podlahou 9,3·10⁻¹² z 9. 11. (B, jiná konfigurace) → přeslech od asynchronního signálu
+nezmizí zcela. ⬜ Neřešeno: proč byl 8. 11. 22:04 kanál B (náš signál, externí na A) špatný (4,2·10⁻⁹), když ho tuto noc nic podobného nepostihlo.
