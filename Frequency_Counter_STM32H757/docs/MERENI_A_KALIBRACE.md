@@ -1594,3 +1594,25 @@ Uvnitř stavu je stabilní (1·10⁻¹⁰ za 2 min), pak skočí. Hypotéza (neo
 (5 bloků ZAP proti 4 blokům VYP, rozdíl větší než rozptyl uvnitř skupin, drží se přes noc). t385 (−15 až 20 %) ukázal jen slabý případ s jinou konfigurací.
 Zbytek: s ochranou je ADEV(1 s) našeho signálu 3·10⁻¹¹, o ~3× nad podlahou 9,3·10⁻¹² z 9. 11. (B, jiná konfigurace) → přeslech od asynchronního signálu
 nezmizí zcela. ⬜ Neřešeno: proč byl 8. 11. 22:04 kanál B (náš signál, externí na A) špatný (4,2·10⁻⁹), když ho tuto noc nic podobného nepostihlo.
+
+### 2026-11-10 16:11 – 17:30 — holdover1110: jak rychle se rozbíhá fáze OCXO bez smyčky GPSDO (CM7 v0.45.14)
+
+`noc_logs/_rozbor/holdover1110.py` (výstup `holdover1110/`, rozbor `holdover_rozbor.py`): 10 min základ (LOCK) → `gpsdo off` 60 min (DAC drží poslední kód, pasivní
+monitor `x_raw_ns` sčítá fázi 1PPS proti OCXO) → `gpsdo on`. Teplota OCXO 45,8–46,0 °C, deska 27,3–27,5 °C (po celou dobu konstantní), 1PPS odmítnuto 27 → 27 (žádné).
+
+| veličina | hodnota |
+|---|---|
+| TIE v LOCK (základ) | 11…22 ns, sd 3,5 ns (= šum 1PPS po korekci pilovitého průběhu) |
+| **změna fáze za 60 min bez smyčky** | **−100 ns** (z 0 na −100, min/max −104/+1) |
+| střední kmitočet proti GPS | −0,031 ppb (lineární fit, rezidua 8,9 ns) |
+| kmitočet po 10 min úsecích [ppb] | −0,016, −0,025, −0,006, −0,041, −0,081 |
+| kvadratický fit | y₀ = −0,004 ppb, **drift −0,056 ppb/h**, rezidua 4,8 ns (≈ šum) |
+| znovuzamčení po `gpsdo on` | **251 s** (FLL → LOCK), kód 24977,00 → 24976,60 |
+
+- **Za hodinu holdoveru fáze uteče ~100 ns a kmitočet zůstane do ~0,03–0,08 ppb od GPS.** Pro čítač s ppb přesností je to dostačující; pro udržení času na stovky ns trvá
+  holdover ~1 h.
+- Kmitočet OCXO se v průběhu hodiny posouvá (−0,016 → −0,081 ppb v posledních 10 min), nejistota jednoho 10min sklonu je ~±0,008 ppb, takže trend je významný.
+  ⚠️ **Extrapolace na 6 h / 24 h z kvadratického modelu (−3,7 µs / −58 µs) NENÍ spolehlivá** (stárnutí a teplota se neextrapolují; jde o jedinou hodinu při konstantní
+  teplotě); lineární odhad z y₀ (−81 ns / −325 ns) je spodní mez. Skutečnou 6–24h bilanci změří až holdover test přes noc.
+- Po znovuzapnutí smyčka fázi −100 ns nevrací: fáze je RELATIVNÍ (nová nula při návratu do LOCK), TIE hned po zámku −9 → +2 ns.
+- Rubidium proti OCXO: pro holdover v řádu hodin při ppb přesnosti NEpotřebné; smysl má od µs/den nebo sub-10⁻¹¹ kmitočtu během výpadku GPS.
