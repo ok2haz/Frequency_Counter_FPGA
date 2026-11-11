@@ -1629,3 +1629,12 @@ pak 30 min B a 30 min A, hradlo 1 s, ochrana ZAP.
 
 - B: 46 skoku vetsich nez 0,05 Hz za 30 min, rozsah az 5 Hz; jedno 10min okno drzelo -182 ppb s rozsahem 0,0027 Hz (stabilni, ale mimo nominal = ztrata zamku / holdover).
 - Externi GPSDO se po power-cyklu a fixu NEstabilizoval; sum je v nem, ne v citaci (potvrzuje #372, #377).
+
+## Nocni test noc1111 (2026-11-10 20:18 -> 11. 11. 13:50, v0.45.14, kanal A = nas OCXO, B = externi GPSDO)
+
+- **F1 (LOCK, hradlo 100 s, 2 h 27 min):** oken 11461 -> 11548 = 87 z ~88 ocekavanych, zahozeno z fronty 0, TIE -32..+96 ns (zaver -13). Ztrata oken (#373) pri hradle 100 s se NEreprodukovala.
+- **F2 (`gpsdo off`, holdover 7 h):** TIE od +1 ns k **-838 ns** (cca -120 ns/h, y -0,047 ppb), kod DAC drzen 24966,14, OCXO 47,1 -> 46,2 C, deska 28,0 C. Dalsi bod ke STATUS #379/#303.
+- **F3 (`gpsdo on`):** znovuzamceni po **251 s** (stejne jako drive), pak 30 min LOCK TIE -7..+6 ns.
+- **F4 (LOCK, 6,9 h, hradlo 1 s, 24937 vzorku, ztraceno 0):** TIE -38..+11 ns, ADEV 1 s 2,0e-11, 10 s 3,7e-12, 100 s 9,7e-13, 1000 s 3,1e-13. Kod DAC 24966 -> 24977 (OCXO stari/teplota).
+- **F5 (kanal B, externi GPSDO, 35 min):** ADEV 1 s 9,3e-9, 10 s 3,5e-8, 100 s 3,9e-8 -> externi zdroj dal NESTABILNI (potvrzuje #372/#377/#380).
+- Beh bez resetu, 1PPS odmitnuto 0, diry 0; `SEQ FPGA: diry 1 (5 mereni)` je z jedine udalosti pri startu.
