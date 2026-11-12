@@ -1638,3 +1638,31 @@ pak 30 min B a 30 min A, hradlo 1 s, ochrana ZAP.
 - **F4 (LOCK, 6,9 h, hradlo 1 s, 24937 vzorku, ztraceno 0):** TIE -38..+11 ns, ADEV 1 s 2,0e-11, 10 s 3,7e-12, 100 s 9,7e-13, 1000 s 3,1e-13. Kod DAC 24966 -> 24977 (OCXO stari/teplota).
 - **F5 (kanal B, externi GPSDO, 35 min):** ADEV 1 s 9,3e-9, 10 s 3,5e-8, 100 s 3,9e-8 -> externi zdroj dal NESTABILNI (potvrzuje #372/#377/#380).
 - Beh bez resetu, 1PPS odmitnuto 0, diry 0; `SEQ FPGA: diry 1 (5 mereni)` je z jedine udalosti pri startu.
+
+## Dva 10h holdovery (2026-11-11 -> 12, v0.45.14, kanal A = nas OCXO, DAC zmrazeny) — STATUS #303/#311
+
+Dva nezavisle 10h behy `gpsdo off` (DAC drzi posledni kod, pasivni fazovy monitor). Cil: holdover
+data pro #303. Vysledek: **tvar driftu se mezi behy LISI, vcetne znamenka — potvrzuje, ze do ~10h
+vede RETRACE (relaxace krystalu po zmrazeni regulace), ne starnuti ani teplota.**
+
+- **holdover24 (11. 15:49 -> 12. ~01:59, ~10h cist pred prerusenim):** TIE **monotonne** 0 -> **+1730 ns**.
+  Rychlost driftu (dTIE/dt) **vrcholi v 3.-4. hodine** (~+86·10⁻¹²/h) a pak klesa (+29·10⁻¹²/h v 9. h) —
+  typicky prubeh **retrace**, ne linearni starnuti. Teplota OCXO +0,72 °C, deska +1,1 °C (stoupaly),
+  prumerny offset +0,048 ppb. **Beh prerusil restart PC (Win update); deska bezi oddelene a holdover
+  bezel dal** — pri obnoveni ~05:43 se TIE z +1730 ns vratila na +1088 ns (dalsi dukaz relaxace, ne monotonniho starnuti).
+- **holdover24b (12. 05:56 -> 16:00, 10,06 h cistych, 0 ztracenych oken):** po obnoveni desky (power sekvence
+  po restartu PC + znovuzamceni) ma TIE **tvar paraboly (U)**: 0 -> minimum **−1797 ns v 5. hodine** -> zpet
+  na **+625 ns v 10. hodine**. Okamzity kmitocet y driftuje **temer linearne** z −0,14 ppb (h1-3) pres nulu
+  (h5-6) do +0,15 ppb (h7-10). **Teplota OCXO plocha (46,5-46,7 °C, Δ 0,2 °C) -> drift NENI teplotni.**
+  Cisty prumerny offset +0,017 ppb, kod DAC zmrazeny 24974,68.
+
+**Srovnani tri holdoveru:** noc1111 −838 ns / −0,047 ppb (klesajici), holdover24 +1730 ns (retrace, rostouci),
+holdover24b U ±1797 ns (prochod nulou). **Ruzny tvar i znamenko za srovnatelnych 7-10 h = retrace dominuje
+a jeho smer zavisi na stavu pri zmrazeni a nedavne historii** (holdover24b byl cerstve po power-cyklu).
+Teplotu jako hlavni zdroj vylucuje plocha teplota v holdover24b. **Starnuti D z techto behu NEJDE cistε
+odhadnout** (prvnich 10 h prebije retrace) — potreba >= 2-3 dny nepretrzite se stabilni smyckou a zaznamem
+kodu DAC (per #311/#324), ne holdover.
+
+**Pro UI kuzel (#303):** max |TIE| dosahl za 10 h ~1,8 µs, ale prubeh je nemonotonni a znamenko se mezi behy
+meni -> jednoducha monotonni "sirka ∝ cas" je zavadejici. Spolehlivy je jen rad: stovky ns za ~1 h, jednotky µs za ~5-10 h.
+Relock po `gpsdo on` opet rychly (holdover24b: FLL -> LOCK behem ~minut, TIE vynulovana, 1PPS 0 der).
