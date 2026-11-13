@@ -1666,3 +1666,30 @@ kodu DAC (per #311/#324), ne holdover.
 **Pro UI kuzel (#303):** max |TIE| dosahl za 10 h ~1,8 µs, ale prubeh je nemonotonni a znamenko se mezi behy
 meni -> jednoducha monotonni "sirka ∝ cas" je zavadejici. Spolehlivy je jen rad: stovky ns za ~1 h, jednotky µs za ~5-10 h.
 Relock po `gpsdo on` opet rychly (holdover24b: FLL -> LOCK behem ~minut, TIE vynulovana, 1PPS 0 der).
+
+### 2026-11-12 -> 11-13 — aging1112: 21,7 h nepretrzity LOCK, starnuti D z trajektorie kodu DAC (v0.45.14) — STATUS #303/#311
+
+Prvni aging odhad SPRAVNOU metodou: smycka cely cas v LOCK (ne zmrazeny holdover), starnuti se cte z toho,
+jak se kod DAC posouva v case, aby drzel 10 MHz na GPS. Zdroj = datalog, 7574 zaznamu po 10 s, vsechny flags 0x07,
+0 der 1PPS. Vytazeno `datalog csv 7700` pres UART (nedestruktivni), regrese v `scratchpad/rozbor.py`.
+
+- **Kod DAC (fraktalni z `gpsdo`): 24966,84 (lock 2,4 h) -> 24967,74 (10,3 h) -> 24970,28 (20,8 h).** Roste -> OCXO
+  nativne klesa, DAC dotahuje nahoru.
+- **Regrese kod<->cas (cely LOCK): +5,0 LSB/den (r=0,84).** S K=3,4e-11/LSB a 10 MHz: **D = +1,7 mHz/den = +1,7e-10/den.**
+  Rad 10^-10/den = typicky dobry OCXO. Znamenko: nativni kmitocet OCXO klesa ~1,7e-10/den.
+- **Tempco NEODDELITELNY v tomhle behu.** Pec drzi Toc v 0,63 °C (46,58-47,21) a to kolisani je kolinearni s casem:
+  dvourozmerna regrese da +1,1 LSB/°C na celem behu, ale -4,4 LSB/°C jen na 2. polovine. **Prehozene znamenko =
+  kolinearita, ne mereni.** Tempco oddeli az beh s vetsim rozkmitem teploty nebo zamerna teplotni rampicka.
+- **Retrace uz NEDOMINUJE.** Na rozdil od zmrazenych holdoveru (retrace = relaxace do ~10 h) je tady trajektorie
+  POMALA brzy (2,7 LSB/den mezi 2,4-10,3 h) a RYCHLA pozde (5,8 LSB/den mezi 10,3-20,8 h) — opak exponencialniho
+  dosedani. Retrace je po ~2,4 h maly; trend je realne starnuti + pomale tepelne/okolni kolisani.
+- **ADEV disciplinovaneho vystupu (OCXO vs GPS, z freq_hz, tau0=10 s): plocha ~1,6e-11 pres tau 10 ... 30000 s.**
+  (10 s 1,8e-11, 300 s 1,5e-11, 10000 s 1,6e-11.) Smycka zdrava, na dlouhych tau nic neprosakuje (zadny drift v zamku).
+
+**🔴 Omezeni:** datalog uklada kod DAC jako CELY LSB (#311 = zaokrouhleny povel bez ditheru), takze cela vychylka
+za 21 h je jen +2 LSB (24968 -> 24970 celociselne). **Rad a znamenko D jsou jiste, hodnota je ±~50 %** — regrese
+sice chytne casovani kroku, ale nese kvantizacni sum. Cistou aging D (a oddeleny tempco) da az **>=7denni beh #303**:
+vychylka ~35 LSB preklene kvantizaci a delsi okno oddeli denni teplotni cyklus od monotonniho starnuti.
+Pro UI holdover kuzel to uz dava pouzitelny rad: D ~ 1-2 mHz/den (~1-2e-10/den) -> za hodinu holdoveru pricte
+starnuti ~<0,1 ns k fazi, takze v radu hodin je proti retrace/sumu zanedbatelne; kuzel kratsich horizontu nese
+hlavne retrace, ne starnuti.
