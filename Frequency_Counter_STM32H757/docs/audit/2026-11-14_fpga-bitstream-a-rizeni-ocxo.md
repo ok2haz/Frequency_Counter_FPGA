@@ -338,6 +338,8 @@ Odchylky od návrhu v nálezech:
   menší než putování potřebného kódu (2,7–3,8·10⁻¹¹ za hodinu).
 
 Na desce (2026-11-14 09:13): v0.45.17 v obou bankách, po resetu SELFTEST 16/16, `gpsdo test` PASS, brána GNSS OK.
+Znovuzamčení (100 min záznamu) a power-cyklus v ~11:00 prošly bez nálezu; F-0290, F-0291 a model F-0292 jsou ověřeny v běhu na desce
+(větev „sklon nad 2 × ADEV“ jen host testem, dosedání bylo malé). Holdover s novým modelem zatím nezkoušen.
 Verze v0.45.16 měla špatnou očekávanou mez v `mp_selftest` (SELFTEST 15/16), opraveno v `1e1fad2` (L-0280).
 
 ## Co nebylo ověřeno

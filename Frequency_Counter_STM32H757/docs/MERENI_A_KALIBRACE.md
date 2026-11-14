@@ -1710,7 +1710,7 @@ u kladnych hodnot prazdne (regex loggeru necekal znamenko `+`); kod a teploty js
   ~3x mezi metodami. ⬜ HYPOTEZA: kdyby se kod choval jako nahodna prochazka i na dnech, mela by primka pres 7 dni chybu sklonu
   ~2,5 LSB/den (±50 % pri D 5 LSB/den) a pres 30 dni ~1,2 LSB/den; cast putovani je ale vynucena GPS a je omezena, takze
   skutecna chyba bude mensi. Rozhodne az vicedenni beh (#303).
-- **Ranni udalost 07:05 -> 07:40 (pricina neznama):** T_ocxo kleslo z 46,18 na 44,10 °C za 30 min, T_deska soucasne stouplo o 0,8 °C;
+- **Ranni udalost 07:05 -> 07:40 (pricina: uklid podlahy v mistnosti kolem 07:15 -- proudeni vzduchu/chlad, potvrdil uzivatel):** T_ocxo kleslo z 46,18 na 44,10 °C za 30 min, T_deska soucasne stouplo o 0,8 °C;
   v 07:40 se T_ocxo behem 6 min vratilo o +1,3 °C. Faze az -97 ns, zbytkova odchylka kmitoctu az 0,21 ppb, kod +8 LSB
   (vrchol 24983,54 v 07:40) a do 08:30 zpet na 24976,2. Odchylka volneho OCXO (zbytkova odchylka - K x zmena kodu) az -0,30 ppb.
   Tempco z udalosti nejde urcit: bez zpozdeni teploty +0,9e-10/K (r 0,63), se zpozdenim 10 min -0,7e-10/K (r -0,65); jen 32 bodu
@@ -1725,4 +1725,13 @@ u kladnych hodnot prazdne (regex loggeru necekal znamenko `+`); kod a teploty js
 - **F-0286 (TDC `ld` po LW), vychozi stav po 36,3 h behu (bitstream appOscS6, modul 35 °C):** bubliny okna P 0 / S 0 z 523 431 oken,
   spike-reject 0, okna s vadnym segmentem A 0 / B 100.
 
-**Nezmereno:** tempco (chce rizenou zmenu teploty a zaznam faze se znamenkem), starnuti na dnech, pricina ranni udalosti.
+**Nezmereno:** tempco (chce rizenou zmenu teploty a zaznam faze se znamenkem), starnuti na dnech. Udalost byla vnejsi tepelny ruch (vzduch z uklidu), ne vada pristroje; pro tempco by ji bylo treba opakovat zamerne a s dobre zaznamenanou fazi.
+
+### 2026-11-14 09:13 -> 10:55 — overeni v0.45.17 na desce: znovuzamceni po flashi a power-cyklus (STATUS #381)
+
+Zaznam `gpsdo` po 60 s (`relock_0457.csv`, 100 radku), pak power-cyklus uzivatelem (~11:00).
+
+- **FLL -> LOCK za 218 s po resetu**, `locked` po dalsich 60 s. Nejistota reference: FLL 0,82 -> 0,33 ppb (zmereno), prvnich 5 min LOCK 0,032 ppb (udaj z FLL), od 336 s zmerena ADEV 0,055 -> 0,026 ppb, po 1,3 h 0,017 ppb. Dosedani dopadlo male (sklon faze 0-32 ppt, pod 2x ADEV), takze vetev "prebytek sklonu" se na desce neuplatnila; je overena jen host testem a selftestem.
+- **Drift a prochazka kodu** se objevi az po 30 min / 1 h LOCK: drift 157 -> 37 ppt/h (kolisa se zacatkem useku), prochazka 69 -> 54 ppt/sqrt(h) (v rade 0,047-0,068 z nocnich dat, sedi).
+- **Brana GNSS:** po celou dobu OK (3D, 12 druzic, HDOP 0,7), 0 poklesu.
+- **Po power-cyklu (cold start):** SELFTEST 16/16, `gpsdo test` PASS, DAC obnoven z flash (kod 24979 -> 24982), FLL po 96 s, brana GNSS OK (po startu 15 s "GPS bez fixu" a NESTACI, pak 3D/12 druzic), FPGA FW 0x050A CAPS 0x01DF7C32 beze zmeny, TDC kalibrace OK, rezerva retezu A 8,5 % / B 10,4 %, 0 mezer, bubliny 0, CM4 alive, ETH/SCPI/HTTP OK. Varovani TEPLOTA NEUSTALENA je ocekavane po studenem startu.
