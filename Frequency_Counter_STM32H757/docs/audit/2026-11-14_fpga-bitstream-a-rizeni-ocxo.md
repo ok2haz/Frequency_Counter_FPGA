@@ -323,7 +323,8 @@ Uživatel schválil navržené pořadí. Provedeno téhož dne:
 | F-0290 | opraveno v kódu (v0.45.15) | `098bdf8` | host test + 16 mutací, meze z datalogu 21 h LOCK, L-0277; ⬜ neověřeno na HW |
 | F-0285 | brána vydání opravena | `64bb7d9` | selftest brány, reporty v2 i v3 (A 175 MHz, B 142 MHz jako WARN), L-0278; ⬜ skutečný strop předděličky neměřen |
 | F-0286 | výchozí měření, RTL beze změny | – | běh 36,3 h (flash appOscS6, modul 35 °C): bubliny okna P 0 / S 0 z 523 431 oken → dopad se při pokojové teplotě neprojevuje; ⬜ test v teple |
-| F-0292, F-0287, F-0288, F-0289, F-0293 | otevřeno | – | – |
+| F-0292 | opraven model nejistoty (v0.45.16); povel v holdoveru beze změny | `5ca59de` | dvě noci LOCK po 9,8 h (`docs/audit/sim/2026-11-14_f0292_*.py`), host test + 26 mutací, L-0279; ⬜ neověřeno holdoverem na desce |
+| F-0287, F-0288, F-0289, F-0293 | otevřeno | – | – |
 
 Odchylky od návrhu v nálezech:
 
@@ -331,6 +332,13 @@ Odchylky od návrhu v nálezech:
   zvedal trvale (medián 1,15×, 95. percentil 1,9×), protože sklon pod touto mezí je tentýž šum, který ADEV už obsahuje.
   Pravidlo „`locked` až po 3 τ“ se nepoužilo; nahrazuje ho měřený sklon a přenos nejistoty přes změnu stavu.
 - F-0286: návrh rozložit `ld` se neprovedl, protože výchozí měření dopad nepotvrdilo. Zůstává test v teple.
+- F-0292: návrh zmrazit v holdoveru přímku proloženou kódem se neprovedl. Nad dvěma nočními záznamy je okamžitý kód
+  nejlepší předpověď potřebného kódu na další 1–3 h; průměr i přímka přes poslední 1–2 h vycházejí hůř. Opraven je jen
+  model nejistoty (člen náhodné procházky kódu). Část nálezu o proporcionální složce (0,7–1,4·10⁻¹¹) platí, ale je
+  menší než putování potřebného kódu (2,7–3,8·10⁻¹¹ za hodinu).
+
+Na desce (2026-11-14 09:13): v0.45.17 v obou bankách, po resetu SELFTEST 16/16, `gpsdo test` PASS, brána GNSS OK.
+Verze v0.45.16 měla špatnou očekávanou mez v `mp_selftest` (SELFTEST 15/16), opraveno v `1e1fad2` (L-0280).
 
 ## Co nebylo ověřeno
 

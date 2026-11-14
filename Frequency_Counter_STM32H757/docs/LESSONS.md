@@ -6301,3 +6301,20 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   `python tests/host/t_gpsdo_ref.py <adresář>` (26 mutací zachyceno); rozbory `scratchpad/eval292.py`, `eval292b.py`.
 - **Stav:** ✅ host test + mutace, ověřeno nad dvěma nočními záznamy; ⬜ neověřeno na HW (holdover s novým firmwarem:
   porovnat udávanou nejistotu se změřenou odchylkou po návratu 1PPS)
+
+### L-0280 — Selftest, který běží jen na cíli, pustil špatně spočtenou očekávanou mez až na desku
+
+- **Datum:** 2026-11-14
+- **Oblast:** `mp_selftest` (`meas_present.c`, selftest č. 10), host test `tests/host/t_gpsdo_ref.py`
+- **Symptom:** v0.45.16 po nahrání hlásila `SELFTEST: 15/16 FAIL`, `FAIL: #10`. Překlad, audit i host test (26 mutací)
+  přitom prošly.
+- **Příčina:** nová kontrola modelu holdoveru čekala 0,0951–0,0953, správná hodnota je 0,09538; mez jsem spočítal
+  z hlavy. Host test měl vlastní kontroly `mp_ref_ppb`, ale blok `mp_selftest` z `meas_present.c` nepřekládal, takže
+  chybu v něm neměl jak vidět. Mutace ji nenajdou: testují, že test padne na vadný kód, ne že projde na správný.
+- **Oprava (v0.45.17):** mez opravena; host test překládá `meas_present.c` a pouští `mp_selftest()` tak, jak běží
+  na cíli (s původní mezí FAIL, s opravou PASS).
+- **Pravidlo:** každý selftest, který jde přeložit na PC, se na PC pouští před nahráním; kontroly psané zvlášť pro
+  host ho nenahrazují. Očekávanou hodnotu do testu nepočítej z hlavy, spočítej ji (skript, kalkulačka) a zapiš ji
+  do komentáře celou.
+- **Detekce:** `python tests/host/t_gpsdo_ref.py <adresář>` → `mp_selftest: PASS`; na desce `selftest` → 16/16.
+- **Stav:** ✅ na desce po resetu 16/16

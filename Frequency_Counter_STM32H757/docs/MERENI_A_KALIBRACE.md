@@ -1693,3 +1693,36 @@ vychylka ~35 LSB preklene kvantizaci a delsi okno oddeli denni teplotni cyklus o
 Pro UI holdover kuzel to uz dava pouzitelny rad: D ~ 1-2 mHz/den (~1-2e-10/den) -> za hodinu holdoveru pricte
 starnuti ~<0,1 ns k fazi, takze v radu hodin je proti retrace/sumu zanedbatelne; kuzel kratsich horizontu nese
 hlavne retrace, ne starnuti.
+
+### 2026-11-13 21:11 -> 11-14 08:30 — noc1113: 11,3 h LOCK, kod DAC na 0,01 LSB pres UART (v0.45.14) — STATUS #303/#311/#381
+
+Zaznam `gpsdo` + `sensors` po 60 s pres UART (kod = servo-povel Q16.16, rozliseni 0,01 LSB; datalog ma 1 LSB). 679 radku,
+0 chyb cteni, cely cas LOCK, 1PPS odmitnuto 25 beze zmeny, 0 der, 0 roztrzenych cteni. Data: `noc_logs/20261113_lock/overnight_lock.csv`
+(lokalni archiv), rozbory `docs/audit/sim/2026-11-14_noc1113_kod_dac.py`, `..._tempco.py`. Vada zaznamu: sloupce y / faze / TIE jsou
+u kladnych hodnot prazdne (regex loggeru necekal znamenko `+`); kod a teploty jsou uplne.
+
+- **Klidny usek 21:11 -> 07:00 (9,8 h):** kod 24973,40 -> 24975,68 (+2,28 LSB), rozsah 24972,53..24979,01. T_ocxo 46,53 -> 46,18 °C,
+  T_deska 28,31 -> 27,81 °C. Primka kod ~ cas: **+14,0 LSB/den = +4,8 mHz/den** (zbytky rms 0,76 LSB, lag-1 autokorelace 0,98 ->
+  smerodatna chyba po oprave na korelaci ±0,8 mHz/den); z koncovych bodu jen +5,6 LSB/den (1,9 mHz/den); aging1112 dal +5,0 LSB/den.
+  S teplotou jako dalsi promennou vyjde +8,6 az +11,5 LSB/den a tempco meni znamenko (korelace T_ocxo s casem -0,80).
+- **Zaver ke starnuti:** jemne rozliseni kodu odstranilo kvantizaci, ale hodnotu D to nezpresnilo. Mezi je putovani kodu samotneho:
+  za 1 h se kod zmeni o 1,4 LSB rms (noc 2026-10-24: 2,0 LSB), koeficient 1,25 LSB/sqrt(h). Deset hodin dava D s rozptylem
+  ~3x mezi metodami. ⬜ HYPOTEZA: kdyby se kod choval jako nahodna prochazka i na dnech, mela by primka pres 7 dni chybu sklonu
+  ~2,5 LSB/den (±50 % pri D 5 LSB/den) a pres 30 dni ~1,2 LSB/den; cast putovani je ale vynucena GPS a je omezena, takze
+  skutecna chyba bude mensi. Rozhodne az vicedenni beh (#303).
+- **Ranni udalost 07:05 -> 07:40 (pricina neznama):** T_ocxo kleslo z 46,18 na 44,10 °C za 30 min, T_deska soucasne stouplo o 0,8 °C;
+  v 07:40 se T_ocxo behem 6 min vratilo o +1,3 °C. Faze az -97 ns, zbytkova odchylka kmitoctu az 0,21 ppb, kod +8 LSB
+  (vrchol 24983,54 v 07:40) a do 08:30 zpet na 24976,2. Odchylka volneho OCXO (zbytkova odchylka - K x zmena kodu) az -0,30 ppb.
+  Tempco z udalosti nejde urcit: bez zpozdeni teploty +0,9e-10/K (r 0,63), se zpozdenim 10 min -0,7e-10/K (r -0,65); jen 32 bodu
+  s TIE. Rad je 1e-10/K vuci cidlu na plasti. Varovani `OCXO MIMO TEPLOTNI PASMO` se ozvalo (pod 45 °C).
+- **Udalost je zivy pripad nalezu F-0291:** firmware v0.45.14 behem ni udaval nejistotu reference z ADEV (HDEV faze @ 1000 s
+  0,04 ppb), skutecna odchylka byla 0,2-0,3 ppb.
+- **Podklad pro F-0292 (holdover), obe noci LOCK po 9,8 h** (`docs/audit/sim/2026-11-14_f0292_*.py`): okamzity kod je nejlepsi
+  nebo stejne dobra predpoved prumerneho kodu v dalsi 1 h (rms chyby 0,8-1,1 LSB = 27-38e-12) i 3 h (1,2-2,9 LSB); prumer za
+  poslednich 1000-7200 s je horsi o 10-130 %, primka pres 3000 s o 30-60 %. Zmena kodu za 1 h: 1,4-2,0 LSB rms (0,047-0,068 ppb),
+  za 3 h 2,2-5,2 LSB. To sedi se zmerenymi holdovery (0,03-0,08 ppb po ~1 h). Model jen s driftem ji podhodnocoval 2-9x,
+  model s nahodnou prochazkou zmerenou z 2 h historie 1,2-1,5x (do 1 h) -> v0.45.16 ma clen prochazky s faktorem 1,4.
+- **F-0286 (TDC `ld` po LW), vychozi stav po 36,3 h behu (bitstream appOscS6, modul 35 °C):** bubliny okna P 0 / S 0 z 523 431 oken,
+  spike-reject 0, okna s vadnym segmentem A 0 / B 100.
+
+**Nezmereno:** tempco (chce rizenou zmenu teploty a zaznam faze se znamenkem), starnuti na dnech, pricina ranni udalosti.
