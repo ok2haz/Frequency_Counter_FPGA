@@ -152,8 +152,8 @@ void sensor_stat_reset_all(void)
          * "ma tenhle senzor VUBEC nejakou hodnotu?" na 13 mistech, mj.:
          *   datalog.c sens_c100/sens_mv -> DATALOG_INVALID16 (do logu by se
          *     na jeden tick zapsaly sentinely misto teplot/Vc/RF!),
-         *   app_gpsdo.c draw_sensors_values -> "---" v ZIVE hodnote (tj. cela
-         *     obrazovka Senzory, na ktere to tlacitko je, problikne prazdnotou),
+         *   app_gpsdo.c (drive draw_sensors_values, okno zruseno v0.45.19) -> "---" v ZIVE hodnote
+         *     (tj. cela obrazovka s tlacitkem problikne prazdnotou),
          *   System Health "Power supplies" -> "Unkn", hbar_value -> "--",
          *   GRAFY bargrafy -> seda/nula, autocal -> AC_NA.
          * Misto toho restartujeme akumulaci OD AKTUALNI HODNOTY: min=max=mean=last

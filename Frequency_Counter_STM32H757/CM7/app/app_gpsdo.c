@@ -534,7 +534,7 @@ static void fmt_temp(char *buf, size_t n, float v) { fmt_temp_d(buf, n, v, 2); }
  * Citac/Cas, Komunikace) maji vlastni obsah ruzne vysoky — sjednotit i je na
  * jednu spolecnou vysku by chtelo overit polohu radku v kazdem z nich zvlast
  * (riziko prekryvu); ponechano jako samostatny TODO. */
-static const prim_rect_t DG_CARD_FULL_A = {DG_LX, 58, 764, 346};  /* Senzory/Pamet/Histogram/Allan/Trend */
+static const prim_rect_t DG_CARD_FULL_A = {DG_LX, 58, 764, 346};  /* Pamet/Histogram/Allan/Trend */
 static const prim_rect_t DG_CARD_FULL_B = {DG_LX, 62, 764, 300};  /* Reference/Datalog/Alarmy/Survey/Sestavy/SD */
 /* Vysoka varianta: konci 407, tj. 10 px nad footerem (417) — pro okna s hodne
  * obsahem (Selftest, Holdover). Zadani z HW pruchodu 2026-08-15. */
@@ -1291,7 +1291,7 @@ static int draw_health_values(int force)
               (nok >= SENS_COUNT - 1) ? UI_COLOR_OK : UI_COLOR_WARN, &ui_font_mono_18); drew = 1; }
 
     /* ── Pravy sloupec: karta System (napajeni souhrnne / uptime / reset / selftest).
-     * Konkretni napeti vetvi jsou v Diagnostice + SENZORY; tady jen verdikt. ── */
+     * Konkretni napeti vetvi jsou v Diagnostice; tady jen verdikt. ── */
     static char c_sys2[5][40];
     { const sensor_stat_t *v12 = &g_sensors[SENS_ADS2];
       const sensor_stat_t *v5  = &g_sensors[SENS_ADS3];
@@ -1417,7 +1417,7 @@ void app_gpsdo_render_health(void)
                            .header_label = "System"};
         ui_card_render_chrome(&c_pwr);
         /* vsechny radky (Napajeni/Uptime/Reset/Selftest) kresli draw_health_values
-         * celobarevne (dtext) — konkretni napeti jsou v Diagnostice/SENZORY */
+         * celobarevne (dtext) — konkretni napeti jsou v Diagnostice */
     }
     if (draw_health_values(first)) present_now();
 }
@@ -5244,7 +5244,7 @@ static void app_gpsdo_render_holdover(void)
     snprintf(b, sizeof b, "%s", g.fix_quality ? "1PPS (FPGA)" : "10 Hz bez fixu");
     { prim_color_t vc = g.fix_quality ? UI_COLOR_OK : UI_COLOR_WARN; int chg = dchg(c_tp, sizeof c_tp, b);
       if (first) kv_row(196, "Timepulse:", b, vc); else if (chg) kv_row_narrow(196, b, vc); }
-    /* fmt_temp (stejne jako Diagnostika/Senzory) — driv se tu formatovalo inline
+    /* fmt_temp (stejne jako Diagnostika) — driv se tu formatovalo inline
      * a rozchazelo se to se zbytkem UI ve DVOU vecech:
      *   1) desetinna CARKA misto tecky (jedine takove misto v celem UI),
      *   2) u ZAPORNYCH hodnot to davalo nesmysl: (long)(-5.3) = -5, zbytek
@@ -9945,7 +9945,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             nav_push(47); app_gpsdo_render_adret(); return true;
         }
         if (s_view == 54 && adret_touch(x, y)) return true;
-        /* System Health footer -> "SENZORY" / "GRAFY" (Diagnostika + Nastaveni jsou
+        /* System Health footer -> "GRAFY" (Diagnostika + Nastaveni jsou
          * dlazdice v Menu, 2026-08-29). */
         if (s_view == 3 && in_rect(x, y, HEALTH_GRAPH_BTN_RECT)) {   /* Health -> Grafy (#31) */
             nav_push(3); app_gpsdo_render_graphs();

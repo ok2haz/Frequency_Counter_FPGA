@@ -89,7 +89,7 @@ void sensor_fail(sensor_id_t id);
  * ⚠️ `samples` se ZÁMĚRNĚ nenuluje — zbytek kódu ho čte jako „má senzor vůbec
  * hodnotu?" (datalog by zapsal INVALID16, UI by ukázalo „---"); detaily
  * v implementaci. Senzor, který ještě nikdy nic nepřečetl, se přeskočí.
- * Smí volat i UartTask/UiTask (UART `sensors reset` / tlačítko v okně Senzory),
+ * Smí volat i UartTask/UiTask (UART `sensors reset` / tlačítko RESET MIN/MAX v Diagnostice),
  * ne jen SensorsTask — `sensor_stat_t` už dnes toleruje netrhané čtení bez
  * zámku (viz výše), takže benigní rasa s právě probíhajícím `sensor_update()`
  * je přijatelná stejně jako jinde v téhle struktuře. */
