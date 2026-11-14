@@ -38,6 +38,12 @@ WARN_CLS_PCT = 82         # L-0134
 MAX_REG_PCT = 80          # L-0119
 FS_ID_MAX_AGE_S = 3600    # identita v build_id.vh nesmi byt o hodinu starsi nez bitstream (IDE build)
 V3_FW = (0x0500, 0x05FF)  # protokol v3 = FW 0x05xx (PROTOKOL_V3.md), v2 = 0x04xx
+# Audit F-0285: predelicky pin_cnt3 jsou taktovane primo vstupnimi piny (hodiny pin_a / pin_b v SDC). Poruseni minimalni sirky
+# pulzu na nich znamena, ze STA nezarucuje kmitocet z omezeni; brana z rezervy dopocita, co zarucuje, a vypise to (WARN).
+# PIN_FMAX_REQ_MHZ = pozadovany kmitocet na pinu: None = zadny pozadavek (skutecny strop na kremiku neni zmeren, model STA
+# je pesimisticky); po zmereni generatorem sem zapsat hodnotu, kterou pristroj udava -> pod ni brana selze.
+PIN_CLOCKS = ('pin_a', 'pin_b')
+PIN_FMAX_REQ_MHZ = None
 
 
 def profile(v3=False, root=ROOT):
@@ -77,7 +83,32 @@ def parse_tr(txt):
         return None, None
     r['setup_ws'], r['setup_path'] = first_slack('Setup Paths Table[1]')
     r['hold_ws'], r['hold_path'] = first_slack('3.1.2 Hold Paths Table')
+    r['mpw'] = parse_mpw(txt)
     return r
+
+
+def parse_mpw(txt):
+    """Tabulka 3.2 Minimum Pulse Width: seznam (rezerva, typ, hodiny, objekt), jak je v reportu (od nejhorsi rezervy).
+    None = tabulka v reportu neni. Report vypisuje jen N nejhorsich radku (report_min_pulse_width -nworst 10)."""
+    for mi in re.finditer(r'3\.2 Minimum Pulse Width Table', txt):
+        rows = []
+        for line in txt[mi.end():].splitlines()[1:40]:
+            mm = re.match(r'\s+\d+\s+(-?[\d.]+)\s+-?[\d.]+\s+[\d.]+\s+((?:Low|High) Pulse Width)\s+(\S+)\s+(\S+)', line)
+            if mm: rows.append((float(mm.group(1)), mm.group(2), mm.group(3), mm.group(4)))
+            elif rows: break
+        if rows: return rows
+    return None
+
+
+def parse_clk_period(sdc, name):
+    """Perioda [ns] hodin `name` z create_clock v SDC (radky s // jsou komentar); None = nenalezeno."""
+    for line in sdc.splitlines():
+        s = line.strip()
+        if s.startswith('//') or 'create_clock' not in s: continue
+        if not re.search(r'-name\s+%s\b' % re.escape(name), s): continue
+        m = re.search(r'-period\s+([\d.]+)', s)
+        if m: return float(m.group(1))
+    return None
 
 
 def parse_rpt(txt):
@@ -176,6 +207,34 @@ def check(t_start=None, P=None, max_cls=None):
     unc = parse_unc(sdc); info['unc'] = unc
     R.add(unc is not None and unc >= MIN_UNC_NS, 'nejistota hodin (L-0141)', '%s ns, min %.1f' % (unc, MIN_UNC_NS))
 
+    # Minimalni sirka pulzu (audit F-0285): STA ji hlasi zvlast, mimo pocty poruseni setup/hold, a brana ji do 2026-11-14
+    # necetla -- bitstream s porusenim na predelickach vstupu prosel bez zminky.
+    mp = t['mpw']; info['presc_fmax'] = {}
+    if mp is None:
+        R.add(False, 'min. sirka pulzu', 'tabulka 3.2 v timing reportu CHYBI (jiny format reportu?)')
+    else:
+        core = [x for x in mp if x[2] not in PIN_CLOCKS]
+        bad = [x for x in core if x[0] < 0.0]
+        if core:
+            w = min(core)
+            R.add(not bad, 'min. sirka pulzu (hodiny)', 'nejhorsi %.3f ns (%s, %s)' % (w[0], w[2], w[3]))
+        else:   # tabulka ma jen N nejhorsich radku a vsechny patri predelickam: o ostatnich hodinach nerika nic
+            R.add(True, 'min. sirka pulzu (hodiny)',
+                  'v %d nejhorsich radcich jsou jen hodiny pinu; ostatni maji rezervu >= %.3f ns (neoverena proti 0)'
+                  % (len(mp), mp[-1][0]), warn=(mp[-1][0] < 0.0))
+        for clk in PIN_CLOCKS:
+            rows = [x for x in mp if x[2] == clk]
+            per = parse_clk_period(sdc, clk)
+            if not rows or per is None: continue
+            w = min(rows)[0]
+            fg = 1000.0 / (per - 2.0 * w) if w < 0.0 else 1000.0 / per     # sirka pulzu = pul periody -> perioda o 2x rezervu delsi
+            info['presc_fmax'][clk] = fg
+            ok = PIN_FMAX_REQ_MHZ is None or fg >= PIN_FMAX_REQ_MHZ
+            R.add(ok, 'predelicka %s (F-0285)' % clk,
+                  'STA zarucuje %.0f MHz, omezeni v SDC %.0f MHz, rezerva sirky pulzu %.3f ns%s'
+                  % (fg, 1000.0 / per, w, '' if PIN_FMAX_REQ_MHZ is None else ', pozadavek %.0f MHz' % PIN_FMAX_REQ_MHZ),
+                  warn=(w < 0.0))
+
     p = parse_rpt(read(rpt)); info.update(p)
     R.add(p['cls'] is not None and p['cls'] <= max_cls, 'CLS' if max_cls == MAX_CLS_PCT else 'CLS (TEST: mez %d %%)' % max_cls,
           '%s %%' % p['cls'],
@@ -260,6 +319,14 @@ def selftest():
         == (0x6ACA21F9, 0x8D526C00)
     ok &= parse_fw("localparam [15:0] FW_VERSION      = 16'h041F;") == 0x041F
     ok &= parse_period('// create_clock -name clk_p0_100m -period 8.0\ncreate_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}  [get_ports {clk_p0_100m}]') == 10.0
+    # F-0285: tabulka minimalni sirky pulzu (nadpis je v reportu i v obsahu -- bez radku) a perioda hodin pinu
+    mp = parse_mpw('\t3.2 Minimum Pulse Width Table\n\t3.3 dalsi\n3.2 Minimum Pulse Width Table\nReport Command:x\n  Number   Slack\n ======== ====\n'
+                   '  1        -1.859   -0.609         1.250            Low Pulse Width    pin_b   u_pcb/c_2_s0  \n'
+                   '  2        2.750   4.000          1.250            High Pulse Width   clk_p0_100m   tick_hi_32_s0  \n\n3.3 Timing\n')
+    ok &= mp == [(-1.859, 'Low Pulse Width', 'pin_b', 'u_pcb/c_2_s0'), (2.75, 'High Pulse Width', 'clk_p0_100m', 'tick_hi_32_s0')]
+    ok &= parse_mpw('3.2 Minimum Pulse Width Table\nNothing to report!\n') is None and parse_mpw('nic') is None
+    sdcp = '// create_clock -name pin_b -period 2.5\ncreate_clock -name pin_a -period 3.33 [get_ports {ch_a}]\ncreate_clock -name pin_b -period 4.0 [get_ports {ch_b}]\n'
+    ok &= parse_clk_period(sdcp, 'pin_b') == 4.0 and parse_clk_period(sdcp, 'pin_a') == 3.33 and parse_clk_period(sdcp, 'pin_c') is None
     print('selftest fpga_release: %s' % ('PASS' if ok else 'FAIL'))
     ok3 = selftest_v3()
     return 0 if ok and ok3 else 1
@@ -280,7 +347,7 @@ def selftest_v3():
         put('src/' + ('timing.sdc' if ver == 'v2' else 'timing_v3.sdc'), sdc % unc)
         put('src/' + ('spi_app.v' if ver == 'v2' else 'app_v3.v'), "localparam [15:0] FW_VERSION = 16'h%04X;\n" % fw)
         put('%s/pnr/%s.fs' % (impl, base), 'bitstream %s %s\n' % (ver, base))
-        put('%s/pnr/%s.tr' % (impl, base), tr % ws + tdc)
+        put('%s/pnr/%s.tr' % (impl, base), tr % ws + mpw_ok + tdc)
         put('%s/pnr/%s.rpt.txt' % (impl, base), '  Register   | 3935/6693  |  60%%\n  CLS   | 3398/4320  |  %d%%\n' % cls)
         put('%s/pnr/device.cfg' % impl, 'set SSPI regular_io = true\nset MSPI regular_io = true\nset JTAG regular_io = false\n')
         put('%s/gwsynthesis/%s.log' % (impl, base), 'Current top module is "%s"\n' % top)
@@ -290,7 +357,17 @@ def selftest_v3():
 
     sdc = ('// set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] 0.5\n'
            'create_clock -name clk_p0_100m   -period 10.0  -waveform {0 5.0}   [get_ports {clk_p0_100m}]\n'
-           'set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] %s\n')
+           'set_clock_uncertainty -setup -from [get_clocks {clk_p0_100m}] -to [get_clocks {clk_p0_100m}] %s\n'
+           'create_clock -name pin_a -period 3.33 -waveform {0 1.665} [get_ports {ch_a}]\n'
+           'create_clock -name pin_b -period 3.33 -waveform {0 1.665} [get_ports {ch_b}]\n')
+    # F-0285: tabulka minimalni sirky pulzu -- v poradku / poruseni na predelicce (jen hodiny pinu) / poruseni na hodinach jadra
+    mpw_hd = '3.2 Minimum Pulse Width Table\nReport Command:report_min_pulse_width -nworst 10 -detail\n  Number   Slack\n ======== ========\n'
+    mpw_ok = mpw_hd + ('  1        0.415   1.665          1.250            Low Pulse Width    pin_b   u_pcb/c_2_s0  \n'
+                       '  2        2.750   4.000          1.250            Low Pulse Width    clk_p0_100m   tick_hi_32_s0  \n\n')
+    mpw_pin = mpw_hd + ('  1        -1.859   -0.609         1.250            Low Pulse Width    pin_b   u_pcb/c_2_s0  \n'
+                        '  2        -1.190   0.060          1.250            Low Pulse Width    pin_a   u_pca/c_2_s0  \n\n')
+    mpw_core = mpw_hd + ('  1        -0.100   1.150          1.250            High Pulse Width   clk_p0_100m   tick_hi_32_s0  \n'
+                         '  2        0.415   1.665          1.250            Low Pulse Width    pin_b   u_pcb/c_2_s0  \n\n')
     tr = ('<Numbers of Setup Violated Endpoints>:0\n<Numbers of Hold Violated Endpoints>:0\n'
           '  2     clk_p0_100m   100.000(MHz)   104.000(MHz)   5       TOP\n'
           '3.1.1.1 Setup Paths Table[1]\n hlavicka\n  1             %s        a/Q   b/D   x\n'
@@ -319,6 +396,28 @@ def selftest_v3():
         expect(('| %s | ' % n3) in man and '| 0x0500 (v3) |' in man and ('| %s | ' % n2) in man and '| 0x0427 |' in man,
                'radky MANIFEST')
         expect(read(os.path.join(tmp, 'ab_test', n3)) == 'bitstream v3 Counter_FPGA_v3\n', 'obsah vydaneho v3')
+
+        # F-0285: minimalni sirka pulzu
+        expect(abs(i3['presc_fmax']['pin_b'] - 1000.0 / 3.33) < 1e-6, 'predelicka bez poruseni = omezeni SDC')
+        trp = 'v3/impl/pnr/Counter_FPGA_v3.tr'
+        put(trp, tr % '0.512' + mpw_pin + tdc)
+        R, i = check(None, P3)
+        warn = [n for tg, n, d in R.rows if tg == 'WARN']
+        expect(R.fail == 0 and 'predelicka pin_b (F-0285)' in warn and 'predelicka pin_a (F-0285)' in warn
+               and 'min. sirka pulzu (hodiny)' in warn
+               and abs(i['presc_fmax']['pin_b'] - 141.884) < 0.01 and abs(i['presc_fmax']['pin_a'] - 175.131) < 0.01,
+               'poruseni na predelicce = WARN a dopocitany kmitocet %s %s' % (warn, i.get('presc_fmax')))
+        globals()['PIN_FMAX_REQ_MHZ'] = 150.0
+        try:
+            expect(fails(P3)[0] == ['predelicka pin_b (F-0285)'], 'pozadavek 150 MHz: pin_b 142 MHz selze, pin_a 175 MHz projde')
+        finally:
+            globals()['PIN_FMAX_REQ_MHZ'] = None
+        put(trp, tr % '0.512' + mpw_core + tdc)
+        expect(fails(P3)[0] == ['min. sirka pulzu (hodiny)'], 'poruseni na hodinach jadra = FAIL')
+        put(trp, tr % '0.512' + tdc)
+        expect(fails(P3)[0] == ['min. sirka pulzu'], 'report bez tabulky = FAIL')
+        put(trp, tr % '0.512' + mpw_ok + tdc)
+        expect(fails(P3)[0] == [], 'navrat k dobremu reportu')
 
         put('v3/impl/gwsynthesis/Counter_FPGA_v3.log', 'Current top module is "top"\n')
         expect(fails(P3)[0] == ['top modul = top_v3'], 'v3 se syntezou top')

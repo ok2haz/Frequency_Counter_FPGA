@@ -6258,3 +6258,23 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** `gpsdo` → řádek `kvalita GNSS OK|NESTACI | fix … druzic … HDOP … | poklesu N`; `gpsdo test`;
   host test `python tests/host/t_gpsdo_ref.py <adresář>` (16 mutací zachyceno).
 - **Stav:** ✅ host test + mutace; ⬜ neověřeno na HW (běžný provoz bez poklesů; pokus se zastíněnou anténou)
+
+### L-0278 — Brána vydání četla jen počty porušení setup/hold; porušení minimální šířky pulzu má STA v jiném oddílu
+
+- **Datum:** 2026-11-14
+- **Oblast:** FPGA, `tools/fpga_release.py` (brána vydání bitstreamu), audit F-0285, STATUS #381
+- **Symptom:** (nalezeno auditem) vydaný bitstream FW 0x050A i zkušební bitstream ve flash mají v timing reportu
+  porušenou minimální šířku pulzu na předděličkách vstupů (`pin_b` −1,859 ns, `pin_a` −1,190 ns při omezení 300 MHz)
+  a brána hlásila PASS bez zmínky.
+- **Příčina:** brána četla `<Numbers of Setup/Hold Violated Endpoints>` a nejhorší rezervy cest. Minimální šířku pulzu
+  vypisuje Gowin STA zvlášť (tabulka 3.2) a do těch počtů ji nezahrnuje. „0 porušení“ tedy znamenalo „0 porušení
+  v oddílech, které čtu“.
+- **Oprava:** brána čte tabulku 3.2: porušení na hodinách jádra = FAIL, chybějící tabulka = FAIL; u hodin pinů
+  (`pin_a`, `pin_b`) z rezervy dopočítá kmitočet, který STA zaručuje (175 / 142 MHz), a vypíše ho jako WARN. Tvrdá mez
+  (`PIN_FMAX_REQ_MHZ`) se zapne, až bude strop změřen generátorem (model STA je tu pesimistický: vychází záporná
+  skutečná šířka pulzu). Tabulka má jen 10 nejhorších řádků; když je všechny zaberou piny, brána to napíše.
+- **Pravidlo:** když kontrola stojí na souhrnném čísle cizího nástroje, ověř, co všechno to číslo zahrnuje; každý oddíl
+  reportu, který může nést porušení, potřebuje vlastní řádek brány. Chybějící oddíl je FAIL, ne ticho.
+- **Detekce:** `python tools/fpga_release.py --selftest`; `python tools/fpga_release.py --v3 --no-copy` → řádky
+  `min. sirka pulzu (hodiny)` a `predelicka pin_a / pin_b (F-0285)`.
+- **Stav:** ✅ selftest, ověřeno nad reporty v2 i v3; ⬜ skutečný strop předděličky neměřen (generátor na vstup A/B)
