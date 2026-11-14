@@ -1727,6 +1727,16 @@ u kladnych hodnot prazdne (regex loggeru necekal znamenko `+`); kod a teploty js
 
 **Nezmereno:** tempco (chce rizenou zmenu teploty a zaznam faze se znamenkem), starnuti na dnech. Udalost byla vnejsi tepelny ruch (vzduch z uklidu), ne vada pristroje; pro tempco by ji bylo treba opakovat zamerne a s dobre zaznamenanou fazi.
 
+### 2026-11-14 12:01 -> 13:52 — F-0291 dosedani po poruse na desce (v0.45.17), STATUS #381
+
+Zkouska: LOCK (kod 24972,69) -> `gpsdo off`, `dac 24993` (+20 LSB, ~0,7 ppb vedle), `gpsdo on`; zaznam `gpsdo` 1/min, 107 radku (`relock_f0291.csv`).
+
+- **FLL -> LOCK za ~4 min** (y +0,71 -> -0,006 ppb po 164 s, LOCK v 12:05). Kod se vratil na 24970-24972 (nahodna prochazka, +-1,5 LSB), brana GNSS OK, 0 poklesu.
+- **Prvnich 5 min LOCK (udaj pred vstupem 0,074 ppb, `odhad`):** skutecny sklon faze 0 -> +15 ns za 2 min (~125 ppt), tj. 1,5-2x nad udanou nejistotou. Odhad je v teto fazi tesny, ne konzervativni.
+- **Vetev "sklon nad 2x ADEV" se na desce UPLATNILA** (poprve): od 5 min sklon 112 ppt vs ADEV 37 ppt -> reference 0,092 ppb (misto 0,037), pak klesa spolu se sklonem (98/89/84/81 ppt -> 0,085/0,066/0,061/0,062) a po ~20 min splyne s ADEV (0,025-0,04). Faze dosahla max +61 ns a vratila se k nule za ~65 min (TIE +-5 ns).
+- Zbytkova odchylka v dosedani (|y| az 0,14 ppb po 2-3 min) prekrocila `ref_ppb` 0,074 jen v odhadovane fazi; po zmerene fazi reference y pokryva.
+- **Zavery:** F-0291 funguje (nejistota nasleduje dosedani), slabina = prvnich ~5 min po vstupu do LOCK, kdy se bere stara hodnota 0,074 (`MP_REF_PPB_LOCK_ENTRY` 0,5 se nepouzije, protoze entry mel zmerenou FLL hodnotu 0,032-0,07). Navrh: pri vstupu z FLL pricitat k udaji |y| prvniho okna LOCK (nebo pocitat sklon fazi uz od vstupu). Neopraveno, zapsano jako F-0294.
+
 ### 2026-11-14 ~12:00 — F-0285: strop predelicky vstupu zmeren generatorem (v0.45.17, FW 0x050A appOscS6) — STATUS #381
 
 Si5356 CLK2 -> vstup A, CLK4 -> vstup B (`gen 2|4 <Hz>`), predelicka pevne /16 (`fpga presc a|b 4`), 7 s ustaleni, UART `freq` + sonda z `fpga v3`.
