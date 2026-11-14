@@ -561,6 +561,11 @@ int mp_selftest(void)
         ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCK_ENTRY && m == 0u);            /* bez mereni: mez vstupu do LOCK (F-0291) */
         r.entry_ppb = 0.3; r.entry_meas = 1u;
         ok &= (mp_ref_ppb(&r, &m) == 0.3 && m == 0u);                              /* usek < 5 min: udaj pred vstupem, neni to mereni */
+        r.lock_yoff_ok = 1u; r.lock_yoff_ppb = 0.5;                                /* F-0294: bez ADEV vyhrava vetsi z udaje pred vstupem a sklonu */
+        ok &= (mp_ref_ppb(&r, &m) == 0.5 && m == 0u);
+        r.lock_yoff_ppb = 0.1;
+        ok &= (mp_ref_ppb(&r, &m) == 0.3 && m == 0u);
+        r.lock_yoff_ok = 0u; r.lock_yoff_ppb = 0.0;
         r.lock_u_ppb = 0.013;
         ok &= (mp_ref_ppb(&r, &m) == 0.013 && m == 1u);                            /* zmerena ADEV fazy */
         r.lock_yoff_ok = 1u; r.lock_yoff_ppb = 0.02;                               /* sklon pod 2 x ADEV = tentyz sum: nepricita se */

@@ -638,6 +638,7 @@ static uint32_t s_h_ms;
  * Cista logika nad poli (kryje gpsdo_selftest). Vraci 1, kdyz je `u` zmereno. */
 #define GP_REF_RW_LAG    180        /* [bodu] rozestup rozdilu kodu = 1800 s */
 #define GP_REF_RW_MIN    360        /* [bodu] nejkratsi usek pro odhad prochazky = 1 h */
+#define GP_REF_YOFF_SHORT 12        /* [bodu] nejkratsi usek, od ktereho se sklon meri (110 s: sum ~0,03 ppb; pred ADEV se pouzije jen jako dolni mez, F-0294) */
 #define GP_REF_YOFF_MIN  30         /* [bodu] nejkratsi okno sklonu faze (kratsi ma sum nad 0,05 ppb, noc 2026-10-24) */
 static int gp_ref_core(const int32_t *x_ps, const uint32_t *code_q16, int n, double kdac, double tau_s,
                        double *u_ppb, double *drift_ppb_h, double *yoff_ppb, double *rw_ppb_sqrth)
@@ -655,7 +656,7 @@ static int gp_ref_core(const int32_t *x_ps, const uint32_t *code_q16, int n, dou
         *rw_ppb_sqrth = sqrt(s / (double)c) * kdac * 1e9
                       * sqrt(3600.0 / ((double)GP_REF_RW_LAG * (double)GPSDO_HIST_PERIOD_S));
     }
-    if (n >= GP_REF_YOFF_MIN) {
+    if (n >= GP_REF_YOFF_SHORT) {
         int wn = (int)(tau_s / (double)GPSDO_HIST_PERIOD_S + 0.5);
         if (wn < GP_REF_YOFF_MIN) wn = GP_REF_YOFF_MIN;
         if (wn > n) wn = n;
@@ -1301,8 +1302,10 @@ int gpsdo_selftest(void)
         ok = ok && m && rw == 0.0;
         m = gp_ref_core(tx, tc, 100, 3.4e-11, 1000.0, &u, &d, &yo, &rw);     /* kratky usek: ADEV na mensim tau, drift NEzmeren (< 30 min) */
         ok = ok && m && d == 0.0 && yo >= 0.0 && rw == 0.0;
-        m = gp_ref_core(tx, tc, 15, 3.4e-11, 1000.0, &u, &d, &yo, &rw);      /* skoro nic: nezmereno */
+        m = gp_ref_core(tx, tc, 11, 3.4e-11, 1000.0, &u, &d, &yo, &rw);      /* skoro nic: nezmereno */
         ok = ok && !m && u == 0.0 && d == 0.0 && yo < 0.0;
+        m = gp_ref_core(tx, tc, 15, 3.4e-11, 1000.0, &u, &d, &yo, &rw);      /* F-0294: od 12 bodu je sklon fazi zmeren (ADEV jeste ne) */
+        ok = ok && !m && u == 0.0 && d == 0.0 && yo >= 0.0;
         /* F-0291: dosedani = faze ujizdi 0,3 ns/s. ADEV (druhe diference) to nevidi, sklon ano; okno sklonu = tau smycky. */
         (void)gp_ref_core(tx, tc, 360, 3.4e-11, 1000.0, &u, &d, &yo, &rw);
         const double u0 = u;

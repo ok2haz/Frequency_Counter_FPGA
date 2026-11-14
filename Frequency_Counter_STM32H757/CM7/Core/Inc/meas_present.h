@@ -235,6 +235,7 @@ static inline double mp_ref_ppb(const mp_ref_in_t *r, uint8_t *meas)
                 v = __builtin_sqrt(v * v + r->lock_yoff_ppb * r->lock_yoff_ppb - kf * kf);
         } else {
             v = (r->entry_ppb > 0.0) ? r->entry_ppb : MP_REF_PPB_LOCK_ENTRY;        /* úsek kratší než 5 min: platí údaj před vstupem */
+            if (r->lock_yoff_ok && r->lock_yoff_ppb > v) v = r->lock_yoff_ppb;      /* F-0294: dosedání je vidět už po 2 min jako sklon fáze */
         }
         if (!r->locked && v < MP_REF_PPB_LOCKING) { v = MP_REF_PPB_LOCKING; m = 0; }
         break;

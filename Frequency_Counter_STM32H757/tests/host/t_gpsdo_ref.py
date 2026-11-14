@@ -39,7 +39,7 @@ c = '\n'.join([
     '    if (!ok) printf("blok selftestu ze zdroje: FAIL\\n");',
     '    {   static int32_t x[40]; static uint32_t cq[40]; double u, d, yo, rw;',
     '        for (int i = 0; i < 40; i++) { x[i] = 1000 * i; cq[i] = 24970u << 16; }',
-    '        (void)gp_ref_core(x, cq, 29, 3.4e-11, 1000.0, &u, &d, &yo, &rw); /* pod 30 bodu: nic zmereno */',
+    '        (void)gp_ref_core(x, cq, 11, 3.4e-11, 1000.0, &u, &d, &yo, &rw); /* pod 12 bodu: nic zmereno */',
     '        ok = ok && u == 0.0 && yo < 0.0;',
     '        (void)gp_ref_core(x, cq, 40, 3.4e-11, 20000.0, &u, &d, &yo, &rw); /* okno delsi nez usek: cely usek, 0,1 ns/s */',
     '        ok = ok && yo > 0.0999 && yo < 0.1001;',
