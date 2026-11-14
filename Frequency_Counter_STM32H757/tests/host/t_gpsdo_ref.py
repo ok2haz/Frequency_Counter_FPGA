@@ -21,7 +21,7 @@ os.makedirs(OUT, exist_ok=True)
 CC = shlex.split(os.environ.get('CC', 'cc'), posix=(os.name != 'nt'))
 
 src = io.open(os.path.join(ROOT, 'CM7', 'Core', 'Src', 'freertos_task_fpga.c'), encoding='utf-8').read()
-a = src.index('#define GP_REF_YOFF_MIN')
+a = src.index('#define GP_REF_RW_LAG')
 core = src[a:src.index('\n}\n', src.index('static int gp_ref_core', a)) + 3]
 a2 = src.index('    {   static int32_t  tx[360];')
 block = src[a2:src.index('    return ok;\n}', a2)]
@@ -37,13 +37,13 @@ c = '\n'.join([
     lock_y, core, gnss,
     'int main(void)', '{', '    int ok = 1;', block, gblock,
     '    if (!ok) printf("blok selftestu ze zdroje: FAIL\\n");',
-    '    {   static int32_t x[40]; static uint32_t cq[40]; double u, d, yo;',
+    '    {   static int32_t x[40]; static uint32_t cq[40]; double u, d, yo, rw;',
     '        for (int i = 0; i < 40; i++) { x[i] = 1000 * i; cq[i] = 24970u << 16; }',
-    '        (void)gp_ref_core(x, cq, 29, 3.4e-11, 1000.0, &u, &d, &yo);      /* pod 30 bodu: nic zmereno */',
+    '        (void)gp_ref_core(x, cq, 29, 3.4e-11, 1000.0, &u, &d, &yo, &rw); /* pod 30 bodu: nic zmereno */',
     '        ok = ok && u == 0.0 && yo < 0.0;',
-    '        (void)gp_ref_core(x, cq, 40, 3.4e-11, 20000.0, &u, &d, &yo);     /* okno delsi nez usek: cely usek, 0,1 ns/s */',
+    '        (void)gp_ref_core(x, cq, 40, 3.4e-11, 20000.0, &u, &d, &yo, &rw); /* okno delsi nez usek: cely usek, 0,1 ns/s */',
     '        ok = ok && yo > 0.0999 && yo < 0.1001;',
-    '        (void)gp_ref_core(x, cq, 40, 3.4e-11, 0.0, &u, &d, &yo);         /* tau 0: nejkratsi okno, bez deleni nulou */',
+    '        (void)gp_ref_core(x, cq, 40, 3.4e-11, 0.0, &u, &d, &yo, &rw);    /* tau 0: nejkratsi okno, bez deleni nulou */',
     '        ok = ok && yo > 0.0999 && yo < 0.1001;',
     '    }',
     '    {   mp_ref_in_t r; uint8_t m = 0u; double v;                             /* mp_ref_ppb: prebytek sklonu nad 2 x ADEV */',
@@ -54,7 +54,10 @@ c = '\n'.join([
     '        ok = ok && mp_ref_ppb(&r, &m) == 0.013 && m == 1u;',
     '        r.lock_yoff_ppb = 0.3; v = mp_ref_ppb(&r, &m); ok = ok && v > 0.2991 && v < 0.2993;',
     '        r.state = GPSDO_HOLD; r.entry_ppb = 0.3; r.entry_meas = 1u; r.hold_drift_ppb_h = 0.4; r.state_s = 3600u;',
-    '        v = mp_ref_ppb(&r, &m); ok = ok && m == 1u && v > 0.4999 && v < 0.5001;',
+    '        v = mp_ref_ppb(&r, &m); ok = ok && m == 0u && v > 0.5048 && v < 0.5050;     /* prochazka nezmerena: nahrada 0,07 */',
+    '        r.hold_rw_ppb_sqrth = 0.5; r.state_s = 4u * 3600u;                         /* F-0292: sqrt(0,3^2 + 0,7^2*4 + 1,6^2) */',
+    '        v = mp_ref_ppb(&r, &m); ok = ok && m == 1u && v > 2.1470 && v < 2.1472;',
+    '        r.entry_meas = 0u; v = mp_ref_ppb(&r, &m); ok = ok && m == 0u;             /* vstupni udaj z nahrady: neni to mereni */',
     '    }',
     '    printf("%s\\n", ok ? "PASS" : "FAIL");', '    return ok ? 0 : 1;', '}', ''])
 p = os.path.join(OUT, 't_gpsdo_ref.c')

@@ -132,6 +132,7 @@ typedef struct {
     double  adev_ppb;      /* 0 = nezmereno (usek LOCK kratsi nez 5 min) */
     double  yoff_ppb;      /* < 0 = nezmereno */
     double  drift_ppb_h;   /* 0 = nezmereno (usek LOCK kratsi nez 30 min) */
+    double  rw_ppb_sqrth;  /* nahodna prochazka kodu DAC [ppb/sqrt(h)] (F-0292); 0 = nezmereno (usek LOCK kratsi nez 1 h) */
     double  entry_ppb;     /* 0 = neznama */
     uint8_t entry_meas;
 } gpsdo_ref_parts_t;

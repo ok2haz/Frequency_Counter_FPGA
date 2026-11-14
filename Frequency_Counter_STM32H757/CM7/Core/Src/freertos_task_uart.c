@@ -1153,6 +1153,8 @@ static void gpsdo_print_status(void)
         if (rp.yoff_ppb >= 0.0) printf("%ld ppt", gp_round(rp.yoff_ppb * 1000.0)); else printf("--");
         printf(" | drift kodu ");
         if (rp.drift_ppb_h > 0.0) printf("%ld ppt/h", gp_round(rp.drift_ppb_h * 1000.0)); else printf("--");
+        printf(" | prochazka kodu ");
+        if (rp.rw_ppb_sqrth > 0.0) printf("%ld ppt/sqrt(h)", gp_round(rp.rw_ppb_sqrth * 1000.0)); else printf("--");
         printf(" | pred vstupem do stavu ");
         if (rp.entry_ppb > 0.0) printf("%ld ppt (%s)\n", gp_round(rp.entry_ppb * 1000.0), rp.entry_meas ? "zmereno" : "odhad"); else printf("--\n");
     }

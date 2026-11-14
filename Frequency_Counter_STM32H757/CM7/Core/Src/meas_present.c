@@ -580,14 +580,16 @@ int mp_selftest(void)
         r.y_abs_ppb = 0.001; r.fll_win_s = 128u;                                   /* dobre okno: dominuje sum okna 0,032 ppb */
         { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.032 && v < 0.033); }
         memset(&r, 0, sizeof r); r.state = GPSDO_HOLD; r.state_s = 3600u;
-        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_HOLD0 + MP_REF_PPB_HOLD_H && m == 0u);   /* nahrada, linearne */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.0910 && v < 0.0912); }   /* nahrady po 1 h: sqrt(0,05^2 + 0,07^2 + 0,03^2) */
         r.entry_ppb = 0.011; r.entry_meas = 1u; r.hold_drift_ppb_h = 0.026; r.state_s = 7200u;   /* zmereno: 26 ppt/h, po 2 h */
-        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.0531 && v < 0.0532); }   /* sqrt(0,011^2 + 0,052^2) */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.1123 && v < 0.1125); }   /* prochazka nezmerena: sqrt(0,011^2 + 0,07^2*2 + 0,052^2) */
+        r.hold_rw_ppb_sqrth = 0.04;                                                /* F-0292: zmerena prochazka 0,04 ppb/sqrt(h) x 1,4 */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.0951 && v < 0.0953); }   /* sqrt(0,011^2 + 0,056^2*2 + 0,052^2) */
         r.entry_meas = 0u;                                                         /* vstupni udaj z nahrady: vysledek neni mereni */
-        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.0531 && v < 0.0532); }
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.0951 && v < 0.0953); }
         r.entry_meas = 1u;
         r.state_s = 0xFFFFFFFFu;
-        { double v = mp_ref_ppb(&r, &m); ok &= (v < 0.63 && v > 0.62); }          /* strop 24 h: 0,026*24 = 0,624 */
+        { double v = mp_ref_ppb(&r, &m); ok &= (v < 0.683 && v > 0.681); }        /* strop 24 h: sqrt(0,011^2 + 0,056^2*24 + 0,624^2) = 0,682 */
         memset(&r, 0, sizeof r); r.state = GPSDO_OFF;
         ok &= (mp_ref_ppb(&r, NULL) == MP_REF_PPB_FREE);
         r.state = GPSDO_WAIT; r.why = GPSDO_WHY_NOFIX;

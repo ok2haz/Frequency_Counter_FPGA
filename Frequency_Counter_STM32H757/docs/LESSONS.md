@@ -6278,3 +6278,26 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** `python tools/fpga_release.py --selftest`; `python tools/fpga_release.py --v3 --no-copy` → řádky
   `min. sirka pulzu (hodiny)` a `predelicka pin_a / pin_b (F-0285)`.
 - **Stav:** ✅ selftest, ověřeno nad reporty v2 i v3; ⬜ skutečný strop předděličky neměřen (generátor na vstup A/B)
+
+### L-0279 — Návrh opravy z auditu vyvrátila data: extrapolace povelu holdoveru by byla horší než dnešní zmrazení
+
+- **Datum:** 2026-11-14
+- **Oblast:** holdover smyčky GPSDO, model nejistoty reference v HOLD (`gp_ref_core`, `mp_ref_ppb`), audit F-0292, STATUS #381
+- **Symptom:** (nález auditu) nejistota udávaná v holdoveru byla 2–6× pod změřenými holdovery (0,013 ppb po 1 h proti
+  0,03–0,08 ppb). Audit navrhl dvě věci: zmrazit v HOLD přímku proloženou kódem místo okamžitého povelu, a doplnit model.
+- **Příčina:** model nejistoty měl jen počáteční hodnotu a lineární drift. Kód potřebný k držení kmitočtu se ale chová
+  jako náhodná procházka: za 1 h se v LOCK změní o 1,4–2,0 LSB rms (0,047–0,068 ppb), za 3 h o 2,2–5,2 LSB.
+- **Co ukázala data (dvě noci LOCK, 9,8 h každá, kód na 0,01 LSB):** okamžitý kód je nejlepší nebo stejně dobrá
+  předpověď průměrného kódu v následující 1 h a 3 h (rms 0,8–1,1 LSB / 1,2–2,9 LSB). Průměr za posledních 1000–7200 s
+  je horší o 10–130 %, přímka přes 3000 s o 30–60 %, přímka přes 7200 s vychází stejně (jedna noc) nebo o 65 % hůř (druhá).
+  Návrh „zmrazit přímku“ by tedy holdover nezlepšil a mohl zhoršit. Povel se proto NEMĚNÍ.
+- **Oprava (v0.45.16):** jen model: u = √(u0² + rw²·t + (drift·t)²), rw = rms změny kódu za 1800 s z posledních ≤ 2 h
+  LOCK, přepočtená na 1 h, × K × 1,4 (odhad z krátkého okna vychází 1,2–1,5× nízko). Proti skutečné změně kódu:
+  model jen s driftem byl 2–9× nízko, nový do 1,2× (1 h) až 1,4× (3 h). Náhrada bez měření 0,07 ppb/√h.
+- **Pravidlo:** návrh opravy v nálezu auditu je hypotéza stejně jako dopad; než ho napíšeš do kódu, ověř ho nad
+  záznamy, které už existují. U předpovědi veličiny s chováním náhodné procházky je poslední hodnota nejlepší odhad
+  a vyhlazení škodí. Nejistota takové veličiny roste s odmocninou času, ne lineárně.
+- **Detekce:** `gpsdo` → `nejistota reference … | prochazka kodu N ppt/sqrt(h)`; `gpsdo test`; host test
+  `python tests/host/t_gpsdo_ref.py <adresář>` (26 mutací zachyceno); rozbory `scratchpad/eval292.py`, `eval292b.py`.
+- **Stav:** ✅ host test + mutace, ověřeno nad dvěma nočními záznamy; ⬜ neověřeno na HW (holdover s novým firmwarem:
+  porovnat udávanou nejistotu se změřenou odchylkou po návratu 1PPS)

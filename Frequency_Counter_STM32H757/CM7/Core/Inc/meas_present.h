@@ -185,9 +185,16 @@ static inline double mp_res_floor_rel(double gate_s, double f_hz, int regr, doub
  *                   posledního okna ⊕ šum okna, z HOLD = údaj holdoveru); neznámá → MP_REF_PPB_LOCK_ENTRY
  *  - LOCK nedoladěno (`locked` = 0): nejméně 0,1 (odhad)
  *  - FLL:           ZMĚŘENO: |y| posledního okna FLL (odchylka OCXO proti GPS před krokem DAC) ⊕ šum okna √2·2,9 ns/okno; bez dokončeného okna 1000
- *  - HOLD:          u0 = nejistota platná těsně před vstupem (`entry_ppb`; z LOCK tedy ADEV + přebytek sklonu), drift = sklon kódu DAC
- *                   za posledních ≤ 2 h LOCK × K [ppb/h]; u = √(u0² + (drift·t)²);
- *                   náhrada 0,05 + 0,03 ppb/h (⬜ HYPOTÉZA); teplotu NEzahrnuje
+ *  - HOLD:          u = √(u0² + rw²·t + (drift·t)²), t v hodinách (strop 24 h):
+ *                   u0 = nejistota platná těsně před vstupem (`entry_ppb`; z LOCK tedy ADEV + přebytek sklonu),
+ *                   rw = náhodná procházka kódu DAC [ppb/√h] (`hold_rw_ppb_sqrth` = změna kódu za 1800 s v posledních ≤ 2 h LOCK,
+ *                        přepočtená na 1 h, × K) × MP_REF_HOLD_RW_K,
+ *                   drift = sklon kódu DAC za posledních ≤ 2 h LOCK × K [ppb/h].
+ *                   🔴 F-0292: bez členu rw byl údaj 2–9× pod skutečnou změnou kódu (dvě noci LOCK) i pod změřenými holdovery
+ *                   (0,03–0,08 ppb po ~1 h). Kód potřebný k držení kmitočtu se chová jako náhodná procházka: za 1 h se změní
+ *                   o 1,4–2,0 LSB rms (0,047–0,068 ppb). Okamžitý kód je přitom nejlepší předpověď (průměr i přímka přes
+ *                   poslední 1–2 h vycházejí hůř), proto se POVEL v holdoveru nemění, jen model nejistoty.
+ *                   Náhrady: u0 0,05, rw 0,07 ppb/√h, drift 0,03 ppb/h; teplotu NEzahrnuje
  *  - OFF / WAIT:    1000 (volný chod OCXO, naměřeno −0,84 ppm); WAIT + externí reference (`GPSDO_WHY_REFEXT`): MP_REF_PPB (kvalita cizí reference neznámá) */
 #define MP_REF_PPB_LOCK_ENTRY 0.5   /* náhrada, když nejistota před vstupem do LOCK není známa = mez vstupu FLL → LOCK (GPSDO_FLL_LOCK_Y;
                                        shodu hlídá gpsdo_selftest) */
@@ -196,6 +203,8 @@ static inline double mp_res_floor_rel(double gate_s, double f_hz, int regr, doub
 #define MP_REF_PPB_LOCKING  0.1
 #define MP_REF_PPB_HOLD0    0.05
 #define MP_REF_PPB_HOLD_H   0.03    /* náhrada driftu za hodinu holdoveru */
+#define MP_REF_PPB_HOLD_RW  0.07    /* náhrada náhodné procházky [ppb/√h]: změna kódu za 1 h v LOCK 0,047 a 0,068 ppb rms (noci 2026-11-13 a 10-24) */
+#define MP_REF_HOLD_RW_K    1.4     /* odhad procházky z 2 h historie vychází proti skutečné změně kódu 1,2–1,5× nízko (krátké okno) */
 #define MP_REF_PPB_FREE     1000.0
 #define MP_PPS_PM_NS        2.9     /* šum jednoho odečtu fáze po opravě sawtooth [ns]: σx = 10 ns/√12 (10h běh 2026-10-17/18) */
 typedef struct {
@@ -209,6 +218,7 @@ typedef struct {
     uint8_t  entry_meas;        /* 1 = entry_ppb vychází ze změřených hodnot */
     double   entry_ppb;         /* LOCK / HOLD: nejistota platná těsně před vstupem do stavu [ppb]; 0 = neznámá */
     double   hold_drift_ppb_h;  /* HOLD: změřený drift z kódu DAC [ppb/h]; 0 = nezměřeno */
+    double   hold_rw_ppb_sqrth; /* HOLD: změřená náhodná procházka kódu DAC [ppb/√h]; 0 = nezměřeno */
     double   pm_ns;             /* audit 2026-10-20: změřený šum odečtu fáze 1PPS [ns] (gpsdo_pm_ns); 0 = MP_PPS_PM_NS */
 } mp_ref_in_t;
 /* @param meas nepovinné: 1 = výsledek je ZMĚŘENÝ, 0 = z náhradní tabulky */
@@ -230,11 +240,11 @@ static inline double mp_ref_ppb(const mp_ref_in_t *r, uint8_t *meas)
         break;
     case GPSDO_HOLD: {
         double h = (double)r->state_s / 3600.0; if (h > 24.0) h = 24.0;
-        const int quad = (r->entry_ppb > 0.0 && r->hold_drift_ppb_h > 0.0);
         double u0 = (r->entry_ppb > 0.0) ? r->entry_ppb : MP_REF_PPB_HOLD0;
         double dr = (r->hold_drift_ppb_h > 0.0) ? r->hold_drift_ppb_h : MP_REF_PPB_HOLD_H;
-        m = (quad && r->entry_meas) ? 1 : 0;
-        v = quad ? __builtin_sqrt(u0 * u0 + dr * h * dr * h) : u0 + dr * h;
+        double rw = (r->hold_rw_ppb_sqrth > 0.0) ? MP_REF_HOLD_RW_K * r->hold_rw_ppb_sqrth : MP_REF_PPB_HOLD_RW;
+        m = (r->entry_ppb > 0.0 && r->entry_meas && r->hold_drift_ppb_h > 0.0 && r->hold_rw_ppb_sqrth > 0.0) ? 1 : 0;
+        v = __builtin_sqrt(u0 * u0 + rw * rw * h + dr * h * dr * h);
         break; }
     case GPSDO_FLL:
         if (r->y_abs_ppb > 0.0 && r->fll_win_s > 0u) {
