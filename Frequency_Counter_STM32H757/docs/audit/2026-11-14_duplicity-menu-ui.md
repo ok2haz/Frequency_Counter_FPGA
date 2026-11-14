@@ -69,7 +69,9 @@ DIAGNOSTIKY (aktualni hodnoty tehoz seznamu 10 senzoru; DIAGNOSTIKA navic ukazuj
 - Obsah okna PREHLED KANALU vs DIAGNOSTIKA na zivem displeji (vzhled neprozkoumavan, jen kod a popisky).
 - Pocet dotyku k cili z hlavni obrazovky (nemereno, jen odvozeno z `nav_push`).
 
-## 7. Provedeno (v0.45.19, commity da63ff8 + d97c488, na desce neoveřeno)
+## 7. Provedeno (v0.45.19, commity da63ff8 + d97c488; ✅ HW 2026-11-14 po power-cyklu: Diagnostika ok, potvrdil uzivatel)
+
+Rozhodnuti uzivatele 2026-11-14: dlazdici HISTOGRAM v MERENI NEODEBIRAT (doporuceni 3 se nerealizuje).
 
 - Přejmenováno: `NUL f0` (Odchylka xN, ADRET), `NUL Y ZAP/VYP` (Math), `RST STAT.` (Prezentace), `RESET ALARMU` (Alarmy).
   Allan zůstal `RESET` (88 px tlačítko, kontext okna) a Senzory/Diagnostika `RESET MIN/MAX`.
