@@ -6332,4 +6332,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** údaj převzatý z předchozího stavu platí jen do prvního měření v novém stavu; nejkratší okno měření
   vol podle šumu, ne podle délky jiného odhadu, který ho původně určil.
 - **Detekce:** `gpsdo` → „sklon fáze“ v prvních minutách LOCK; host test `t_gpsdo_ref.py`, `mp_selftest`.
-- **Stav:** ✅ host test, překlad; ⬜ neověřeno na HW (opakovat rozladění po flashi)
+- **Stav:** ✅ host test, překlad, ✅ na desce 2026-11-14 (znovuzamčení po power-cyklu: prvních 5 min LOCK ref 0,119 ppb proti max |y| 0,100 ppb)
+
+### L-0282 — Odebrání jednoho volání funkce může odkrýt varování jinde
+
+- **Datum:** 2026-11-14
+- **Oblast:** `app_gpsdo.c` `fmt_temp_d`, Holdover (`char t[12]`, `char b[24]`), build
+- **Symptom:** po zrušení okna SENZORY se při překladu objevilo `-Wformat-truncation` v Holdoveru, který se neměnil
+  (audit: 3 soubory s varováním místo baseline 2).
+- **Příčina:** `fmt_temp_d` měla víc volajících, takže ji GCC nevkládal; s méně volajícími ji vložil do Holdoveru a
+  uviděl cestu `num[16]` -> `t[12]`. Buffery byly dlouho zbytečně malé (snprintf je ořízl bezpečně, ne přetečení).
+- **Oprava:** `t[20]`, `b[48]`. Varování zmizelo, audit 97/0/2.
+- **Pravidlo:** po každém odebrání kódu pustí `build.sh` i `tools/audit.py` a srovnej počet varování s baseline;
+  nové varování v nedotčeném místě je latentní vada, ne šum.
+- **Detekce:** `python tools/audit.py` -> `souboru s varovanim: 2`.
+- **Stav:** ✅ build + audit; ⬜ neověřeno na HW
