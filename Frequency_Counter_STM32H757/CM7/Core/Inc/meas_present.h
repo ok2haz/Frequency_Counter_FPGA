@@ -176,13 +176,23 @@ static inline double mp_res_floor_rel(double gate_s, double f_hz, int regr, doub
  * hlavní číslo přesto ukazovalo „důvěryhodné“ číslice až na 1 ppb. Od v0.30.0 se ZMĚŘENÉ hodnoty berou ze smyčky, tabulka konstant
  * je jen NÁHRADA, když měření chybí (bez historie, těsně po startu). Vstup vyplňuje `gpsdo_ref_ppb()` na CM7 (freertos_task_fpga.c),
  * hotové číslo jde na web přes IPC (`ref_ppb_x100`), takže logika žije na JEDNOM místě. Výstup [ppb] relativně k UTC:
- *  - LOCK zamčeno:  změřená ADEV fáze OCXO–GPS při τ ≈ 1000 s z historie smyčky (`lock_u_ppb`); náhrada 0,01 (10h běh 2026-10-17/18: 1,1·10⁻¹¹)
- *  - LOCK nedoladěno (< 60 s): 0,1 (odhad)
+ *  - LOCK:          změřená ADEV fáze OCXO–GPS při τ ≤ 1000 s z historie smyčky (`lock_u_ppb`, od 5 min souvislého LOCK) a k ní PŘEBYTEK
+ *                   střední odchylky kmitočtu (`lock_yoff_ppb` = |sklon fáze| za posledních ≤ τ smyčky) nad MP_REF_YOFF_K × ADEV:
+ *                   u = √(ADEV² + sklon² − (K·ADEV)²). 🔴 ADEV z druhých diferencí konstantní odchylku NEVIDÍ (F-0291): smyčka vstupuje
+ *                   do LOCK s odchylkou až 0,5 ppb a dosedá několik τ. Sklon pod K × ADEV je tentýž šum, který ADEV už obsahuje
+ *                   (noc 2026-10-24: sklon nad 2 × ADEV ve 2,3 % času), proto se nepřičítá celý.
+ *                   Bez změřené ADEV (prvních 5 min úseku): nejistota platná těsně PŘED vstupem do LOCK (`entry_ppb`: z FLL = |y|
+ *                   posledního okna ⊕ šum okna, z HOLD = údaj holdoveru); neznámá → MP_REF_PPB_LOCK_ENTRY
+ *  - LOCK nedoladěno (`locked` = 0): nejméně 0,1 (odhad)
  *  - FLL:           ZMĚŘENO: |y| posledního okna FLL (odchylka OCXO proti GPS před krokem DAC) ⊕ šum okna √2·2,9 ns/okno; bez dokončeného okna 1000
- *  - HOLD:          ZMĚŘENO při vstupu: u0 = ADEV fáze @ ≤ 1000 s, drift = sklon kódu DAC za posledních ≤ 2 h LOCK × K [ppb/h]; u = √(u0² + (drift·t)²);
+ *  - HOLD:          u0 = nejistota platná těsně před vstupem (`entry_ppb`; z LOCK tedy ADEV + přebytek sklonu), drift = sklon kódu DAC
+ *                   za posledních ≤ 2 h LOCK × K [ppb/h]; u = √(u0² + (drift·t)²);
  *                   náhrada 0,05 + 0,03 ppb/h (⬜ HYPOTÉZA); teplotu NEzahrnuje
  *  - OFF / WAIT:    1000 (volný chod OCXO, naměřeno −0,84 ppm); WAIT + externí reference (`GPSDO_WHY_REFEXT`): MP_REF_PPB (kvalita cizí reference neznámá) */
-#define MP_REF_PPB_LOCK     0.01
+#define MP_REF_PPB_LOCK_ENTRY 0.5   /* náhrada, když nejistota před vstupem do LOCK není známa = mez vstupu FLL → LOCK (GPSDO_FLL_LOCK_Y;
+                                       shodu hlídá gpsdo_selftest) */
+#define MP_REF_YOFF_K       2.0     /* sklon fáze se započte jen nad tolikanásobek ADEV (model dosedání nad změřeným šumem:
+                                       podhodnocení nejvýš 1,2×, v ustáleném stavu zvednuto ve 2,3 % vyhodnocení, nejvýš 1,8×) */
 #define MP_REF_PPB_LOCKING  0.1
 #define MP_REF_PPB_HOLD0    0.05
 #define MP_REF_PPB_HOLD_H   0.03    /* náhrada driftu za hodinu holdoveru */
@@ -194,7 +204,10 @@ typedef struct {
     double   y_abs_ppb;         /* FLL: |y| posledního dokončeného okna [ppb]; 0 = žádné okno ještě neskončilo */
     uint32_t fll_win_s;         /* FLL: délka okna [s] */
     double   lock_u_ppb;        /* LOCK: změřená ADEV fáze @ ~1000 s [ppb]; 0 = nezměřeno */
-    double   hold_u0_ppb;       /* HOLD: nejistota při vstupu [ppb]; 0 = nezměřeno */
+    double   lock_yoff_ppb;     /* LOCK: |střední odchylka kmitočtu| ze sklonu fáze za posledních ≤ τ smyčky [ppb]; platí jen s lock_yoff_ok */
+    uint8_t  lock_yoff_ok;      /* 1 = lock_yoff_ppb je změřena */
+    uint8_t  entry_meas;        /* 1 = entry_ppb vychází ze změřených hodnot */
+    double   entry_ppb;         /* LOCK / HOLD: nejistota platná těsně před vstupem do stavu [ppb]; 0 = neznámá */
     double   hold_drift_ppb_h;  /* HOLD: změřený drift z kódu DAC [ppb/h]; 0 = nezměřeno */
     double   pm_ns;             /* audit 2026-10-20: změřený šum odečtu fáze 1PPS [ns] (gpsdo_pm_ns); 0 = MP_PPS_PM_NS */
 } mp_ref_in_t;
@@ -205,16 +218,23 @@ static inline double mp_ref_ppb(const mp_ref_in_t *r, uint8_t *meas)
     double v;
     switch (r->state) {
     case GPSDO_LOCK:
-        if (!r->locked) { v = MP_REF_PPB_LOCKING; }
-        else if (r->lock_u_ppb > 0.0) { v = r->lock_u_ppb; m = 1; }
-        else v = MP_REF_PPB_LOCK;
+        if (r->lock_u_ppb > 0.0) {
+            const double kf = MP_REF_YOFF_K * r->lock_u_ppb;
+            v = r->lock_u_ppb; m = 1;
+            if (r->lock_yoff_ok && r->lock_yoff_ppb > kf)                           /* F-0291: jen přebytek nad šumem, který ADEV už nese */
+                v = __builtin_sqrt(v * v + r->lock_yoff_ppb * r->lock_yoff_ppb - kf * kf);
+        } else {
+            v = (r->entry_ppb > 0.0) ? r->entry_ppb : MP_REF_PPB_LOCK_ENTRY;        /* úsek kratší než 5 min: platí údaj před vstupem */
+        }
+        if (!r->locked && v < MP_REF_PPB_LOCKING) { v = MP_REF_PPB_LOCKING; m = 0; }
         break;
     case GPSDO_HOLD: {
         double h = (double)r->state_s / 3600.0; if (h > 24.0) h = 24.0;
-        double u0 = (r->hold_u0_ppb > 0.0) ? r->hold_u0_ppb : MP_REF_PPB_HOLD0;
+        const int quad = (r->entry_ppb > 0.0 && r->hold_drift_ppb_h > 0.0);
+        double u0 = (r->entry_ppb > 0.0) ? r->entry_ppb : MP_REF_PPB_HOLD0;
         double dr = (r->hold_drift_ppb_h > 0.0) ? r->hold_drift_ppb_h : MP_REF_PPB_HOLD_H;
-        m = (r->hold_u0_ppb > 0.0 && r->hold_drift_ppb_h > 0.0) ? 1 : 0;
-        v = (r->hold_u0_ppb > 0.0 && r->hold_drift_ppb_h > 0.0) ? __builtin_sqrt(u0 * u0 + dr * h * dr * h) : u0 + dr * h;
+        m = (quad && r->entry_meas) ? 1 : 0;
+        v = quad ? __builtin_sqrt(u0 * u0 + dr * h * dr * h) : u0 + dr * h;
         break; }
     case GPSDO_FLL:
         if (r->y_abs_ppb > 0.0 && r->fll_win_s > 0u) {

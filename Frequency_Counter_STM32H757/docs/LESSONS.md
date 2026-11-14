@@ -6212,3 +6212,28 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Oprava:** τ = nominální násobek × střední τ0 (`screen_main_tau0`), výpis v ms.
 - **Pravidlo:** popisek veličiny bere osu ze stejného zdroje jako hodnotu. Vedlejší: `FIX:n` v `gps` je kvalita GGA, ne režim 2D/3D.
 - **Stav:** ✅ na desce (popisky); hodnoty po resetu pocházejí z rekonstrukce, neposuzovat.
+
+### L-0276 — Nejistota odvozená z ROZPTYLU nevidí POSUN: ADEV fáze byla slepá na odchylku kmitočtu při dosedání smyčky
+
+- **Datum:** 2026-11-14
+- **Oblast:** nejistota reference (`gp_ref_core`, `gpsdo_ref_ppb` ve `freertos_task_fpga.c`, `mp_ref_ppb` v `meas_present.h`),
+  audit F-0291, STATUS #381
+- **Symptom:** (nalezeno auditem) po zamčení smyčky ukazovalo hlavní číslo, okno ANALÝZA i web nejistotu reference
+  0,01–0,1 ppb, zatímco skutečná odchylka OCXO byla až 0,5 ppb (mez vstupu FLL → LOCK) a dosedala několik τ.
+  Model dosedání nad změřeným šumem fáze (noc 2026-10-24): podhodnocení 46× v první minutě, 3,7× po 5 minutách.
+- **Příčina:** nejistota se brala z ADEV fáze, tedy z druhých diferencí. Ty jsou z definice slepé na lineární průběh
+  fáze = konstantní odchylku kmitočtu. Statistika rozptylu odpovídá na otázku „jak moc to kolísá“, ne „jak daleko to je“.
+  Dokud ADEV chyběla (prvních 5 minut), platila navíc konstanta 0,01 ppb z ustáleného 10h běhu.
+- **Oprava:** (1) vedle ADEV se měří |sklon fáze| za posledních τ smyčky (nejméně 300 s) a započte se jeho přebytek nad
+  2 × ADEV: u = √(ADEV² + sklon² − (2·ADEV)²). Celý sklon se nepřičítá, protože pod 2 × ADEV je to tentýž šum, který ADEV
+  už nese (v ustáleném stavu se údaj zvedne ve 2,3 % vyhodnocení). (2) Přes změnu stavu se přenáší nejistota platná těsně
+  před ní: nový úsek LOCK bez měření přebírá údaj FLL nebo holdoveru, holdover začíná údajem LOCK. (3) Historie se bere
+  jen od vstupu do LOCK (holdover kratší než 10 s v ní bod nezanechá, ale fáze se kotví znovu od nuly).
+  Model po opravě: podhodnocení nejvýš 1,2×.
+- **Pravidlo:** kde se nejistota počítá z rozptylu (ADEV, σ, druhé diference), zeptej se zvlášť na posun: co ta statistika
+  z definice nevidí a jak velké to může být. Náhradní konstanta platí jen pro stav, ve kterém byla změřena; přechodový stav
+  potřebuje vlastní mez. Návrh ověř nad změřeným šumem dřív, než ho napíšeš (naivní kvadratický součet by údaj
+  v ustáleném stavu zvedal trvale).
+- **Detekce:** `gpsdo` → řádek `nejistota reference … | ADEV faze … | sklon faze …`; `gpsdo test` (syntetické dosedání
+  0,3 ppb); host test `python tests/host/t_gpsdo_ref.py <adresář>` (jádro vyjmuté ze zdroje).
+- **Stav:** ✅ host test, model; ⬜ neověřeno na HW (po `gpsdo off` → rozladění → `gpsdo on`)

@@ -116,6 +116,16 @@ void     gpsdo_tick(void);                 /* VYHRADNE defaultTask, ~100 Hz */
 /* Nejistota reference [ppb] podle stavu smycky z ZMERENYCH hodnot (FLL: |y| okna, LOCK: ADEV faze, HOLD: ADEV + drift kodu DAC), jinak
  * z nahradni tabulky (meas_present.h). `measured` (nepovinne) = 1 pro zmereno. Smi volat kdokoli. */
 double   gpsdo_ref_ppb(uint8_t *measured);
+/* Slozky, ze kterych gpsdo_ref_ppb pocita (diagnostika, UART `gpsdo`): ADEV faze, |sklon faze| za poslednich tau smycky (F-0291),
+ * drift kodu DAC a nejistota prenesena pres posledni zmenu stavu. Smi volat kdokoli. */
+typedef struct {
+    double  adev_ppb;      /* 0 = nezmereno (usek LOCK kratsi nez 5 min) */
+    double  yoff_ppb;      /* < 0 = nezmereno */
+    double  drift_ppb_h;   /* 0 = nezmereno (usek LOCK kratsi nez 30 min) */
+    double  entry_ppb;     /* 0 = neznama */
+    uint8_t entry_meas;
+} gpsdo_ref_parts_t;
+void     gpsdo_ref_parts(gpsdo_ref_parts_t *out);
 void     gpsdo_get(gpsdo_status_t *out);
 void     gpsdo_enable(int on);             /* on = 1: zapnout (z OFF jde pres WAIT); 0: vypnout, DAC se uz neridi */
 int      gpsdo_enabled(void);

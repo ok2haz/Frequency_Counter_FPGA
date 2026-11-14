@@ -558,11 +558,21 @@ int mp_selftest(void)
     {   mp_ref_in_t r; uint8_t m;
         memset(&r, 0, sizeof r);
         r.state = GPSDO_LOCK; r.locked = 1u;
-        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCK && m == 0u);                  /* bez mereni: nahrada */
+        ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCK_ENTRY && m == 0u);            /* bez mereni: mez vstupu do LOCK (F-0291) */
+        r.entry_ppb = 0.3; r.entry_meas = 1u;
+        ok &= (mp_ref_ppb(&r, &m) == 0.3 && m == 0u);                              /* usek < 5 min: udaj pred vstupem, neni to mereni */
         r.lock_u_ppb = 0.013;
         ok &= (mp_ref_ppb(&r, &m) == 0.013 && m == 1u);                            /* zmerena ADEV fazy */
+        r.lock_yoff_ok = 1u; r.lock_yoff_ppb = 0.02;                               /* sklon pod 2 x ADEV = tentyz sum: nepricita se */
+        ok &= (mp_ref_ppb(&r, &m) == 0.013 && m == 1u);
+        r.lock_yoff_ppb = 0.3;                                                     /* dosedani: sqrt(0,013^2 + 0,3^2 - 0,026^2) = 0,2992 */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.2991 && v < 0.2993); }
+        r.lock_yoff_ok = 0u;                                                       /* sklon nezmeren: hodnota se nepouzije */
+        ok &= (mp_ref_ppb(&r, &m) == 0.013 && m == 1u);
         r.locked = 0u;
         ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCKING && m == 0u);
+        r.lock_yoff_ok = 1u;                                                       /* nedoladeno, ale zmerena hodnota je horsi nez 0,1 */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.2991 && v < 0.2993); }
         memset(&r, 0, sizeof r); r.state = GPSDO_FLL;
         ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_FREE && m == 0u);                  /* zadne okno: OCXO muze byt ppm mimo */
         r.y_abs_ppb = 3.0; r.fll_win_s = 16u;                                      /* zmereno: 3 ppb, sum okna 16 s = 0,256 ppb */
@@ -571,8 +581,11 @@ int mp_selftest(void)
         { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.032 && v < 0.033); }
         memset(&r, 0, sizeof r); r.state = GPSDO_HOLD; r.state_s = 3600u;
         ok &= (mp_ref_ppb(&r, &m) == MP_REF_PPB_HOLD0 + MP_REF_PPB_HOLD_H && m == 0u);   /* nahrada, linearne */
-        r.hold_u0_ppb = 0.011; r.hold_drift_ppb_h = 0.026; r.state_s = 7200u;      /* zmereno: 26 ppt/h, po 2 h */
+        r.entry_ppb = 0.011; r.entry_meas = 1u; r.hold_drift_ppb_h = 0.026; r.state_s = 7200u;   /* zmereno: 26 ppt/h, po 2 h */
         { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.0531 && v < 0.0532); }   /* sqrt(0,011^2 + 0,052^2) */
+        r.entry_meas = 0u;                                                         /* vstupni udaj z nahrady: vysledek neni mereni */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.0531 && v < 0.0532); }
+        r.entry_meas = 1u;
         r.state_s = 0xFFFFFFFFu;
         { double v = mp_ref_ppb(&r, &m); ok &= (v < 0.63 && v > 0.62); }          /* strop 24 h: 0,026*24 = 0,624 */
         memset(&r, 0, sizeof r); r.state = GPSDO_OFF;

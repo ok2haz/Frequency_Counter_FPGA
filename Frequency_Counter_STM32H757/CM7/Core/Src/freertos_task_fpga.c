@@ -599,12 +599,34 @@ static uint32_t s_h_ms;
  * Z historie smycky (1 bod / 10 s, posledni SOUVISLY usek LOCK) se pocita:
  *  - u    = ADEV faze OCXO–GPS pri tau = m·10 s, m = 100 (1000 s), jinak mensi (50/20/10 podle delky useku) [ppb];
  *           mensi tau dava horsi (konzervativni) cislo, protoze v nem vic vazi sum 1PPS;
- *  - drift = |sklon kodu DAC| (LS pres cely usek, nejmin 30 min) × K [ppb/h] = zmereny dopredny drift OCXO (starnuti + teplota).
+ *  - drift = |sklon kodu DAC| (LS pres cely usek, nejmin 30 min) × K [ppb/h] = zmereny dopredny drift OCXO (starnuti + teplota);
+ *  - yoff = |sklon faze| (LS pres poslednich tau smycky, nejmin 300 s) [ppb] = stredni odchylka kmitoctu OCXO proti GPS. ADEV z druhych
+ *           diferenci ji nevidi (linearni prubeh faze da nulu), pritom po vstupu do LOCK je az 0,5 ppb a dosedani trva nekolik tau
+ *           (F-0291). Meri se od 30 bodu = od stejne delky useku jako ADEV; < 0 = nezmereno.
  * Cista logika nad poli (kryje gpsdo_selftest). Vraci 1, kdyz je `u` zmereno. */
-static int gp_ref_core(const int32_t *x_ps, const uint32_t *code_q16, int n, double kdac, double *u_ppb, double *drift_ppb_h)
+#define GP_REF_YOFF_MIN  30         /* [bodu] nejkratsi okno sklonu faze (kratsi ma sum nad 0,05 ppb, noc 2026-10-24) */
+static int gp_ref_core(const int32_t *x_ps, const uint32_t *code_q16, int n, double kdac, double tau_s,
+                       double *u_ppb, double *drift_ppb_h, double *yoff_ppb)
 {
     static const int MS[4] = { 100, 50, 20, 10 };
-    *u_ppb = 0.0; *drift_ppb_h = 0.0;
+    *u_ppb = 0.0; *drift_ppb_h = 0.0; *yoff_ppb = -1.0;
+    if (n >= GP_REF_YOFF_MIN) {
+        int wn = (int)(tau_s / (double)GPSDO_HIST_PERIOD_S + 0.5);
+        if (wn < GP_REF_YOFF_MIN) wn = GP_REF_YOFF_MIN;
+        if (wn > n) wn = n;
+        const int32_t *xs = x_ps + (n - wn);
+        double xm = 0.0;
+        for (int i = 0; i < wn; i++) xm += (double)xs[i];
+        xm /= (double)wn;
+        const double tc = 0.5 * (double)(wn - 1);
+        double sxy = 0.0, sxx = 0.0;
+        for (int i = 0; i < wn; i++) {
+            double t = (double)i - tc;
+            sxy += t * ((double)xs[i] - xm);
+            sxx += t * t;
+        }
+        *yoff_ppb = fabs(sxy / sxx) * 1e-3 / (double)GPSDO_HIST_PERIOD_S;          /* ps / bod -> ns/s = ppb */
+    }
     for (int k = 0; k < 4; k++) {
         int m = MS[k];
         if (n - 2 * m < 10) continue;
@@ -633,7 +655,11 @@ static int gp_ref_core(const int32_t *x_ps, const uint32_t *code_q16, int n, dou
     return *u_ppb > 0.0;
 }
 
-static volatile double s_ref_lock_u, s_ref_drift;    /* cache zmerenych hodnot; zapis jen gpsdo_tick (pod kritickou sekci), cte kdokoli */
+/* Cache zmerenych hodnot; zapis jen gpsdo_tick (pod kritickou sekci), cte kdokoli. */
+static volatile double  s_ref_lock_u, s_ref_drift;
+static volatile double  s_ref_yoff = -1.0;           /* |sklon faze| [ppb]; < 0 = nezmereno */
+static volatile double  s_ref_entry;                 /* nejistota platna tesne pred vstupem do LOCK / HOLD [ppb]; 0 = neznama */
+static volatile uint8_t s_ref_entry_meas;            /* 1 = s_ref_entry vychazi ze zmerenych hodnot */
 
 static void gp_ref_update(void)
 {
@@ -646,13 +672,53 @@ static void gp_ref_update(void)
         if (s_h_st[idx] != GPSDO_LOCK) break;
         n++;
     }
+    /* Jen body od vstupu do LOCK: holdover kratsi nez perioda historie (10 s) v ni bod nezanecha, ale faze se pri navratu
+     * kotvi znovu od nuly -> skok faze uvnitr "souvisleho" useku by zkreslil ADEV i sklon (F-0291). */
+    const uint32_t since = (uint32_t)(HAL_GetTick() - s_g_state_ms) / (GPSDO_HIST_PERIOD_S * 1000u);
+    if ((uint32_t)n > since) n = (int)since;
     for (int i = 0; i < n; i++) {
         uint16_t idx = (uint16_t)((head + GPSDO_HIST_N - (uint16_t)n + (uint16_t)i) % GPSDO_HIST_N);
         bx[i] = s_h_x[idx]; bc[i] = s_h_code[idx];
     }
-    double u, d;
-    (void)gp_ref_core(bx, bc, n, (s_gc.kdac > 0.0) ? s_gc.kdac : s_g_kdac, &u, &d);
-    taskENTER_CRITICAL(); s_ref_lock_u = u; s_ref_drift = d; taskEXIT_CRITICAL();
+    double u, d, yo;
+    (void)gp_ref_core(bx, bc, n, (s_gc.kdac > 0.0) ? s_gc.kdac : s_g_kdac, s_g_tau, &u, &d, &yo);
+    taskENTER_CRITICAL(); s_ref_lock_u = u; s_ref_drift = d; s_ref_yoff = yo; taskEXIT_CRITICAL();
+}
+
+/* Nejistota reference [ppb] pro ZADANY stav smycky ze zmerenych hodnot v cache (mp_ref_ppb, meas_present.h). */
+static double gp_ref_eval(uint8_t state, uint8_t why, uint8_t locked, uint32_t state_s, double y_abs_ppb, uint32_t fll_win_s,
+                          double pm_ns, uint8_t *measured)
+{
+    mp_ref_in_t r;
+    memset(&r, 0, sizeof r);
+    r.state = state; r.why = why; r.locked = locked; r.state_s = state_s;
+    r.y_abs_ppb = y_abs_ppb; r.fll_win_s = fll_win_s; r.pm_ns = pm_ns;
+    taskENTER_CRITICAL();
+    r.lock_u_ppb = s_ref_lock_u; r.hold_drift_ppb_h = s_ref_drift;
+    const double yo = s_ref_yoff;
+    r.entry_ppb = s_ref_entry; r.entry_meas = s_ref_entry_meas;
+    taskEXIT_CRITICAL();
+    if (yo >= 0.0) { r.lock_yoff_ppb = yo; r.lock_yoff_ok = 1u; }
+    return mp_ref_ppb(&r, measured);
+}
+
+/* Zmena stavu smycky (vola g_set_state, jen defaultTask). Do LOCK / HOLD se prenasi nejistota platna tesne pred prechodem:
+ * novy usek LOCK nema prvnich 5 min zadne mereni a holdover zacina tim, co platilo pri ztrate 1PPS (F-0291). Kazdy jiny
+ * prechod zmerene hodnoty zahodi -- patri k useku, ktery skoncil. HOLD si je drzi (drift kodu DAC). */
+static void gp_ref_transition(uint8_t from, uint8_t to, uint32_t from_s)
+{
+    double  e = 0.0;
+    uint8_t m = 0u;
+    if (to == GPSDO_LOCK || to == GPSDO_HOLD) {
+        if (from == GPSDO_FLL)                       /* posledni DOKONCENE okno FLL (yf se pri vstupu do LOCK nuluje) */
+            e = gp_ref_eval(GPSDO_FLL, GPSDO_WHY_NONE, 0u, from_s, fabs(s_gc.fll_prev_y) * 1e9, s_gc.fll_prev_n, s_pm_ns, &m);
+        else if (from == GPSDO_LOCK || from == GPSDO_HOLD)
+            e = gp_ref_eval(from, GPSDO_WHY_NONE, s_gc.locked, from_s, 0.0, 0u, s_pm_ns, &m);
+    }
+    taskENTER_CRITICAL();
+    s_ref_entry = e; s_ref_entry_meas = m;
+    if (to != GPSDO_HOLD) { s_ref_lock_u = 0.0; s_ref_drift = 0.0; s_ref_yoff = -1.0; }
+    taskEXIT_CRITICAL();
 }
 
 static void gp_hist_push(uint32_t now)
@@ -784,7 +850,11 @@ void gpsdo_tau_advise(gpsdo_tau_adv_t *out)
 
 static void g_set_state(uint8_t st, uint8_t why)
 {
-    if (st != s_g_state) s_g_state_ms = HAL_GetTick();
+    if (st != s_g_state) {
+        const uint32_t now = HAL_GetTick();
+        gp_ref_transition(s_g_state, st, (uint32_t)(now - s_g_state_ms) / 1000u);
+        s_g_state_ms = now;
+    }
     s_g_state = st; s_g_why = why;
 }
 
@@ -1000,19 +1070,22 @@ void gpsdo_get(gpsdo_status_t *out)
     taskENTER_CRITICAL(); *out = s_pub; taskEXIT_CRITICAL();
 }
 
-/* Nejistota reference [ppb] podle stavu smycky z ZMERENYCH hodnot (FLL: |y| okna, LOCK: ADEV faze, HOLD: ADEV + drift kodu); kdyz mereni
- * chybi, nahradni tabulka. Jedno misto pravdy pro hlavni cislo, okno ANALYZA i web (IPC `ref_ppb_x100`). Smi volat kdokoli. */
+/* Nejistota reference [ppb] podle stavu smycky z ZMERENYCH hodnot (FLL: |y| okna, LOCK: ADEV faze + prebytek sklonu faze, HOLD: udaj pri
+ * vstupu + drift kodu); kdyz mereni chybi, nahradni tabulka. Jedno misto pravdy pro hlavni cislo, okno ANALYZA i web (IPC `ref_ppb_x100`).
+ * Smi volat kdokoli. */
 double gpsdo_ref_ppb(uint8_t *measured)
 {
     gpsdo_status_t st;
     gpsdo_get(&st);
-    mp_ref_in_t r;
-    memset(&r, 0, sizeof r);
-    r.state = st.state; r.why = st.why; r.locked = st.locked; r.state_s = st.state_s;
-    r.y_abs_ppb = fabs(st.y) * 1e9; r.fll_win_s = st.fll_win_s;
-    r.pm_ns = st.pm_ns;                                        /* audit 2026-10-20 */
-    taskENTER_CRITICAL(); r.lock_u_ppb = s_ref_lock_u; r.hold_u0_ppb = s_ref_lock_u; r.hold_drift_ppb_h = s_ref_drift; taskEXIT_CRITICAL();
-    return mp_ref_ppb(&r, measured);
+    return gp_ref_eval(st.state, st.why, st.locked, st.state_s, fabs(st.y) * 1e9, st.fll_win_s, st.pm_ns, measured);
+}
+
+void gpsdo_ref_parts(gpsdo_ref_parts_t *out)
+{
+    taskENTER_CRITICAL();
+    out->adev_ppb = s_ref_lock_u; out->yoff_ppb = s_ref_yoff; out->drift_ppb_h = s_ref_drift;
+    out->entry_ppb = s_ref_entry; out->entry_meas = s_ref_entry_meas;
+    taskEXIT_CRITICAL();
 }
 
 void gpsdo_enable(int on)
@@ -1147,13 +1220,32 @@ int gpsdo_selftest(void)
             tx[i] = (int32_t)(((int)((rnd >> 16) % 11u) - 5) * 1000);   /* +-5 ns jako drive */
             tc[i] = (uint32_t)((24920.0 + 0.76 / 3600.0 * 10.0 * (double)i) * 65536.0 + 0.5);
         }
-        double u, d;
-        int m = gp_ref_core(tx, tc, 360, 3.4e-11, &u, &d);
+        double u, d, yo;
+        int m = gp_ref_core(tx, tc, 360, 3.4e-11, 1000.0, &u, &d, &yo);
         ok = ok && m && u > 0.003 && u < 0.009 && d > 0.0255 && d < 0.0262;
-        m = gp_ref_core(tx, tc, 100, 3.4e-11, &u, &d);                       /* kratky usek: ADEV na mensim tau, drift NEzmeren (< 30 min) */
-        ok = ok && m && d == 0.0;
-        m = gp_ref_core(tx, tc, 15, 3.4e-11, &u, &d);                        /* skoro nic: nezmereno */
-        ok = ok && !m && u == 0.0 && d == 0.0;
+        ok = ok && yo >= 0.0 && yo < MP_REF_YOFF_K * u;                      /* F-0291: ustaleny stav -- sklon faze je pod prahem, udaj = ADEV */
+        m = gp_ref_core(tx, tc, 100, 3.4e-11, 1000.0, &u, &d, &yo);          /* kratky usek: ADEV na mensim tau, drift NEzmeren (< 30 min) */
+        ok = ok && m && d == 0.0 && yo >= 0.0;
+        m = gp_ref_core(tx, tc, 15, 3.4e-11, 1000.0, &u, &d, &yo);           /* skoro nic: nezmereno */
+        ok = ok && !m && u == 0.0 && d == 0.0 && yo < 0.0;
+        /* F-0291: dosedani = faze ujizdi 0,3 ns/s. ADEV (druhe diference) to nevidi, sklon ano; okno sklonu = tau smycky. */
+        (void)gp_ref_core(tx, tc, 360, 3.4e-11, 1000.0, &u, &d, &yo);
+        const double u0 = u;
+        for (int i = 0; i < 360; i++) tx[i] += 3000 * i;                     /* 0,3 ns/s x 10 s = 3000 ps / bod */
+        m = gp_ref_core(tx, tc, 360, 3.4e-11, 1000.0, &u, &d, &yo);
+        ok = ok && m && fabs(u - u0) < 1e-6 && yo > 0.295 && yo < 0.305;
+        {   mp_ref_in_t r; uint8_t mm = 0u;
+            memset(&r, 0, sizeof r);
+            r.state = GPSDO_LOCK; r.locked = 1u; r.lock_u_ppb = u; r.lock_yoff_ppb = yo; r.lock_yoff_ok = 1u;
+            double v = mp_ref_ppb(&r, &mm);
+            ok = ok && mm == 1u && v > 0.29 && v < 0.31;                     /* udavana nejistota odpovida skutecne odchylce 0,3 ppb */
+        }
+        for (int i = 0; i < 300; i++) tx[i] = 0;                             /* odchylka jen v poslednich 600 s: okno tau = 300 s ji zmeri celou */
+        for (int i = 300; i < 360; i++) tx[i] = 3000 * (i - 300);
+        (void)gp_ref_core(tx, tc, 360, 3.4e-11, 300.0, &u, &d, &yo);
+        ok = ok && yo > 0.295 && yo < 0.305;
+        /* nahrada bez znameho udaje pred vstupem do LOCK nesmi byt mensi nez mez vstupu FLL -> LOCK */
+        ok = ok && GPSDO_FLL_LOCK_Y * 1e9 <= MP_REF_PPB_LOCK_ENTRY + 1e-9;
     }
     return ok;
 }

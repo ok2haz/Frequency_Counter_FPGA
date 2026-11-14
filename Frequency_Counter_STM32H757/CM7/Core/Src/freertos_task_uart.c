@@ -1130,6 +1130,21 @@ static void gpsdo_print_status(void)
            (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
            (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
            (unsigned long)s.saw_n);
+    /* Nejistota reference a jeji slozky (F-0291): ADEV faze, sklon faze za poslednich tau, drift kodu, udaj pred vstupem do stavu.
+     * Hodnoty v 1e-12 (ppt); "--" = nezmereno. */
+    {   gpsdo_ref_parts_t rp;
+        uint8_t rm = 0u;
+        long rv = gp_round(gpsdo_ref_ppb(&rm) * 1000.0);
+        gpsdo_ref_parts(&rp);
+        printf("GPSDO: nejistota reference %ld.%03ld ppb (%s) | ADEV faze ", rv / 1000, labs(rv) % 1000, rm ? "zmereno" : "odhad");
+        if (rp.adev_ppb > 0.0) printf("%ld ppt", gp_round(rp.adev_ppb * 1000.0)); else printf("--");
+        printf(" | sklon faze ");
+        if (rp.yoff_ppb >= 0.0) printf("%ld ppt", gp_round(rp.yoff_ppb * 1000.0)); else printf("--");
+        printf(" | drift kodu ");
+        if (rp.drift_ppb_h > 0.0) printf("%ld ppt/h", gp_round(rp.drift_ppb_h * 1000.0)); else printf("--");
+        printf(" | pred vstupem do stavu ");
+        if (rp.entry_ppb > 0.0) printf("%ld ppt (%s)\n", gp_round(rp.entry_ppb * 1000.0), rp.entry_meas ? "zmereno" : "odhad"); else printf("--\n");
+    }
     /* v0.40.1/2 (STATUS #337b): prvni hrana 1PPS po startu FPGA (synchronizator pps_cap3 startuje 000) */
     if (s.st_first_seq == 0x100u)
         printf("GPSDO: 1PPS prvni videna hrana: zatim zadna\n");
