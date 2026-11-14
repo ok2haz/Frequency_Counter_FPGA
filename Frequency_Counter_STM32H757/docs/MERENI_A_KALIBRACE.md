@@ -1727,6 +1727,24 @@ u kladnych hodnot prazdne (regex loggeru necekal znamenko `+`); kod a teploty js
 
 **Nezmereno:** tempco (chce rizenou zmenu teploty a zaznam faze se znamenkem), starnuti na dnech. Udalost byla vnejsi tepelny ruch (vzduch z uklidu), ne vada pristroje; pro tempco by ji bylo treba opakovat zamerne a s dobre zaznamenanou fazi.
 
+### 2026-11-14 ~12:00 — F-0285: strop predelicky vstupu zmeren generatorem (v0.45.17, FW 0x050A appOscS6) — STATUS #381
+
+Si5356 CLK2 -> vstup A, CLK4 -> vstup B (`gen 2|4 <Hz>`), predelicka pevne /16 (`fpga presc a|b 4`), 7 s ustaleni, UART `freq` + sonda z `fpga v3`.
+
+| f generatoru | A: `freq` | A: sonda | B: `freq` | B: sonda |
+|---|---|---|---|---|
+| 50 MHz | 49 999 999,9994 | 50000 kHz | 49 999 999,9998 | 50000 kHz |
+| 100 MHz | 99 999 999,9952 | 100000 kHz | – | – |
+| 125 MHz | 124 999 999,9980 | 124992 kHz | 125 000 000,0015 | 125008 kHz |
+| 150 MHz | 150 000 000,0012 | 150000 kHz | 150 000 000,0030 | 150000 kHz |
+| 175 MHz | 175 000 000,0028 | 174992 kHz | 174 999 999,9993 | 175008 kHz |
+| 200 MHz | 200 000 000,0008 | 200000 kHz | 200 000 000,0016 | 200000 kHz |
+
+- **Predelicky meri spravne na obou vstupech az do 200 MHz.** STA pritom hlasi zarucenych jen 175 (A) a 142 MHz (B): model je pesimisticky.
+- **Nad 200 MHz nejde nic zmerit:** generator je omezen na 200 MHz (`SI5356_GEN_F_MAX_HZ`, prikaz `gen` odmitne vic) a vstupni retezec ELT23L je DC-200 MHz. Hodnoty 225-400 MHz v prvnim behu skriptu ukazovaly stale 200 MHz = generator zustal na poslednim platnem kmitoctu, NEJSOU to mereni.
+- Kanal B se merilo az na druhy pokus s aktivnim kanalem B (`scpi SENS:FREQ:CHAN 1`); prvni beh cetl `freq` kanalu A, takze jeho B hodnoty neplatily. Po mereni vraceno: generator 10 MHz, predelicky auto, kanal A.
+- Pozadavek brany `PIN_FMAX_REQ_MHZ` zustava None (STA model by 200 MHz nikdy nesplnil); brana vypisuje "zmereno >= 200 MHz".
+
 ### 2026-11-14 09:13 -> 10:55 — overeni v0.45.17 na desce: znovuzamceni po flashi a power-cyklus (STATUS #381)
 
 Zaznam `gpsdo` po 60 s (`relock_0457.csv`, 100 radku), pak power-cyklus uzivatelem (~11:00).

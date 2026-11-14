@@ -26,6 +26,10 @@ create_clock -name spi_sck      -period 33.3  -waveform {0 16.65} [get_ports {sp
 // u_pcb/c / u_pca/c pak selhaval v 2 z 8 sestaveni az o -1,1 ns, s 3,33 ns v 7 z 8 prosel (median +0,225 ns, min -0,010) a
 // jina systematicka cesta nezbyla (pnr_seeds, varianta pin33). Skutecny strop overit generatorem. Pin -> retez TDC zustava
 // false_path pres sig_eff; c[3] -> sonda v clk pres 3 FF (asynchronni skupiny).
+// 2026-11-14 ZMERENO generatorem (Si5356 CLK2 -> A, CLK4 -> B, predelicka /16, bitstream 0x050A appOscS6): meri spravne az do 200 MHz
+// na obou vstupech (125/150/175/200 MHz; vic generator ani vstupni retezec nedava). STA hlasi pri 3,33 ns porusenou minimalni sirku
+// pulzu (pin_b -1,859 ns, pin_a -1,190 ns, tj. zaruceno jen 142 / 175 MHz) -- model je pesimisticky. Omezeni se NEMENI: zmena
+// create_clock by pregenerovala rozmisteni (nova loterie seedu, kterou kvuli hlaseni STA nema smysl podstupovat).
 create_clock -name pin_a -period 3.33 -waveform {0 1.665} [get_ports {ch_a}]
 create_clock -name pin_b -period 3.33 -waveform {0 1.665} [get_ports {ch_b}]
 set_clock_groups -asynchronous -group [get_clocks {clk_ref_10m}] -group [get_clocks {clk_p0_100m}] -group [get_clocks {spi_sck}] -group [get_clocks {pin_a}] -group [get_clocks {pin_b}]

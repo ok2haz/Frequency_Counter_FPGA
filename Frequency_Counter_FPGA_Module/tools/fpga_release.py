@@ -44,6 +44,10 @@ V3_FW = (0x0500, 0x05FF)  # protokol v3 = FW 0x05xx (PROTOKOL_V3.md), v2 = 0x04x
 # je pesimisticky); po zmereni generatorem sem zapsat hodnotu, kterou pristroj udava -> pod ni brana selze.
 PIN_CLOCKS = ('pin_a', 'pin_b')
 PIN_FMAX_REQ_MHZ = None
+# Zmereno 2026-11-14 (bitstream FW 0x050A appOscS6, generator Si5356 CLK2 -> A, CLK4 -> B, predelicka /16): kmitocet i sonda sedi
+# na 125, 150, 175 a 200 MHz na OBOU vstupech. Generator konci na 200 MHz (SI5356_GEN_F_MAX_HZ) a vstupni retezec ELT23L je
+# DC-200 MHz, vyssi hodnoty tedy zmerit nejde a pristroj je nema udavat. Model STA (175 / 142 MHz) je proti krzemiku pesimisticky.
+PIN_FMAX_MEASURED_MHZ = 200.0
 
 
 def profile(v3=False, root=ROOT):
@@ -231,8 +235,8 @@ def check(t_start=None, P=None, max_cls=None):
             info['presc_fmax'][clk] = fg
             ok = PIN_FMAX_REQ_MHZ is None or fg >= PIN_FMAX_REQ_MHZ
             R.add(ok, 'predelicka %s (F-0285)' % clk,
-                  'STA zarucuje %.0f MHz, omezeni v SDC %.0f MHz, rezerva sirky pulzu %.3f ns%s'
-                  % (fg, 1000.0 / per, w, '' if PIN_FMAX_REQ_MHZ is None else ', pozadavek %.0f MHz' % PIN_FMAX_REQ_MHZ),
+                  'STA zarucuje %.0f MHz, omezeni v SDC %.0f MHz, rezerva sirky pulzu %.3f ns, zmereno na desce >= %.0f MHz (limit generatoru)%s'
+                  % (fg, 1000.0 / per, w, PIN_FMAX_MEASURED_MHZ, '' if PIN_FMAX_REQ_MHZ is None else ', pozadavek %.0f MHz' % PIN_FMAX_REQ_MHZ),
                   warn=(w < 0.0))
 
     p = parse_rpt(read(rpt)); info.update(p)

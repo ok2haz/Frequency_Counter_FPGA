@@ -321,7 +321,7 @@ Uživatel schválil navržené pořadí. Provedeno téhož dne:
 |---|---|---|---|
 | F-0291 | opraveno v kódu (v0.45.15) | `7405947` | host test `tests/host/t_gpsdo_ref.py`, model dosedání nad změřeným šumem (podhodnocení 46× → nejvýš 1,2×), L-0276; ⬜ neověřeno na HW |
 | F-0290 | opraveno v kódu (v0.45.15) | `098bdf8` | host test + 16 mutací, meze z datalogu 21 h LOCK, L-0277; ⬜ neověřeno na HW |
-| F-0285 | brána vydání opravena | `64bb7d9` | selftest brány, reporty v2 i v3 (A 175 MHz, B 142 MHz jako WARN), L-0278; ⬜ skutečný strop předděličky neměřen |
+| F-0285 | brána vydání opravena + strop změřen | `64bb7d9` | selftest brány, reporty v2 i v3 (A 175 MHz, B 142 MHz jako WARN), L-0278; generátorem změřeno správně do 200 MHz na obou vstupech (limit generátoru a vstupního řetězce), model STA je pesimistický |
 | F-0286 | výchozí měření, RTL beze změny | – | běh 36,3 h (flash appOscS6, modul 35 °C): bubliny okna P 0 / S 0 z 523 431 oken → dopad se při pokojové teplotě neprojevuje; ⬜ test v teple |
 | F-0292 | opraven model nejistoty (v0.45.16); povel v holdoveru beze změny | `5ca59de` | dvě noci LOCK po 9,8 h (`docs/audit/sim/2026-11-14_f0292_*.py`), host test + 26 mutací, L-0279; ⬜ neověřeno holdoverem na desce |
 | F-0287, F-0288, F-0289, F-0293 | otevřeno | – | – |
