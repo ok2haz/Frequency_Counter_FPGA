@@ -191,13 +191,9 @@ static int window_first(uint8_t view_id)
 /* Back button on the diagnostics screen. */
 /* Back button lives in the bottom bar, in the same slot as the main MENU. */
 static const prim_rect_t BACK_RECT = {650, 417, 133, 61};
-/* System Health footer = SENZORY | GRAFY | ZPET (2026-08-29: pryc DIAGNOSTIKA +
- * NASTAVENI — jsou to dlazdice v Menu, ubyva redundantni cesta). Vse pred BACK_RECT (x=650). */
-static const prim_rect_t SENS_BTN_RECT = {18, 417, 200, 61};
-/* "GRAFY" tlacitko v System Health -> okno Grafy (casovy prubeh senzoru, s_view=29).
- * x=330: vycentrovano mezi SENZORY (konci 218) a ZPET (zacina 650) — po zruseni
- * DIAGNOSTIKA/NASTAVENI 2026-08-29 by jinak byl vpravo 214px prazdny pruh. */
-static const prim_rect_t HEALTH_GRAPH_BTN_RECT = {330, 417, 200, 61};
+/* System Health footer = GRAFY | ZPET. Okno SENZORY zruseno (jeho obsah je cely v DIAGNOSTICE). */
+/* "GRAFY" tlacitko v System Health -> okno Grafy (casovy prubeh senzoru, s_view=29). */
+static const prim_rect_t HEALTH_GRAPH_BTN_RECT = {18, 417, 200, 61};
 /* SESTERSKA okna analyzy stability: ALLAN (s_view=23, log-log graf) <-> HISTOGRAM
  * (s_view=6, rozdeleni) <-> SPEKTROGRAM Δf (s_view=26). Prepina SDILENA ZALOZKA
  * (VIEW_TABS, segmented v patce vlevo) BEZ nav_push -> BACK z libovolneho vede
@@ -248,6 +244,9 @@ static const prim_rect_t HIST_TABLE_RECT = {582, 100, 180, 292};
 /* Footer Diagnostiky (2026-08-29): jedine tlacitko "NASTROJE >" (drive DIAGRAM/
  * PAMET/SELFTEST — presunuty do mrizky NASTROJE, s_view=48). */
 static const prim_rect_t DIAG_TOOLS_BTN_RECT = {18, 417, 210, 61};
+/* RESET MIN/MAX senzoru (drive tlacitko v okne SENZORY, ted v Diagnostice, kde se min/max zobrazuje).
+ * Konci na x=450, tedy pred BACK_RECT (650). Vynuluje jen RAM statistiku, bez potvrzeni. */
+static const prim_rect_t DIAG_SENS_RESET_RECT = {240, 417, 210, 61};
 /* Ovladace v okne Nastaveni (2 sloupce jako diag): levy = Zvuk / Jas / Auto-dim,
  * pravy = Vzhled (schema) / Jazyk (+ rezerva na dalsi polozky).
  * ⚠️ TODO #11(1b) HOTOVO 2026-07-19: 56 px (6,6 mm) -> 64 px (7,5 mm, nad
@@ -891,6 +890,9 @@ void app_gpsdo_render_diag(void)
         ui_button_t toolsbtn = {.rect = DIAG_TOOLS_BTN_RECT, .variant = UI_BUTTON_NORMAL,
                                 .label = "NASTROJE >"};
         ui_button_render(&toolsbtn);
+        ui_button_t srstbtn = {.rect = DIAG_SENS_RESET_RECT, .variant = UI_BUTTON_NORMAL,
+                               .label = "RESET MIN/MAX"};
+        ui_button_render(&srstbtn);
 
         /* Left column: Teploty (vc. MCU jadra) + Napeti (ADS1115 + MCU).
          * ⚠️ FOOTER PRAVIDLO: spodni lista (y >= 416) je VZDY dedikovana
@@ -1381,8 +1383,6 @@ void app_gpsdo_render_health(void)
     if (first) {
         view_set(3);
         window_chrome("SYSTEM HEALTH", WIN_TITLE_Y);
-        ui_button_t sens = {.rect = SENS_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "SENZORY"};
-        ui_button_render(&sens);
         ui_button_t grf = {.rect = HEALTH_GRAPH_BTN_RECT, .variant = UI_BUTTON_NORMAL, .label = "GRAFY"};
         ui_button_render(&grf);
 
@@ -1422,83 +1422,9 @@ void app_gpsdo_render_health(void)
     if (draw_health_values(first)) present_now();
 }
 
-/* ── Podmenu vsech senzoru (s_view=4), otevre se z System Health ──────────
- * Cisty prehled AKTUALNICH hodnot, dva sloupce jako diagnostika: vlevo Teploty,
- * vpravo Napeti. Jmena (dlabel) kresli render_sensors jednou; zive hodnoty
- * (dval, zarovnane vpravo) tady. Bez min/max/avg/err — jen aktualni hodnota. */
+/* Roztec radku v oknech s dvousloupcovym seznamem (PAMET). Puvodne z okna SENZORY (zruseno). */
 #define SENS_R0   132                /* y prvniho radku */
 #define SENS_DY    32                /* rozteč radku */
-
-/* Rozmisteni: id senzoru + sloupec (xr value) + radek (y) + zda je to teplota. */
-static const struct { uint8_t id; int16_t xr; int16_t y; uint8_t temp; }
-SENS_ROW[SENS_COUNT] = {
-    { SENS_T48,    DG_LVAL, SENS_R0 + 0 * SENS_DY, 1 },   /* leva: Teploty (poradi = labely: */
-    { SENS_CORE_T, DG_LVAL, SENS_R0 + 1 * SENS_DY, 1 },   /* STM board / MCU jadro /         */
-    { SENS_T49,    DG_LVAL, SENS_R0 + 2 * SENS_DY, 1 },   /* OCXO / FPGA board)              */
-    { SENS_T4A,    DG_LVAL, SENS_R0 + 3 * SENS_DY, 1 },
-    { SENS_ADS0,   DG_RVAL, SENS_R0 + 0 * SENS_DY, 0 },   /* prava: Napeti */
-    { SENS_ADS1,   DG_RVAL, SENS_R0 + 1 * SENS_DY, 0 },
-    { SENS_ADS2,   DG_RVAL, SENS_R0 + 2 * SENS_DY, 0 },
-    { SENS_ADS3,   DG_RVAL, SENS_R0 + 3 * SENS_DY, 0 },
-    { SENS_VDDA,   DG_RVAL, SENS_R0 + 4 * SENS_DY, 0 },
-    { SENS_VBAT,   DG_RVAL, SENS_R0 + 5 * SENS_DY, 0 },
-};
-
-static int draw_sensors_values(int force)
-{
-    static char c[SENS_COUNT][20];
-    char buf[20], key[24];
-    int drew = force;
-    for (int i = 0; i < SENS_COUNT; i++) {
-        const sensor_stat_t *s = &g_sensors[SENS_ROW[i].id];
-        if (s->samples == 0)       snprintf(buf, sizeof buf, "---");
-        else if (SENS_ROW[i].temp)
-            fmt_temp_d(buf, sizeof buf, s->last, temp_deci(SENS_ROW[i].id));  /* "23.45 C" */
-        else                       snprintf(buf, sizeof buf, "%ld mV", lround_f(s->last));
-        snprintf(key, sizeof key, "%c%s", s->valid ? 'V' : 'X', buf);   /* redraw i pri zmene valid */
-        if (force || dchg(c[i], sizeof c[i], key)) {
-            dval(SENS_ROW[i].xr, SENS_ROW[i].y, 150, buf, s->valid); drew = 1;
-        }
-    }
-    return drew;
-}
-
-/* Footer: vynuluje min/max/mean vsech senzoru (RAM, okamzite — na rozdil od
- * datalogu tu neni co blokujiciho, staci normalni tlacitko bez potvrzeni). */
-static const prim_rect_t SENS_RESET_RECT = {18, 417, 300, 61};
-
-void app_gpsdo_render_sensors(void)
-{
-    int first = window_first(4);
-    if (first) {
-        view_set(4);
-        window_chrome("SENZORY", WIN_TITLE_Y);
-        ui_card_t c = {.rect = DG_CARD_FULL_A,
-                       .header_label = "Aktualni hodnoty senzoru"};
-        ui_card_render_chrome(&c);
-        ui_button_t rb = {.rect = SENS_RESET_RECT, .variant = UI_BUTTON_NORMAL,
-                          .label = "RESET MIN/MAX"};
-        ui_button_render(&rb);
-
-        /* podnadpisy sloupcu */
-        prim_draw_text((prim_point_t){DG_LLBL, 104}, "TEPLOTY  [C]", &ui_font_mono_18,
-                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-        prim_draw_text((prim_point_t){DG_RLBL, 104}, "NAPETI  [mV]", &ui_font_mono_18,
-                       UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
-        /* jmena senzoru (poradi musi sedet se SENS_ROW) */
-        dlabel(DG_LLBL, SENS_R0 + 0 * SENS_DY, "STM board");
-        dlabel(DG_LLBL, SENS_R0 + 1 * SENS_DY, "MCU jadro");
-        dlabel(DG_LLBL, SENS_R0 + 2 * SENS_DY, "OCXO");
-        dlabel(DG_LLBL, SENS_R0 + 3 * SENS_DY, "FPGA board");
-        dlabel(DG_RLBL, SENS_R0 + 0 * SENS_DY, "AIN0 OCXO_VC");
-        dlabel(DG_RLBL, SENS_R0 + 1 * SENS_DY, "AIN1 VBUS");
-        dlabel(DG_RLBL, SENS_R0 + 2 * SENS_DY, "AIN2 +3V3");
-        dlabel(DG_RLBL, SENS_R0 + 3 * SENS_DY, "AIN3 5V");
-        dlabel(DG_RLBL, SENS_R0 + 4 * SENS_DY, "VREF");
-        dlabel(DG_RLBL, SENS_R0 + 5 * SENS_DY, "VBAT");
-    }
-    if (draw_sensors_values(first)) present_now();
-}
 
 /* ── Okno GRAFY (s_view=29): casovy prubeh teplot + napajeni (STATUS.md #31) ──
  * Vstup: tlacitko GRAFY v System Health. Kombinovany datovy zdroj:
@@ -2336,7 +2262,7 @@ static void math_render_controls(void)
                      bt, &ui_font_mono_16, UI_COLOR_INK, PRIM_ALIGN_CENTER); }
     ui_button_t bN = {.rect = MATH_BTN_NULL,
                       .variant = g_meas_cfg.null_en ? UI_BUTTON_ACTIVE : UI_BUTTON_NORMAL,
-                      .label = g_meas_cfg.null_en ? "NULL ZAP" : "NULL VYP"};
+                      .label = g_meas_cfg.null_en ? "NUL Y ZAP" : "NUL Y VYP"};
     ui_button_render(&bN);
 
     /* Karta B: Lo/Hi + pasmo text. */
@@ -3000,7 +2926,6 @@ void app_gpsdo_exit_screensaver(void)
     case 1:  app_gpsdo_render_diag();      break;
     case 2:  app_gpsdo_render_gps();       break;
     case 3:  app_gpsdo_render_health();    break;
-    case 4:  app_gpsdo_render_sensors();   break;
     case 5:  app_gpsdo_render_mem();       break;
     case 6:  app_gpsdo_render_histogram(); break;
     case 7:  app_gpsdo_render_settings();  break;
@@ -4381,7 +4306,7 @@ static void app_gpsdo_render_devmult(void)
         dlabel(DG_LLBL, 316, "ppm:");
         dlabel(DG_LLBL, 352, "f0 (Hz):");
         ui_button_t mb = {.rect = DM_MUL_RECT, .variant = UI_BUTTON_NORMAL, .label = DM_MUL_L[s_dm_mul_i]};
-        ui_button_t nb = {.rect = DM_NUL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NUL"};
+        ui_button_t nb = {.rect = DM_NUL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NUL f0"};
         ui_button_t ab = {.rect = DM_ADRET_RECT, .variant = UI_BUTTON_NORMAL, .label = "FAZE >"};
         ui_button_render(&mb);
         ui_button_render(&nb);
@@ -4479,7 +4404,7 @@ static void app_gpsdo_render_adret(void)
         ui_card_render_chrome(&cg);
         ui_card_t cn = {.rect = AD_CARD_N};
         ui_card_render_chrome(&cn);
-        ui_button_t nb = {.rect = AD_NUL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NUL"};
+        ui_button_t nb = {.rect = AD_NUL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NUL f0"};
         ui_button_render(&nb);
         ad_btns();
         c_df[0] = c_ph[0] = c_pr[0] = c_f[0] = '\0';
@@ -5312,7 +5237,7 @@ static void app_gpsdo_render_holdover(void)
         prim_fill_rect((prim_rect_t){(int16_t)(DG_LLBL + 120), 98, 260, 34}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
         prim_draw_text((prim_point_t){(int16_t)(DG_LLBL + 120), 124}, sl, &ui_font_mono_25, sc, PRIM_ALIGN_LEFT);
     }
-    char b[24];
+    char b[48];
     snprintf(b, sizeof b, "%s", g.valid ? (g.fix_mode == 3 ? "3D fix" : "2D fix") : (g.fixes > 0 ? "ztracen" : "zadny"));
     { prim_color_t vc = g.valid ? UI_COLOR_OK : UI_COLOR_INK_2; int chg = dchg(c_gps, sizeof c_gps, b);
       if (first) kv_row(160, "GPS lock:", b, vc); else if (chg) kv_row_narrow(160, b, vc); }
@@ -5327,7 +5252,7 @@ static void app_gpsdo_render_holdover(void)
      *      znamenka). OCXO sice zaporne nebude, ale byla to tikajici mina. */
     /* OCXO teplota + tepelny sklon (warm-up indikator): "45.2 C +0.03/m". */
     { const sensor_stat_t *o = &g_sensors[SENS_T49];
-      if (o->valid) { char t[12]; fmt_temp(t, sizeof t, o->last);
+      if (o->valid) { char t[20]; fmt_temp(t, sizeof t, o->last);
                       float a = wslope < 0 ? -wslope : wslope; int ai = (int)a;
                       int af = (int)((a - (float)ai) * 100.0f + 0.5f);
                       snprintf(b, sizeof b, "%s %c%d.%02d/m", t, wslope < 0 ? '-' : '+', ai, af); }
@@ -6485,7 +6410,7 @@ static void app_gpsdo_render_alarms(void)
         ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Zvukove alarmy (beeper) — co je hlidano"};
         ui_card_render_chrome(&c);
         ui_button_t rb = {.rect = ALARM_RESET_RECT, .variant = UI_BUTTON_NORMAL,
-                          .label = "RESET STATISTIK"};
+                          .label = "RESET ALARMU"};
         ui_button_render(&rb);
         ui_button_t tb = {.rect = ALARM_THR_RECT, .variant = UI_BUTTON_NORMAL,
                           .label = "PRAHY >"};
@@ -6876,7 +6801,7 @@ static void app_gpsdo_render_meas(void)
         ui_button_t bu = {.rect = MEAS_UNIT_BTN, .variant = UI_BUTTON_NORMAL,
                           .label = mp_unit_label(s_meas_unit)};
         ui_button_render(&bu);
-        ui_button_t br = {.rect = MEAS_RST_BTN, .variant = UI_BUTTON_NORMAL, .label = "RESET"};
+        ui_button_t br = {.rect = MEAS_RST_BTN, .variant = UI_BUTTON_NORMAL, .label = "RST STAT."};
         ui_button_render(&br);
         ui_button_t bc = {.rect = MEAS_CNT_BTN, .variant = UI_BUTTON_NORMAL, .label = "ANALYZA >"};
         ui_button_render(&bc);
@@ -8395,7 +8320,6 @@ static void render_view(uint8_t v)
     case 1:  app_gpsdo_render_diag();      break;
     case 2:  app_gpsdo_render_gps();       break;
     case 3:  app_gpsdo_render_health();    break;
-    case 4:  app_gpsdo_render_sensors();   break;
     case 5:  app_gpsdo_render_mem();       break;
     case 6:  app_gpsdo_render_histogram(); break;
     case 7:  app_gpsdo_render_settings();  break;
@@ -8915,7 +8839,6 @@ void app_gpsdo_tick(void)
     if (s_view == 1) app_gpsdo_render_diag();     /* live refresh of diagnostics */
     else if (s_view == 2) app_gpsdo_render_gps();     /* live refresh of GPS/GNSS okna */
     else if (s_view == 3) app_gpsdo_render_health();  /* live refresh of system health */
-    else if (s_view == 4) app_gpsdo_render_sensors(); /* live refresh of senzory podmenu */
     else if (s_view == 5) app_gpsdo_render_mem();     /* live refresh (RTOS heap) okna PAMET */
     else if (s_view == 6) app_gpsdo_render_histogram(); /* live/snapshot histogram mereni */
     else if (s_view == 23) app_gpsdo_render_allan();  /* fullscreen Allan graf (zivy) */
@@ -10024,10 +9947,6 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (s_view == 54 && adret_touch(x, y)) return true;
         /* System Health footer -> "SENZORY" / "GRAFY" (Diagnostika + Nastaveni jsou
          * dlazdice v Menu, 2026-08-29). */
-        if (s_view == 3 && in_rect(x, y, SENS_BTN_RECT)) {
-            nav_push(3); app_gpsdo_render_sensors();
-            return true;
-        }
         if (s_view == 3 && in_rect(x, y, HEALTH_GRAPH_BTN_RECT)) {   /* Health -> Grafy (#31) */
             nav_push(3); app_gpsdo_render_graphs();
             return true;
@@ -10067,9 +9986,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             app_gpsdo_render_meas();
             return true;
         }
-        if (s_view == 4 && in_rect(x, y, SENS_RESET_RECT)) {   /* Senzory: RESET MIN/MAX */
+        if (s_view == 1 && in_rect(x, y, DIAG_SENS_RESET_RECT)) {   /* Diagnostika: RESET MIN/MAX */
             sensor_stat_reset_all();
-            app_gpsdo_render_sensors();
+            app_gpsdo_render_diag();
             return true;
         }
         if (s_view == 34) {                                    /* okno MERENI: ovladace */

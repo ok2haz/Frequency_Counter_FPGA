@@ -26,9 +26,6 @@ void app_gpsdo_render_gps(void);
 /** Render the System Health screen (RTOS/heap/stacks/I2C/links; SYS pill). Live. */
 void app_gpsdo_render_health(void);
 
-/** Render the all-sensors submenu (opened from System Health "SENZORY >"). Live. */
-void app_gpsdo_render_sensors(void);
-
 /** Render the memory-usage submenu (opened from System Health "PAMET >"). Live.
  *  Interni FLASH/RAM (linker), RTOS heap, externi SDRAM 32 MB + W25Q 64 MB (JEDEC). */
 void app_gpsdo_render_mem(void);
