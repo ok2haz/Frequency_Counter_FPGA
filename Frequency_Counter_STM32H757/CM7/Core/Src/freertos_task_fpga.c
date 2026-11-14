@@ -628,7 +628,7 @@ static uint32_t s_h_ms;
  *  - u    = ADEV faze OCXO–GPS pri tau = m·10 s, m = 100 (1000 s), jinak mensi (50/20/10 podle delky useku) [ppb];
  *           mensi tau dava horsi (konzervativni) cislo, protoze v nem vic vazi sum 1PPS;
  *  - drift = |sklon kodu DAC| (LS pres cely usek, nejmin 30 min) × K [ppb/h] = zmereny dopredny drift OCXO (starnuti + teplota);
- *  - yoff = |sklon faze| (LS pres poslednich tau smycky, nejmin 300 s) [ppb] = stredni odchylka kmitoctu OCXO proti GPS. ADEV z druhych
+ *  - yoff = |sklon faze| (LS pres poslednich tau smycky, od 12 bodu = 110 s, pred ADEV jen jako dolni mez, F-0294) [ppb] = stredni odchylka kmitoctu OCXO proti GPS. ADEV z druhych
  *           diferenci ji nevidi (linearni prubeh faze da nulu), pritom po vstupu do LOCK je az 0,5 ppb a dosedani trva nekolik tau
  *           (F-0291). Meri se od 30 bodu = od stejne delky useku jako ADEV; < 0 = nezmereno.
  *  - rw   = nahodna prochazka kodu DAC: rms zmeny kodu za 1800 s (prekryvajici se rozdily pres cely usek, nejmin 1 h) × K, prepoctena

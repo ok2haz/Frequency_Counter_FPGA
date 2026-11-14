@@ -122,7 +122,7 @@ baseline `rect.y + UI_DIM_CARD_PAD_Y(9) + 16` = **`rect.y + 25`**, text tedy sah
   - **MENU zůstává 3×4** (12 dlaždic, všech 12 obsazených): ř1 huby (System Health/Diagnostika/
     Nastavení), ř2 Čítač/Holdover/Datalog, ř3 Math-Limity/Měření/Kvalita GPS, ř4 **Benchmark/
     SD karta/Reference** (přesunuty z Nastavení — jsou to nástroje). Pryč: 3× placeholder, Status ribbon.
-  - **System Health footer 4→2 tlačítka**: `SENZORY {18,417,200,61} · GRAFY {236,417,200,61} · ZPĚT`
+  - **System Health footer 4→2 tlačítka**: `GRAFY {18,417,200,61} · ZPĚT` (od v0.45.19; SENZORY zrušeno, dřív i GRAFY {236,..})
     (DIAGNOSTIKA + NASTAVENI odsud pryč — jsou dlaždice Menu). Diagnostika footer beze změny
     (`DIAGRAM · PAMET · SELFTEST · ZPĚT`).
   - **Status ribbon demo** → footer tlačítko `STATUS RIBBON > {18,417,300,61}` v okně EFEKTY.
