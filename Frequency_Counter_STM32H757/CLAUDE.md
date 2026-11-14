@@ -2275,7 +2275,11 @@ nedozvíš, dokud tiše nepřijdeš o čas a nastavení při odpojení napájen�
   výslovně (`HAL_PWREx_DisableBatteryCharging`, `status` → `VBAT nabijeni: VYP`). **Datalog ukládá SUROVÝ pin** (korekce se přičítá při čtení záznamu).
   Prahy na baterii: nominál 3,0 V, výstraha **2,70 V** (starý uložený výchozí 2800 se převede), kritické 2,40 V (autocal FAIL). Kalibrace blob `CAL3` (+ `vbat_corr_mv`).
 - 🔴 **Nejistota REFERENCE (v0.30.0, `gpsdo_ref_ppb()`, `mp_ref_ppb` v `meas_present.h`) se bere ZE ZMĚŘENÝCH hodnot smyčky**: FLL = |y| posledního okna ⊕ šum okna √2·2,9 ns/okno,
-  LOCK = ADEV fáze OCXO–GPS @ ≤ 1000 s z historie smyčky, HOLD = ADEV při vstupu + drift kódu DAC (LS ≤ 2 h LOCK) × K, √(u0² + (drift·t)²); náhradní tabulka jen když měření chybí.
+  LOCK = ADEV fáze OCXO–GPS @ ≤ 1000 s z historie smyčky **+ přebytek |sklonu fáze| za posledních τ nad 2 × ADEV (v0.45.15, F-0291: ADEV nevidí odchylku kmitočtu při dosedání;
+  prvních 5 min úseku platí údaj před vstupem do LOCK)**, HOLD = údaj při vstupu + drift kódu DAC (LS ≤ 2 h LOCK) × K, √(u0² + (drift·t)²); náhradní tabulka jen když měření chybí.
+  UART `gpsdo` → řádek `nejistota reference` (složky). Host test `python tests/host/t_gpsdo_ref.py <adresář>` (jádro vyjmuté ze zdroje; pouštět po změně `gp_ref_core`, `gp_gnss_step`, `mp_ref_ppb`).
+- 🔴 **Disciplinace vyžaduje kvalitu řešení GNSS (v0.45.15, F-0290, `gp_gnss_step`):** 3D fix, ≥ 5 použitých družic, HDOP ≤ 2,5; návrat při ≥ 6 a ≤ 2,0 držených 30 s. Jinak se 1PPS
+  nepřijímá a smyčka jde do HOLD s důvodem `GPSDO_WHY_GNSS` (meze v `gpsdo.h`; UART `gpsdo` → `kvalita GNSS … poklesu N`). Po startu proto smyčka čeká 30 s dobré kvality. ⬜ neověřeno na HW.
   Jedno místo pro hlavní číslo, okno ANALÝZA i web (IPC v29: `ref_ppb_x100`, `ref_meas`). Neměří se: OFF/WAIT (1 ppm), teplota v HOLD.
 - 🔴 **Pravidlo jednotek (zadání 2026-10-18, „kdekoliv v přístroji“):** relativní odchylku píšeme v **ppm jen od 1 ppm**; pod tím **ppb a jen na desetiny**, pod 1 ppb ppt (1 desetina). Displej: `fmt_rel_unit`
   (okno MĚŘENÍ), řádky ppb/ppm v Odchylce ×N, `fmt_sci_ppb` (ANALÝZA); web: řádek RELATIVNĚ. Nový výpis relativní hodnoty MUSÍ jít přes ně.

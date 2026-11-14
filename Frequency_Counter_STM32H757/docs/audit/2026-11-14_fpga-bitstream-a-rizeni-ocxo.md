@@ -313,6 +313,25 @@ kmitočet / drift, nebo PI s druhým integrátorem) a τ volené podle změřen�
 
 ---
 
+## Stav po triáži (2026-11-14)
+
+Uživatel schválil navržené pořadí. Provedeno téhož dne:
+
+| Nález | Stav | Commit | Ověření |
+|---|---|---|---|
+| F-0291 | opraveno v kódu (v0.45.15) | `7405947` | host test `tests/host/t_gpsdo_ref.py`, model dosedání nad změřeným šumem (podhodnocení 46× → nejvýš 1,2×), L-0276; ⬜ neověřeno na HW |
+| F-0290 | opraveno v kódu (v0.45.15) | `098bdf8` | host test + 16 mutací, meze z datalogu 21 h LOCK, L-0277; ⬜ neověřeno na HW |
+| F-0285 | brána vydání opravena | `64bb7d9` | selftest brány, reporty v2 i v3 (A 175 MHz, B 142 MHz jako WARN), L-0278; ⬜ skutečný strop předděličky neměřen |
+| F-0286 | výchozí měření, RTL beze změny | – | běh 36,3 h (flash appOscS6, modul 35 °C): bubliny okna P 0 / S 0 z 523 431 oken → dopad se při pokojové teplotě neprojevuje; ⬜ test v teple |
+| F-0292, F-0287, F-0288, F-0289, F-0293 | otevřeno | – | – |
+
+Odchylky od návrhu v nálezech:
+
+- F-0291: sklon fáze se nepřičítá celý, jen jeho přebytek nad 2 × ADEV. Celý kvadratický součet by údaj v ustáleném stavu
+  zvedal trvale (medián 1,15×, 95. percentil 1,9×), protože sklon pod touto mezí je tentýž šum, který ADEV už obsahuje.
+  Pravidlo „`locked` až po 3 τ“ se nepoužilo; nahrazuje ho měřený sklon a přenos nejistoty přes změnu stavu.
+- F-0286: návrh rozložit `ld` se neprovedl, protože výchozí měření dopad nepotvrdilo. Zůstává test v teple.
+
 ## Co nebylo ověřeno
 
 - Nic z části A nebylo měřeno na desce v rámci tohoto auditu; deska běží v nerušeném LOCK (noční záznam).
