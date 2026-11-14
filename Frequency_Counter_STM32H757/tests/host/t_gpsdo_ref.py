@@ -71,4 +71,21 @@ if r.returncode:
     sys.exit('PREKLAD SELHAL')
 t = subprocess.run([exe], capture_output=True, text=True, timeout=120)
 print(t.stdout.strip())
+if t.returncode:
+    sys.exit(t.returncode)
+
+# Druha cast: mp_selftest() z meas_present.c tak, jak bezi na cili (selftest c. 10). Do 2026-11-14 ho host test nepoustel
+# a spatne ocekavana mez v nem prosla az na desku (SELFTEST 15/16).
+p2 = os.path.join(OUT, 't_mp_selftest.c')
+io.open(p2, 'w', encoding='utf-8', newline='\n').write(
+    '#include <stdio.h>\n#include "meas_present.h"\n'
+    'int main(void) { int ok = mp_selftest(); printf("mp_selftest: %s\\n", ok ? "PASS" : "FAIL"); return ok ? 0 : 1; }\n')
+exe2 = os.path.join(OUT, 't_mp_selftest.exe')
+r = subprocess.run(CC + ['-std=c11', '-O2', '-Wall', '-Wextra', '-DM_PI=3.14159265358979323846', '-I' + os.path.join(ROOT, 'CM7', 'Core', 'Inc'),
+                         os.path.join(ROOT, 'CM7', 'Core', 'Src', 'meas_present.c'), p2, '-lm', '-o', exe2], capture_output=True, text=True)
+if r.returncode:
+    print(r.stderr[:3000])
+    sys.exit('PREKLAD mp_selftest SELHAL')
+t = subprocess.run([exe2], capture_output=True, text=True, timeout=120)
+print(t.stdout.strip())
 sys.exit(t.returncode)

@@ -584,9 +584,9 @@ int mp_selftest(void)
         r.entry_ppb = 0.011; r.entry_meas = 1u; r.hold_drift_ppb_h = 0.026; r.state_s = 7200u;   /* zmereno: 26 ppt/h, po 2 h */
         { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.1123 && v < 0.1125); }   /* prochazka nezmerena: sqrt(0,011^2 + 0,07^2*2 + 0,052^2) */
         r.hold_rw_ppb_sqrth = 0.04;                                                /* F-0292: zmerena prochazka 0,04 ppb/sqrt(h) x 1,4 */
-        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.0951 && v < 0.0953); }   /* sqrt(0,011^2 + 0,056^2*2 + 0,052^2) */
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 1u && v > 0.0953 && v < 0.0955); }   /* sqrt(0,011^2 + 0,056^2*2 + 0,052^2) = 0,09538 */
         r.entry_meas = 0u;                                                         /* vstupni udaj z nahrady: vysledek neni mereni */
-        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.0951 && v < 0.0953); }
+        { double v = mp_ref_ppb(&r, &m); ok &= (m == 0u && v > 0.0953 && v < 0.0955); }
         r.entry_meas = 1u;
         r.state_s = 0xFFFFFFFFu;
         { double v = mp_ref_ppb(&r, &m); ok &= (v < 0.683 && v > 0.681); }        /* strop 24 h: sqrt(0,011^2 + 0,056^2*24 + 0,624^2) = 0,682 */
