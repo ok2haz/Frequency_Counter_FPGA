@@ -565,6 +565,8 @@ int mp_selftest(void)
         ok &= (mp_ref_ppb(&r, &m) == 0.5 && m == 0u);
         r.lock_yoff_ppb = 0.1;
         ok &= (mp_ref_ppb(&r, &m) == 0.3 && m == 0u);
+        r.lock_yoff_ok = 0u; r.lock_yoff_ppb = 0.9;                                /* F-0294: nezmeren sklon se bez ADEV nepouzije, i kdyz je pole vetsi */
+        ok &= (mp_ref_ppb(&r, &m) == 0.3 && m == 0u);
         r.lock_yoff_ok = 0u; r.lock_yoff_ppb = 0.0;
         r.lock_u_ppb = 0.013;
         ok &= (mp_ref_ppb(&r, &m) == 0.013 && m == 1u);                            /* zmerena ADEV fazy */
