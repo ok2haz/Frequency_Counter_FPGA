@@ -87,7 +87,7 @@ void MX_RTC_Init(void)
    * poprve kresli (screen_main_init ho rozbali do st). Cteni BKP nevyzaduje DBP;
    * neplatny magic -> g_ui_cfg zustane default z freertos.c. */
   uint32_t uicfg = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
-  if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = (uint8_t)(uicfg & 0xFFu);
+  if ((uicfg & 0xFFFFFF00u) == RTC_UICFG_MAGIC) g_ui_cfg = ipc_uicfg_norm((uint8_t)(uicfg & 0xFFu));
 
   /* Systemove nastaveni (jas/mute) z BKP_DR2. Neplatny magic -> default z freertos.c.
    * Platny magic = warm reset (BKP prezila) -> g_syscfg_bkp_valid=1 -> syscfg_load
@@ -152,8 +152,39 @@ void MX_RTC_Init(void)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "HF@%08lX%c",
                (unsigned long)n0, t);
     }
-    else
+    else if (kind == 5u) {
+      /* Error_Handler: DR4 = posledni `bootled_step()`, tj. ktery init spadl.
+       * ⚠️ Kroky 15..17 NEJSOU init periferie, ale selhani JESTE PRED prvnim
+       * sledovanym initem — typicky `SystemClock_Config` (audit F-0007/F-0108).
+       * Tam `hal_err@15` nikomu nic nerekne, zato „hal_err@HSE" rovnou ukazuje,
+       * kterym smerem merit. Stav oscilatoru nese DR12 (razitko 0x05CE). */
+      const uint32_t step = n0 & 0xFFu;
+      if (step >= 15u && step <= 17u) {
+        const char *osc = (step == 15u) ? "HSE" : (step == 16u) ? "LSE" : "early";
+        snprintf((char *)g_crash_text, sizeof(g_crash_text), "hal_err@%s", osc);
+      } else {
+        snprintf((char *)g_crash_text, sizeof(g_crash_text), "hal_err@%lu",
+                 (unsigned long)step);         /* krok je uint8_t -> max 3 cifry */
+      }
+    }
+    else if (kind == 6u)
+      /* configASSERT: DR4 = __LINE__ v tom souboru FreeRTOS, kde assert selhal. */
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "assert:L%lu",
+               (unsigned long)(n0 & 0xFFFFu));  /* maskou drzim <= 5 cifer */
+    else if (kind >= 7u && kind <= 10u) {
+      /* Nedosazitelne fault vektory (viz `stm32h7xx_it.c`). Kdyz se tohle
+       * objevi, nekdo povolil `SHCSR` nebo CSS — a je to zajimave zjisteni. */
+      static const char *k7[4] = { "NMI", "MemMan", "BusFlt", "UsgFlt" };
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "%s@%08lX",
+               k7[kind - 7u], (unsigned long)n0);
+    }
+    else if (kind == 2u)
       snprintf((char *)g_crash_text, sizeof(g_crash_text), "malloc fail");
+    else
+      /* ⚠️ Drive sem spadl KAZDY neznamy kind a hlasil se jako „malloc fail" —
+       * novy druh crashe by se tise vydaval za jiny. */
+      snprintf((char *)g_crash_text, sizeof(g_crash_text), "crash? %lu",
+               (unsigned long)(kind & 0xFFu));
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0u);
   }
 
@@ -236,6 +267,30 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* Zapis selhaneho `configASSERT` do crash black-boxu (kind 6, DR4 = radek).
+ * ⚠️ Vola se z FreeRTOS makra `configASSERT`, tedy MUZE bezet z ISR i s
+ * vypnutymi preruseními — proto zadny HAL, jen prime zapisy do BKP registru
+ * (stejny idiom jako `watchdog.c` a `HardFault_Handler`). Magic AZ NAPOSLED,
+ * aby necely zapis nevypadal jako platny zaznam. */
+void rtc_crash_assert(unsigned long line)
+{
+  /* ⚠️ DBP nejdriv (audit F-0107). Zapis do zalohovane domeny vyzaduje odemcene
+   * `PWR->CR1.DBP`; dnes ho drzi odemcene `HAL_PWR_EnableBkUpAccess()` volane
+   * ze `SystemClock_Config()` a nic ho nezamyka zpet — jenze to je generovany
+   * kod BEZ `USER CODE` bloku, takze se ta zavislost da regeneraci posunout.
+   * Kdyby k tomu doslo, selhal by prave zaznam o selhanem `configASSERT`, tedy
+   * diagnostika chyby. Ostatnich pet primych zapisovatelu (`watchdog.c`,
+   * `freertos_hooks.c`, `main.c` Error_Handler, NMI a HardFault v
+   * `stm32h7xx_it.c`) si `DBP` odemyka samo — tohle byla posledni dosazitelna
+   * vyjimka. (Zbyle tri v Mem/Bus/UsageFault lezi v dokumentovane
+   * NEDOSAZITELNYCH vektorech, viz `stm32h7xx_it.c` — zamerne se nemeni.) */
+  PWR->CR1 |= PWR_CR1_DBP;
+  RTC->BKP4R = (uint32_t)line;
+  RTC->BKP5R = 0u;
+  RTC->BKP3R = RTC_CRASH_MAGIC | 6u;
+}
+
 
 /* Pocet dni v mesici (gregoriansky kalendar vc. prestupnych let). */
 static uint8_t rtc_month_days(uint16_t y, uint8_t m)
@@ -327,7 +382,14 @@ static uint32_t s_lse_ref_tick;          /* HAL_GetTick reference */
 static float    s_lse_ppm_last = 0.0f;
 static float    s_lse_ppm_avg  = 0.0f;
 static uint32_t s_lse_n        = 0;
-static float    s_lse_cal_ppm  = 0.0f;   /* co je zapsane v RTC_CALR */
+/* Co je zapsane v RTC_CALR [ppm]. 🔴 F-0158: `RTC_CALR` zije v backup domene
+ * a PREZIJE reset, tahle promenna v RAM ne — do 2026-09-26 startovala na 0,
+ * takze prvni korekce po kazdem resetu pocitala `avg - 0`, i kdyz uz v registru
+ * nejaka korekce byla. U spravne zkalibrovaneho krystalu (prumer ≈ 0) tim
+ * SPRAVNOU kalibraci odstranila. Proto se pri prvnim vzorku nacte z registru
+ * (`s_lse_cal_loaded`, viz `rtc_lse_cal_from_reg`). */
+static float    s_lse_cal_ppm  = 0.0f;
+static uint8_t  s_lse_cal_loaded = 0;
 static uint32_t s_lse_cal_ms   = 0;      /* kdy se naposled psalo */
 
 float    rtc_lse_ppm(void)       { return s_lse_ppm_avg; }
@@ -390,13 +452,44 @@ static void rtc_lse_apply_calib(float drift_ppm)
         s_lse_cal_ppm = ((calp == RTC_SMOOTHCALIB_PLUSPULSES_SET ? 512.0f : 0.0f)
                          - (float)units) * 0.95367432f;
         s_lse_cal_ms  = HAL_GetTick();
+        /* 🔴 F-0158: s novou korekci ZACINA NOVA EPOCHA MERENI. Do 2026-09-26 se
+         * tady prumer nenuloval, takze pak michal okna namerena pod starou
+         * kalibraci (merila `D + C_old`) s okny pod novou (`D + C_new`), a vzorec
+         * `avg - s_lse_cal_ppm` v `rtc_lse_sample` odecetl jen tu NOVOU. Simulace
+         * presne podle kodu (drift +10 ppm): zbytek osciloval -10..+6 ppm a
+         * neustalil se ani po 4 dnech; s nulovanim hned +0,46 ppm = kvantizacni
+         * mez kroku 0,9537 ppm. Stejny princip jako u ADEV/trend pyramidy: nemichat
+         * vzorky z nesoumeritelnych rezimu.
+         * ⚠️ Nuluje se i fazova reference: novy `RTC_CALR` se uplatni az od
+         * dalsiho 32s cyklu, takze prvni okno po zapisu obsahuje nejvys 32 s
+         * stare kalibrace (<= 7 % 480s okna) — prijatelne, drift je pomala
+         * velicina. Dalsi korekce prijde nejdriv za LSE_TRUST_WINDOWS oken. */
+        s_lse_n = 0;
+        s_lse_ppm_avg = 0.0f;
+        s_lse_have_ref = 0;
     }
+}
+
+/* Nacte skutecnou hodnotu `RTC_CALR` do `s_lse_cal_ppm` (F-0158). Vola se jednou,
+ * z `rtc_lse_sample` (defaultTask — jediny task, ktery smi sahat na RTC). Bere
+ * jen 32s periodu (CALW8/CALW16 = 0), kterou tenhle modul zapisuje; jine
+ * nastaveni by spocital spatne, proto ho nechava na 0. */
+static void rtc_lse_cal_from_reg(void)
+{
+    uint32_t calr = RTC->CALR;
+    if ((calr & (RTC_CALR_CALW8 | RTC_CALR_CALW16)) == 0u) {
+        float calp = (calr & RTC_CALR_CALP) ? 512.0f : 0.0f;
+        float calm = (float)(calr & RTC_CALR_CALM);
+        s_lse_cal_ppm = (calp - calm) * 0.95367432f;
+    }
+    s_lse_cal_loaded = 1;
 }
 
 /* Vzorkovac driftu — vola se na KAZDEM pruchodu rtc_app_tick (tj. tempem
  * defaultTasku, ne 1x/s), aby se hrana GPS sekundy zachytila co nejdriv. */
 static void rtc_lse_sample(void)
 {
+    if (!s_lse_cal_loaded) rtc_lse_cal_from_reg();   /* F-0158: CALR prezil reset */
     gps_data_t g;
     gps_get(&g);
     if (!gps_time_sane(&g)) { s_lse_sec_prev = 0xFFu; return; }
@@ -428,7 +521,11 @@ static void rtc_lse_sample(void)
      * casty prepis CALR by menil takt pod rukama prave beziciho mereni. */
     if (s_lse_n >= LSE_TRUST_WINDOWS &&
         (s_lse_cal_ms == 0 || (now - s_lse_cal_ms) >= LSE_CALIB_MIN_MS)) {
-        /* Korekce se SKLADA: CALR uz nejakou drzi a prumer meri drift PO ni. */
+        /* Korekce se SKLADA: CALR uz nejakou drzi a prumer meri drift PO ni.
+         * ⚠️ Plati to jen diky dvema vecem z F-0158: prumer se po kazdem zapisu
+         * nuluje (obsahuje tedy jen okna pod AKTUALNI kalibraci) a `s_lse_cal_ppm`
+         * se po resetu nacte z registru (jinak by po kazdem resetu platilo
+         * `avg - 0`). Bez obou by vzorec michal epochy. */
         rtc_lse_apply_calib(s_lse_ppm_avg - s_lse_cal_ppm);
     }
 }
@@ -469,7 +566,10 @@ void rtc_app_tick(void)
 {
   /* ⚠️ ZAMERNE PRED throttlem: vzorkovac driftu musi bezet tempem defaultTasku
    * (~100 Hz), aby hranu GPS sekundy zachytil co nejdriv. Pri 1 Hz by se s 1 Hz
-   * GPS aktualizaci aliasovalo a latence detekce by kolisala o celou sekundu. */
+   * GPS aktualizaci aliasovalo a latence detekce by kolisala o celou sekundu.
+   * ⚠️ A stoji to zanedbatelne: `gps_get` je kopie ~200 B v kriticke sekci,
+   * tedy ~0,2 us pri 480 MHz -> 100x/s = ~20 us/s = 0,002 % CPU. (Zapsano
+   * proto, ze `alarm.c` z teze kopie driv odvozoval opak — audit F-0112.) */
   rtc_lse_sample();
 
   uint32_t now = HAL_GetTick();

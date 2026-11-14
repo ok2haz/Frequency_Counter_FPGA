@@ -1,0 +1,19 @@
+== Presnost KMITOCTU (|eps| <= cil): cas od ztraty GPS ==
+scenar                                                              1e-08      5e-09      1e-09      5e-10      1e-10      5e-11
+A optimisticka  (eps0 3e-11, stari 0,3 ppb/den, dT 0,5 C)        32.9 dne   16.3 dne    2.9 dne     30.4 h  0 (nelze)  0 (nelze)
+B specifikace   (eps0 1e-10, stari 1,0 ppb/den, dT 1 C)           9.7 dne    4.7 dne     17.3 h      5.3 h  0 (nelze)  0 (nelze)
+C pesimisticka  (eps0 1e-9,  stari 3,0 ppb/den, dT 2 C)           2.9 dne     29.1 h  0 (nelze)  0 (nelze)  0 (nelze)  0 (nelze)
+
+== Presnost CASU (|x| <= cil, x0 = 30 ns): cas od ztraty GPS ==
+scenar                                                               1 us      10 us     100 us       1 ms
+A optimisticka  (eps0 3e-11, stari 0,3 ppb/den, dT 0,5 C)           2.0 h     13.5 h    2.4 dne    8.4 dne
+B specifikace   (eps0 1e-10, stari 1,0 ppb/den, dT 1 C)            54 min      6.6 h     30.4 h    4.5 dne
+C pesimisticka  (eps0 1e-9,  stari 3,0 ppb/den, dT 2 C)            12 min    112 min     12.8 h    2.4 dne
+
+== Dnesni stav BEZ doladeni (Vc = 0 V, eps0 = 8,4e-7 z mereni 2026-10-16) ==
+  eps = 8.4e-7 -> 1 us cas dosazen za 1 s, kmitocet 1e-6 prekrocen nikdy (stari 1 ppb/den je zanedbatelne)
+
+== Slozky (B): za 1 den ==
+  stari       eps +1,0e-9 (1 ppb)
+  teplota     +1.8e-10 (dT 1 C x 0,18 ppb/C)
+  fazova chyba za 1 den: stari 43.20 us, eps0 8.64 us

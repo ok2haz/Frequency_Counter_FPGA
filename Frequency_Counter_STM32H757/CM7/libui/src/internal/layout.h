@@ -14,8 +14,12 @@ static inline prim_color_t ui_level_color(ui_digit_level_t level)
 {
     switch (level) {
     case UI_DIGIT_CERTAIN: return UI_COLOR_INK;     /* bright — valid digits */
-    case UI_DIGIT_SIGMA:   return UI_COLOR_INK_4;   /* dim grey — below σ */
-    case UI_DIGIT_FLOOR:   return UI_COLOR_INK_5;   /* very dim — below floor */
+    case UI_DIGIT_SIGMA:   return UI_COLOR_INK;     /* prvni nejista cislice: velky font a STEJNA barva jako platne (na zadost) */
+    case UI_DIGIT_FLOOR: {                          /* below floor: stred INK_5 .. INK_4 */
+        prim_color_t a = UI_COLOR_INK_5, b = UI_COLOR_INK_4;   /* UI_COLOR_* derefuji g_ui_theme -> ne static const */
+        return PRIM_RGB((PRIM_R(a) + PRIM_R(b)) / 2, (PRIM_G(a) + PRIM_G(b)) / 2,
+                        (PRIM_B(a) + PRIM_B(b)) / 2);
+    }
     default:               return UI_COLOR_INK;
     }
 }

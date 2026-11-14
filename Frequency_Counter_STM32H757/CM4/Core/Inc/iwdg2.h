@@ -28,6 +28,12 @@ void iwdg2_init(void);
 /** Obnovi citac IWDG2. Volat v kazde iteraci hlavni smycky CM4 (perioda << 4 s). */
 void iwdg2_kick(void);
 
+/** 1 = `PR`/`RLR` se po `iwdg2_init()` opravdu propagovaly (audit F-0137).
+ *  Pri 0 bezi IWDG2 na reset defaultech, tedy timeout ~0,5 s misto 4 s — a TISE.
+ *  Na CM4 je to horsi nez na CM7: jadro nema konzoli, takze by se to projevilo
+ *  jako nevysvetlitelne resety. (Dnes je IWDG2 zamerne vypnuty, viz `main.c`.) */
+int iwdg2_config_ok(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,0 +1,153 @@
+[16:20:06.884] COM10 existuje
+[16:20:12.998] ETH odpovida, uptime_s=8 si5356_status=0
+[16:20:15.013] pokus o prvni zachyceni c. 1
+[16:20:27.863] UART <<<
+===== > status
+status
+RUNNING gpsdo-ui v0.16.2  uptime 11s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 30%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 13, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6688 B
+  stack I2C4    free 1068 B
+  stack Ui      free 5512 B
+  stack Fpga    free 752 B
+VAROVANI: prio 6  OCXO MIMO TEPLOTNI PASMO  (celkem 2)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena - start po zapnuti napajeni
+
+REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)
+REFERENCE: auto re-init Si5356 zadny (zamceno od startu)
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 112 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.281 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 471 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: host pritomen (DTR 1), zahozeno nejstarsich 0 B
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x01 REGR:bez dat (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 1, hodiny 0, delka okna 0 | posledni rozdil 0  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 1000000 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 23.7 C) | spike-reject 8 oken (obri bin)
+  TDC REZERVA: A 14 tapu (5.2 %) POZOR | B 3 tapu (1.1 %) KRITICKE | z 268 tapu, za koncem A 0 B 0 ud. (cal #1)  <== retez TDC temer/uz kratky (`tdc`, rekalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `flightrec`
+DATALOG W25Q ON 227865/696960 rec seq:227865 err:0 skip:0
+===== > tdc
+tdc
+TDC A: kodu 155/512 (nejvyssi 254), nejvetsi bin 25901 = 247 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 173/512 (nejvyssi 265), nejvetsi bin 19572 = 186 ps (1.8 % periody), za koncem retezu 0, max tap 264
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 254 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 264 vs nejvyssi kod 265 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 14 tapu, B 3 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+===== > sensors
+sensors
+=== SENZORY: last/min/max/avg [unit] stav  chyby ===
+TMP117 0x48   23.87/23.84/23.88/23.86 C  OK   err=0 strk=0 last=- n=38
+TMP117 0x49   23.94/23.72/23.94/23.81 C  OK   err=0 strk=0 last=- n=31
+TMP117 0x4A   24.27/23.78/24.27/24.03 C  OK   err=0 strk=0 last=- n=31
+ADS AIN0(VC)  67.81/67.81/70.78/69.69 mV  OK   err=0 strk=0 last=- n=31
+ADS AIN1(VBUS) 11872.66/11863.66/11881.70/11871.09 mV  OK   err=0 strk=0 last=- n=181
+ADS AIN2(+3V3) 3333.03/3329.75/3333.91/3333.16 mV  OK   err=0 strk=0 last=- n=31
+ADS AIN3(5V)  4987.00/4982.00/4987.00/4986.50 mV  OK   err=0 strk=0 last=- n=31
+MCU jadro     32.03/27.88/32.03/30.31 C  OK   err=0 strk=0 last=- n=19
+VREF          2515.00/2513.00/2517.00/2515.05 mV  OK   err=0 strk=0 last=- n=19
+VBAT          2972.00/2968.00/2976.00/2971.78 mV  OK   err=0 strk=0 last=- n=19
+[16:21:04.561] uptime=60 si5356_status=0 seq_meas=62 freq_hz=10000037.9377898
+[16:22:35.869] UART >>> status;tdc
+[16:22:46.580] UART <<<
+===== > status
+status
+RUNNING gpsdo-ui v0.16.2  uptime 152s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 24%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 173, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6688 B
+  stack I2C4    free 1068 B
+  stack Ui      free 5512 B
+  stack Fpga    free 752 B
+VAROVANI: prio 6  OCXO MIMO TEPLOTNI PASMO  (celkem 2)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena - start po zapnuti napajeni
+
+REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)
+REFERENCE: auto re-init Si5356 zadny (zamceno od startu)
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 1751 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.333 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 4710 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: host pritomen (DTR 1), zahozeno nejstarsich 0 B
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x01 REGR:bez dat (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 1, hodiny 0, delka okna 0 | posledni rozdil 0  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 1000000 us (`tdc` = detail)
+  TDC: teplot. rekal 1x (cal pri 26.8 C) | spike-reject 78 oken (obri bin)
+  TDC REZERVA: A 14 tapu (5.2 %) POZOR | B 3 tapu (1.1 %) KRITICKE | z 268 tapu, za koncem A 0 B 0 ud. (cal #3)  <== retez TDC temer/uz kratky (`tdc`, rekalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 5 (nezobrazeno, mimo statistiku)  <== FPGA metastabilita
+  flight recorder: je ulozeny zaznam -> `flightrec`
+DATALOG W25Q ON 227879/696960 rec seq:227879 err:0 skip:0
+===== > tdc
+tdc
+TDC A: kodu 155/512 (nejvyssi 254), nejvetsi bin 26107 = 248 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 170/512 (nejvyssi 265), nejvetsi bin 19161 = 182 ps (1.8 % periody), za koncem retezu 0, max tap 264
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 254 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 264 vs nejvyssi kod 265 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 14 tapu, B 3 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+[16:22:46.581] HOTOVO

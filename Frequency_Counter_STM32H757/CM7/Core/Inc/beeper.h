@@ -9,17 +9,35 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Inicializace: PH9 jako vystup + TIM7 (1600 Hz IRQ). Nezapina ton. */
-void beeper_init(void);
+/** Inicializace: PH9 jako vystup + TIM7 (1600 Hz IRQ). Nezapina ton.
+ *  @return false = TIM7 se nepodarilo nastavit -> pristroj bude TRVALE NEMY
+ *  (vcetne alarmu na ztratu reference). Stav hlasi `beeper_ready()` a `status`;
+ *  zamerne se kvuli tomu NEVOLA `Error_Handler` — nemy pipak neni duvod shodit
+ *  merici pristroj (audit F-0111). */
+bool beeper_init(void);
+
+/** @return true = `beeper_init()` probehl uspesne (jinak je pipak nemy). */
+bool beeper_ready(void);
 
 /** Zapne (true) / vypne (false) ton 800 Hz. */
 void beeper_set(bool on);
 
-/** Prehraje ton zadane frekvence [Hz] (0 = ticho). Pro melodie. */
+/** Prehraje ton zadane frekvence [Hz] (0 = ticho). Pro melodie.
+ *  ⚠️ Kmitocet se CLAMPUJE na `BEEPER_FREQ_MIN_HZ`..`BEEPER_FREQ_MAX_HZ`:
+ *  TIM7 ma 16bitovy `ARR`, takze pod ~8 Hz by vypocet `1e6/(2*f)` pretekl
+ *  a ton by byl uplne jiny, nez volajici chtel — tise (audit F-0110). */
+#define BEEPER_FREQ_MIN_HZ   16u
+#define BEEPER_FREQ_MAX_HZ   20000u
 void beeper_tone(uint16_t freq_hz);
 
-/** Kratka vzestupna boot melodie (blokujici osDelay; volat 1x z tasku pri startu). */
+/** Kratka vzestupna boot melodie (blokujici osDelay; volat 1x z tasku pri startu).
+ *  ⚠️ Po dobu behu nastavuje `beeper_melody_busy()` — `alarm_tick` se pipaku
+ *  nedotkne, takze mimo tohle okno je defaultTask JEDINY zapisovatel stavu
+ *  pipaku (audit F-0103). */
 void beeper_boot_melody(void);
+
+/** 1 = prave hraje boot melodie z jine ulohy; nesahej na pipak. */
+bool beeper_melody_busy(void);
 
 /** @return true pokud ton hraje. */
 bool beeper_is_on(void);

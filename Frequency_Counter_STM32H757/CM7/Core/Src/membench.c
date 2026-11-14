@@ -218,7 +218,9 @@ static void cache_invalidate(const void *p, uint32_t n)
 /* Blok, po kterem se ustupuje scheduleru pri dlouhych (netimovanych) pruchodech.
  * ⚠️ Bez toho drzel 4 MB pruchod UartTask (Normal) stovky ms v kuse a vyhladovel
  * UiTask (BelowNormal) -> po benchmarku padalo `touch: I2C4 nereaguje ... recovery`
- * (nahlaseno pri HW testu 2026-08-23). 64 kB je kompromis: ~0,5 ms prace na blok. */
+ * (nahlaseno pri HW testu 2026-08-23). Puvodne 64 kB (~0,5 ms prace na blok),
+ * zmenseno na polovinu kvuli pasmu pro LTDC — platna hodnota je u `#define` nize
+ * (do 2026-09-18 tu stalo 64 kB, tedy dvojnasobek skutecnosti; audit F-0121). */
 #define YIELD_WORDS  (8u * 1024u)       /* 32 kB — jemneji kvuli pasmu pro LTDC */
 
 /* Blok pro MERENI RYCHLOSTI. Zamerne PEVNY (nezavisi na velikosti cile): musi
@@ -338,14 +340,23 @@ static int cells_alias(volatile uint32_t *a, volatile uint32_t *b)
     return alias;
 }
 
+/* Zacatek datove cache mereni (`sdram_log.c`, sekce `.measlog`) — bere se
+ * z LINKERU, ne natvrdo. Duvod je primo tenhle seznam: `.measlog` pribyla do
+ * SDRAM 2026-08-30 a doplnit se ji sem zapomnelo, takze bezpecnostni sonda na
+ * merici log vubec nesahala (audit F-0115). */
+extern uint32_t _smeaslog;
+
 /* Oblasti SDRAM, ktere se NESMI dotknout — kdyz se s nimi testovaci blok
- * prekryva, test se PRESKOCI. Adresy podle mapy SDRAM v CLAUDE.md. */
+ * prekryva, test se PRESKOCI. Adresy podle mapy SDRAM v CLAUDE.md.
+ * ⚠️ Kdyz do SDRAM pribude NOVY UZIVATEL, patri jeho zacatek sem. Hlavicka
+ * modulu zada doložit volnost noveho CILE; tohle je opacny smer a chybel. */
 static const uint32_t SDRAM_PROTECTED[] = {
     0xC0000000u,   /* FB0 — framebuffer, ze ktereho prave scanuje LTDC */
     0xC0100000u,   /* FB1 */
     0xC0200000u,   /* FB2 */
     0xC0300000u,   /* off-screen canvas pool */
     0xC0800000u,   /* linker sekce .sdram — bg_cache (predrenderovane pozadi), glow */
+    (uint32_t)(uintptr_t)&_smeaslog,   /* .measlog — datova cache mereni, 8 MB */
 };
 
 /* Zmeri, po jake vzdalenosti se adresy opakuji. Skenuje jen UVNITR region 1
@@ -364,6 +375,36 @@ static int sdram_safety_check(membench_result_t *r, uint32_t *out_size)
 {
     volatile uint32_t *base = (volatile uint32_t *)SDRAM_TEST_ADDR;
 
+    /* ── Krizova kontrola CHRANENYCH oblasti MEZI SEBOU ──────────────────────
+     * ⚠️ Kdyz se adresy opakuji, nejde jen o to, jestli je bezpecne testovat —
+     * dulezitejsi otazka je, jestli si tim uz dnes NELEZOU FRAMEBUFFERY navzajem.
+     * `FB0` (0xC0000000) a `FB2` (0xC0200000) se lisi PRAVE JEN v HADDR[21], tedy
+     * v bitu, ktery pri prekryvu po 2 MB vypada jako nefunkcni. Kdyby sdilely
+     * pamet, triple buffering by byl fakticky double a projevovalo by se to
+     * blikanim/trhanim, ktere by nikdo nespojoval s pameti.
+     * Sonda je reverzibilni (jedno slovo, obsah se vraci) — stejna jako nize.
+     *
+     * 🔴 MERI SE BEZPODMINECNE A JAKO PRVNI (audit F-0116). Driv to bylo pod
+     * `if (span)`, tedy jen kdyz `sdram_alias_span()` nasel prekryv — ale
+     * `alias_off` se plni i DRUHOU cestou, z `addr_lines_test()` v `bench_ram`,
+     * a ty dve sondy pokryvaji JINE rozsahy: `sdram_alias_span` jde od 64 kB,
+     * `addr_lines_test` uz od 4 B. Perioda prekryvu POD 64 kB (vadny nizky adresni
+     * bit, napr. HADDR[10] = 4 kB) byla proto pro prvni sondu neviditelna a pro
+     * druhou viditelna — a v te kombinaci UART tisknul uklidnujici vetu
+     * „framebuffery se navzajem NEprekryvaji" o mereni, ktere NEPROBEHLO.
+     * ⚠️ Umistene PRED kontrolou chranenych oblasti zamerne: kdyz se test preskoci,
+     * odpoved na tuhle (drazsi) otazku ma byt k dispozici tak jako tak. Sonda se
+     * chranenych oblasti dotyka tak i tak — o tom je cela tahle funkce. */
+    {
+        volatile uint32_t *fb0 = (volatile uint32_t *)0xC0000000u;
+        volatile uint32_t *fb1 = (volatile uint32_t *)0xC0100000u;
+        volatile uint32_t *fb2 = (volatile uint32_t *)0xC0200000u;
+        volatile uint32_t *can = (volatile uint32_t *)0xC0300000u;
+        r->fb_alias = (uint8_t)((cells_alias(fb0, fb2) ? 1u : 0u)
+                              | (cells_alias(fb1, can) ? 2u : 0u));
+        r->fb_alias_checked = 1;    /* teprve tohle dava vypisu pravo tvrdit vysledek */
+    }
+
     for (unsigned i = 0; i < sizeof SDRAM_PROTECTED / sizeof SDRAM_PROTECTED[0]; i++) {
         if (cells_alias(base, (volatile uint32_t *)SDRAM_PROTECTED[i])) {
             snprintf(r->msg, sizeof r->msg, "kolize s 0x%08lX!",
@@ -379,22 +420,8 @@ static int sdram_safety_check(membench_result_t *r, uint32_t *out_size)
     r->alias_off = span;            /* v bajtech; 0 = do 2 MB se nic neopakuje */
     if (span && *out_size > span) *out_size = span;
 
-    /* ── Krizova kontrola CHRANENYCH oblasti MEZI SEBOU ──────────────────────
-     * ⚠️ Kdyz se adresy opakuji, nejde jen o to, jestli je bezpecne testovat —
-     * dulezitejsi otazka je, jestli si tim uz dnes NELEZOU FRAMEBUFFERY navzajem.
-     * `FB0` (0xC0000000) a `FB2` (0xC0200000) se lisi PRAVE JEN v HADDR[21], tedy
-     * v bitu, ktery pri prekryvu po 2 MB vypada jako nefunkcni. Kdyby sdilely
-     * pamet, triple buffering by byl fakticky double a projevovalo by se to
-     * blikanim/trhanim, ktere by nikdo nespojoval s pameti.
-     * Sonda je stejne reverzibilni jako vyse (jedno slovo, obsah se vraci). */
-    if (span) {
-        volatile uint32_t *fb0 = (volatile uint32_t *)0xC0000000u;
-        volatile uint32_t *fb2 = (volatile uint32_t *)0xC0200000u;
-        volatile uint32_t *fb1 = (volatile uint32_t *)0xC0100000u;
-        volatile uint32_t *can = (volatile uint32_t *)0xC0300000u;
-        r->fb_alias = (uint8_t)((cells_alias(fb0, fb2) ? 1u : 0u)
-                              | (cells_alias(fb1, can) ? 2u : 0u));
-    }
+    /* (Krizova kontrola framebufferu se provedla uz na zacatku funkce —
+     *  bezpodminecne, viz F-0116.) */
     return 1;
 }
 
@@ -504,8 +531,11 @@ static void bench_iflash(membench_result_t *r)
     uint32_t b = flash_sum(p, words);
 
     r->tested = 1;
+    /* >> `unstable`, NE `bit_errors = 1` (audit F-0120). Interni FLASH se jen cte,
+     * takze „chybny bit" tu nema smysl — mereni je, ze se dve po sobe jdouci cteni
+     * TEHOZ bloku lisila. Sentinel v poctu bitu michal jednotky a kazil souhrn. */
     if (a == b) snprintf(r->msg, sizeof r->msg, "cteni stabilni");
-    else      { snprintf(r->msg, sizeof r->msg, "CTENI NESTABILNI!"); r->bit_errors = 1; }
+    else      { snprintf(r->msg, sizeof r->msg, "CTENI NESTABILNI!"); r->unstable = 1; }
 }
 
 /* ── W25Q (externi QSPI) ─────────────────────────────────────────────────────
@@ -562,7 +592,15 @@ static void bench_w25q(membench_result_t *r)
     }
     osMutexRelease(qspiMutexHandle);
 
-    if (fail) { r->skipped = 1; snprintf(r->msg, sizeof r->msg, "chyba SPI prenosu"); return; }
+    if (fail) {
+        /* Castecne nasbirane chyby uz nic nemeri — prenos se rozpadl uprostred
+         * vzoru, takze rozdily nejsou vadou pameti. Vynulovat, at se nedostanou
+         * do souctu a nevypadaji jako nalez u cile, ktery se hlasi jako
+         * PRESKOCENY (audit F-0120). */
+        r->bit_errors = 0; r->err_bitmask = 0;
+        memset(r->pat_err, 0, sizeof r->pat_err);
+        r->skipped = 1; snprintf(r->msg, sizeof r->msg, "chyba SPI prenosu"); return;
+    }
     r->write_kbs = kbs_from_ms(w_bytes, w_ms);
     r->read_kbs  = kbs_from_ms(r_bytes, r_ms);
     r->tested = 1;
@@ -650,11 +688,19 @@ void membench_run(void)
 
         if (r[i].msg[0] == '\0') {
             if (r[i].killed_cm4)       snprintf(r[i].msg, sizeof r[i].msg, "SHODIL CM4!");
+            else if (r[i].unstable)    snprintf(r[i].msg, sizeof r[i].msg, "CTENI NESTABILNI!");
             else if (r[i].bit_errors == 0u) snprintf(r[i].msg, sizeof r[i].msg, "OK");
             else snprintf(r[i].msg, sizeof r[i].msg, "%lu chybnych bitu",
                           (unsigned long)r[i].bit_errors);
         }
-        s_st.total_bit_errors += r[i].bit_errors;
+        /* JEN cile, ktere skutecne probehly: u preskocenych je `bit_errors` bud
+         * nula, nebo zbytek po nedokoncenem prenosu — souhrn pak nesel secist
+         * zpatky z radku tabulky (audit F-0120). */
+        if (r[i].tested) s_st.total_bit_errors += r[i].bit_errors;
+        /* Souhrn je v BITECH, takze `unstable` se do nej pricitat NESMI (to byla
+         * puvodni vada). Aby ale celkovy verdikt nehlasil „OK" pri nestabilnim
+         * cteni FLASH, nese to samostatny priznak (audit F-0120). */
+        if (r[i].tested && r[i].unstable) s_st.any_unstable = 1;
         osDelay(1);
     }
 

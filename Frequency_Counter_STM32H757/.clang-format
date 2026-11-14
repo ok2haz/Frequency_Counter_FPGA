@@ -1,0 +1,52 @@
+---
+# Styl kódu pro firmware STM32H757 — strojově vynutitelná část docs/STYLE_CZ.md.
+# Vyžaduje clang-format >= 15 (kvůli InsertBraces).
+# Použití:  clang-format -i Core/Src/*.c   |   git ls-files '*.c' '*.h' | xargs clang-format -i
+Language: Cpp
+BasedOnStyle: LLVM
+
+# --- odsazení a šířka ---
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+ContinuationIndentWidth: 4
+IndentCaseLabels: true
+AccessModifierOffset: -4
+
+# --- závorky a bloky ---
+BreakBeforeBraces: Attach
+InsertBraces: true                 # vždy složené závorky, i u jednořádkového if
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortCaseLabelsOnASingleLine: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+
+# --- ukazatele a zarovnání ---
+PointerAlignment: Right
+DerivePointerAlignment: false
+AlignAfterOpenBracket: Align
+AlignConsecutiveMacros: AcrossEmptyLinesAndComments
+AlignConsecutiveAssignments: false
+AlignTrailingComments: true
+AlignEscapedNewlines: Left
+AlignOperands: Align
+
+# --- komentáře ---
+ReflowComments: false              # nepřeformátovávat ručně zarovnané komentáře
+SpacesBeforeTrailingComments: 2
+
+# --- includy ---
+SortIncludes: Never                # u HAL/CMSIS je pořadí includů významné!
+IncludeBlocks: Preserve
+
+# --- ostatní ---
+SpaceAfterCStyleCast: true
+SpaceBeforeParens: ControlStatements
+BinPackArguments: true
+BinPackParameters: true
+Cpp11BracedListStyle: false
+IndentPPDirectives: AfterHash
+AlwaysBreakAfterReturnType: None

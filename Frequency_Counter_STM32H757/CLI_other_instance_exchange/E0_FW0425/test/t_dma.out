@@ -1,0 +1,18 @@
+  OK    bez propojenych DMA handlu -> init odmitne
+  OK    pred schedulerem -> init odmitne
+  OK    init OK
+  OK    kontrola adres: DTCM a ITCM odmitnuty, AXI SRAM a SRAM1-3 povoleny
+  OK    prenos 128 B: data z DMA zkopirovana do volajiciho
+  OK    cache: clean TX pred startem, invalidate RX pred i po
+  OK    DMA pracuje s vlastnimi zarovnanymi buffery modulu
+  OK    buffery zarovnane na radek cache 32 B
+  OK    prenos 1024 B (ramec v3)
+  OK    delka 0 nebo > max -> odmitnuto
+  OK    stary semafor zahozen, bez callbacku -> timeout
+  OK    timeout -> HAL_SPI_Abort
+  OK    dalsi prenos po timeoutu funguje (citac chyb za sebou vynulovan)
+  OK    chybovy callback -> false + Abort
+  OK    start selze -> false
+  OK    3 chyby za sebou -> DMA vypnuto (dal blokujici prenos)
+  OK    statistiky sedi
+VYSLEDEK DMA: VSE PROSLO

@@ -1,0 +1,279 @@
+##### run 1 2026-10-14T22:03:23 uptime~1110
+===== > tdc cal
+padly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 25111 = 239 ps (2.3 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 158/512 (nejvyssi 250), nejvetsi bin 19023 = 181 ps (1.8 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a
+===== > tdc
+spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 25111 = 239 ps (2.3 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 158/512 (nejvyssi 250), nejvetsi bin 19023 = 181 ps (1.8 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a s
+##### run 2 2026-10-14T22:04:03 uptime~1150
+===== > tdc cal
+padly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 158/512 (nejvyssi 252), nejvetsi bin 25754 = 245 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 18909 = 180 ps (1.8 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za kone
+===== > tdc
+c retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 158/512 (nejvyssi 252), nejvetsi bin 25754 = 245 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 18909 = 180 ps (1.8 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec vid
+##### run 3 2026-10-14T22:04:42 uptime~1189
+===== > tdc cal
+el o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 23674 = 225 ps (2.2 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 156/512 (nejvyssi 250), nejvetsi bin 18482 = 176 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec re
+===== > tdc
+tezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 23674 = 225 ps (2.2 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 156/512 (nejvyssi 250), nejvetsi bin 18482 = 176 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec
+##### run 4 2026-10-14T22:05:22 uptime~1229
+===== > tdc cal
+retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 24563 = 234 ps (2.3 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 18245 = 173 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly z
+===== > tdc
+a konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 24563 = 234 ps (2.3 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 18245 = 173 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt p
+##### run 5 2026-10-14T22:06:01 uptime~1268
+===== > tdc cal
+ozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 25689 = 244 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 158/512 (nejvyssi 250), nejvetsi bin 17101 = 163 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040
+===== > tdc
+F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 25689 = 244 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 158/512 (nejvyssi 250), nejvetsi bin 17101 = 163 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a sp
+##### run 6 2026-10-14T22:06:41 uptime~1308
+===== > tdc cal
+adly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 26339 = 251 ps (2.5 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 17980 = 171 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec rete
+===== > tdc
+zu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 26339 = 251 ps (2.5 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 17980 = 171 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za ko
+##### run 7 2026-10-14T22:07:21 uptime~1348
+===== > tdc cal
+nec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 155/512 (nejvyssi 252), nejvetsi bin 25089 = 239 ps (2.3 % periody), za koncem retezu 0, max tap 264
+TDC B: kodu 155/512 (nejvyssi 250), nejvetsi bin 17515 = 167 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 264 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), z
+===== > tdc
+a koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+tdc
+TDC A: kodu 155/512 (nejvyssi 252), nejvetsi bin 25089 = 239 ps (2.3 % periody), za koncem retezu 0, max tap 264
+TDC B: kodu 155/512 (nejvyssi 250), nejvetsi bin 17515 = 167 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kaezna hrana hodin
+TDC A: maxtap 264 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (v
+##### run 8 2026-10-14T22:08:00 uptime~1387
+===== > tdc cal
+iz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 157/512 (nejvyssi 252), nejvetsi bin 25749 = 245 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 158/512 (nejvyssi 250), nejvetsi bin 17061 = 162 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec rete
+===== > tdc
+zu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 157/512 (nejvyssi 252), nejvetsi bin 25749 = 245 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 158/512 (nejvyssi 250), nejvetsi bin 17061 = 162 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz
+##### run 9 2026-10-14T22:08:40 uptime~1427
+===== > tdc cal
+docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 25587 = 244 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 17267 = 164 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retez
+===== > tdc
+u (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 25587 = 244 ps (2.4 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 17267 = 164 ps (1.6 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/aud
+##### run 10 2026-10-14T22:09:20 uptime~1467
+===== > tdc cal
+it/2026-10-07_tdc-vlastni-reference.md)
+
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 24714 = 235 ps (2.3 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 18429 = 175 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly
+===== > tdc
+za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+
+tdc
+TDC A: kodu 156/512 (nejvyssi 252), nejvetsi bin 24714 = 235 ps (2.3 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 157/512 (nejvyssi 250), nejvetsi bin 18429 = 175 ps (1.7 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 250 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 18 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozde

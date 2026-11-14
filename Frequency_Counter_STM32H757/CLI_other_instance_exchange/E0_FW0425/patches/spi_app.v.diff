@@ -1,0 +1,368 @@
+--- /mnt/project/spi_app.v	1979-12-31 00:00:00.000000000 +0000
++++ spi_app.v	2026-10-20 14:56:47.476009181 +0000
+@@ -62,6 +62,9 @@
+ 
+ module spi_app #(
+     parameter REGR_EN = 0,          // 1 = regresni blok (bajty 68..96) je ve ramci platny a CAPS bit7 = 1
++    // FW 0x0425 (optimalizace 3, brana CLS <= 85 %): ladici bajty prijmu (abs 66, 67, 107, 112..117, 124, 125) z bring-upu SPI.
++    // 0 = posilaji se nuly a synteza registry i citace PHY odstrani (~100 FF); 1 = jako 0x0424.
++    parameter DBG_RX  = 0,
+     // Identita bitstreamu (FW 0x041F): generuje build.tcl do src/build_id.vh pri KAZDEM sestaveni. FW_VERSION se meni
+     // jen rucne, takze dva ruzne bitstreamy mohou hlasit stejne cislo (0x041D: radek vs. unc09) -- tohle je odlisi.
+     parameter [31:0] BUILD_TIME = 32'd0,   // unix cas sestaveni [s]; 0 = neznamy (simulace, sestaveni mimo build.tcl)
+@@ -109,6 +112,12 @@
+     // FW 0x0424 (caps bit13): GPS 1PPS z pps_cap (domena 100 MHz, cte se zive -- viz pps_cap)
+     input  wire [31:0] meas_pps_ts,          // tick 100 MHz v okamziku posledni hrany 1PPS
+     input  wire [7:0]  meas_pps_seq,         // pocet hran 1PPS (mod 256)
++    // FW 0x0425 (caps bit14, audit 2026-10-20): diagnostika O4 a hlidac koherence hodin
++    input  wire [7:0]  meas_bub_p,           // bubliny v okne, primarni slot (patri k mereni -> snimek)
++    input  wire [7:0]  meas_bub_s,           // totez, sekundarni slot
++    input  wire [7:0]  meas_ovl,             // {ovl_s[3:0], ovl_p[3:0]}: znacky okna pri aktivnim CS
++    input  wire [7:0]  meas_coh_st,          // hlidac koherence: bit0 platne, bit1 posledni epocha OK, bit2 od nahrani chyba, bit3 vybrana cesta
++    input  wire [7:0]  meas_coh_cnt,         // pocet epoch (102,4 us) s chybou koherence (saturuje 255)
+ 
+     // RX: vysledek prijateho ramce zpracovany za letu v PHY (staticky po CS nahoru)
+     input  wire          rx_valid,           // pulz po CS↑ (synchronizováno)
+@@ -129,7 +138,11 @@
+     output wire          cal_mode,           // 1 = RO mux místo pin28
+     output wire [2:0]    base_win,           // 0=100ms 1=250ms 2=1s 3=50ms 4=500ms
+     output wire          chan_sel,           // FW 0x041E: 0 = CH_A primarni, 1 = CH_B primarni
+-    output wire          ref_sel             // FW 0x0420: pozadavek na referenci (0 = OCXO, 1 = externi); skutecny stav ridi ref_guard
++    output wire          ref_sel,            // FW 0x0420: pozadavek na referenci (0 = OCXO, 1 = externi); skutecny stav ridi ref_guard
++    // FW 0x0425: SET_CONFIG 0x05 = omezeni ruseni / diagnostika (bit0 maskovani vnitrnich znacek pri CS, vychozi 1;
++    // bit1 LED heartbeat na PIN29, vychozi 0 = LED stoji: PIN29 je v BANCE 2 spolu s CH_A/CH_B/1PPS/hodinami)
++    output wire          mask_cs_en,
++    output wire          led_hb_en
+ );
+ 
+     // ---- konstanty rámce ----
+@@ -142,7 +155,10 @@
+     localparam [7:0]  TYPE_STOP       = 8'h09;
+     localparam [7:0]  TYPE_SET_CONFIG = 8'h01;
+     localparam [15:0] PAYLOAD_LEN     = 16'd114;
+-    localparam [15:0] FW_VERSION      = 16'h0424;  // bump při KAŽDÉ změně bitstreamu
++    // 🔴 0x0424 -> 0x0425 (2026-10-20, audit E0): oprava N1 (zastarale qd pri odstupu 5 taktu), oprava close+2 (hrany >= 2 takty),
++    // mez aliasu podle hradla, diagnostika O4 (bubliny, znacky pri CS; abs 57..59), hlidac koherence 100/10 MHz (abs 10/11),
++    // maskovani vnitrnich znacek pri CS a SET_CONFIG 0x05; caps bit14.
++    localparam [15:0] FW_VERSION      = 16'h0425;  // bump při KAŽDÉ změně bitstreamu
+     // 🔴 0x0423 -> 0x0424 (2026-10-16, STATUS #305): GPS 1PPS (PIN33) -- cas hrany v taktech 100 MHz (hruby citac,
+     // bez TDC) a poradi v bajtech 52..56 (caps bit13), vstup smycky GPSDO na STM. Viz modul pps_cap.
+     // 🔴 0x0422 -> 0x0423 (2026-10-11): REFERENCNI HODINY FPGA ZPET 125 -> 100 MHz (Si5356 CLK0/1, top.v CLK_MHZ, timing.sdc 10 ns).
+@@ -193,7 +209,7 @@
+     // caps: bit0=window stream, bit1=SET_CONFIG, bit5=dt_ps (skutečný TDC)
+     // bit12 (0x1000) = abs 99 nese kmitocet hodin FPGA [MHz] (od FW 0x0421; dnes 100)
+     // bit13 (0x2000) = bajty 52..56 nesou GPS 1PPS (FW 0x0424)
+-    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'h3EE2 : 16'h3F62;   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
++    localparam [15:0] CAPS            = (REGR_EN != 0) ? 16'hFEE2 : 16'hFF62;   // FW 0x0425: + bit14 (diagnostika E0), bit15 (xm v 1/4096 hrany)   // bit8 = kody TDC v bajtech 68..75   // bit1 SET_CONFIG, bit5 dt_ps, bit6 CAL: hist_k 10 b + konfigurace TDC, bit7 REGR (68..96); bit0 (window stream) ODSTRANEN; bit10 samokontrola (FW 0x041F)
+ 
+     // ---- CRC-16/CCITT-FALSE: zpracuj jeden bajt (8 iterací, MSB-first) ----
+     function [15:0] crc16_step;
+@@ -235,6 +251,7 @@
+     reg [47:0] h_dt_b = 48'd0;               // okno CH_B [T_clk/16384]
+     reg [31:0] h_edge_b = 32'd0;
+     reg [7:0]  h_ccd_p = 8'd0, h_ccd_s = 8'd0;   // FW 0x041F: rozdil kontrolniho pocitani (patri k mereni)
++    reg [7:0]  h_bub_p = 8'd0, h_bub_s = 8'd0, h_ovl = 8'd0;   // FW 0x0425: diagnostika okna (patri k mereni)
+     reg [1:0]  meas_pend = 2'd0;         // pocet mereni odlozenych behem S_TX_WR (saturace 3)
+ 
+ 
+@@ -251,10 +268,14 @@
+     reg [2:0]  base_win_r = 3'd1;            // default 250 ms
+     reg        chan_sel_r = 1'b0;            // default CH_A
+     reg        ref_sel_r  = 1'b0;            // default OCXO
++    reg        mask_cs_r  = 1'b1;            // FW 0x0425: default maskovat vnitrni znacky pri CS
++    reg        led_hb_r   = 1'b0;            // FW 0x0425: default LED heartbeat vypnuty
+     assign cal_mode = cal_mode_r;
+     assign base_win = base_win_r;
+     assign chan_sel = chan_sel_r;
+     assign ref_sel  = ref_sel_r;
++    assign mask_cs_en = mask_cs_r;
++    assign led_hb_en  = led_hb_r;
+ 
+     // žádost o CAL report (one-shot: příští TX rámec = 0xA0)
+     reg        cal_req = 1'b0;
+@@ -317,6 +338,8 @@
+             7'd7:  tb = seq[31:24];
+             7'd8:  tb = PAYLOAD_LEN[7:0];
+             7'd9:  tb = PAYLOAD_LEN[15:8];
++            7'd10: tb = is_cal ? 8'd0 : meas_coh_st;       // FW 0x0425 (caps bit14): hlidac koherence (zivy)
++            7'd11: tb = is_cal ? 8'd0 : meas_coh_cnt;
+             7'd12: tb = is_cal ? (meas_cal_diag[7:0]) : (BUILD_TIME[7:0]);
+             7'd13: tb = is_cal ? (meas_cal_diag[15:8]) : (BUILD_TIME[15:8]);
+             7'd14: tb = is_cal ? (meas_cal_diag[23:16]) : (BUILD_TIME[23:16]);
+@@ -365,17 +388,17 @@
+             7'd54: tb = is_cal ? 8'd0 : (meas_pps_ts[23:16]);
+             7'd55: tb = is_cal ? 8'd0 : (meas_pps_ts[31:24]);
+             7'd56: tb = is_cal ? 8'd0 : (meas_pps_seq);
+-            7'd57: tb = is_cal ? 8'd0 : 8'd0;
+-            7'd58: tb = is_cal ? 8'd0 : 8'd0;
+-            7'd59: tb = is_cal ? 8'd0 : 8'd0;
++            7'd57: tb = is_cal ? 8'd0 : h_bub_p;           // FW 0x0425 (caps bit14): bubliny okna, primarni slot
++            7'd58: tb = is_cal ? 8'd0 : h_bub_s;           //   sekundarni slot
++            7'd59: tb = is_cal ? 8'd0 : h_ovl;             //   {sekundarni[3:0], primarni[3:0]} znacek pri aktivnim CS
+             7'd60: tb = is_cal ? 8'd0 : (FW_VERSION[7:0]);
+             7'd61: tb = is_cal ? 8'd0 : (FW_VERSION[15:8]);
+             7'd62: tb = is_cal ? 8'd0 : (CAPS[7:0]);
+             7'd63: tb = is_cal ? 8'd0 : (CAPS[15:8]);
+             7'd64: tb = is_cal ? 8'd0 : (meas_clk_status);
+             7'd65: tb = is_cal ? 8'd0 : (meas_clk_loss);
+-            7'd66: tb = is_cal ? 8'd0 : (d_rx0);
+-            7'd67: tb = is_cal ? 8'd0 : (d_rx1);
++            7'd66: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rx0 : 8'd0);
++            7'd67: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rx1 : 8'd0);
+             7'd68: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[7:0]    : cd_a_end[7:0]);
+             7'd69: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[15:8]   : {7'd0, cd_a_end[8]});
+             7'd70: tb = is_cal ? 8'd0 : ((REGR_EN != 0) ? rg_n_a[23:16]  : cd_a_st[7:0]);
+@@ -415,25 +438,25 @@
+             7'd104: tb = is_cal ? 8'd0 : (h_dt_b[31:24]);
+             7'd105: tb = is_cal ? 8'd0 : (h_dt_b[39:32]);
+             7'd106: tb = is_cal ? 8'd0 : (h_dt_b[47:40]);
+-            7'd107: tb = is_cal ? 8'd0 : (d_rx2);
++            7'd107: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rx2 : 8'd0);
+             7'd108: tb = is_cal ? 8'd0 : (h_edge_b[7:0]);
+             7'd109: tb = is_cal ? 8'd0 : (h_edge_b[15:8]);
+             7'd110: tb = is_cal ? 8'd0 : (h_edge_b[23:16]);
+             7'd111: tb = is_cal ? 8'd0 : (h_edge_b[31:24]);
+-            7'd112: tb = is_cal ? 8'd0 : (d_ccl);
+-            7'd113: tb = is_cal ? 8'd0 : (d_cch);
+-            7'd114: tb = is_cal ? 8'd0 : (d_rcl);
+-            7'd115: tb = is_cal ? 8'd0 : (d_rch);
+-            7'd116: tb = is_cal ? 8'd0 : (dbg_mosi_cnt[7:0]);
+-            7'd117: tb = is_cal ? 8'd0 : (dbg_mosi_cnt[15:8]);
++            7'd112: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_ccl : 8'd0);
++            7'd113: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_cch : 8'd0);
++            7'd114: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rcl : 8'd0);
++            7'd115: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? d_rch : 8'd0);
++            7'd116: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? dbg_mosi_cnt[7:0] : 8'd0);
++            7'd117: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? dbg_mosi_cnt[15:8] : 8'd0);
+             7'd118: tb = is_cal ? 8'd0 : (h_dt_a[7:0]);
+             7'd119: tb = is_cal ? 8'd0 : (h_dt_a[15:8]);
+             7'd120: tb = is_cal ? 8'd0 : (h_dt_a[23:16]);
+             7'd121: tb = is_cal ? 8'd0 : (h_dt_a[31:24]);
+             7'd122: tb = is_cal ? 8'd0 : (h_dt_a[39:32]);
+             7'd123: tb = is_cal ? 8'd0 : (h_dt_a[47:40]);
+-            7'd124: tb = is_cal ? 8'd0 : (dbg_sck_cnt[7:0]);
+-            7'd125: tb = is_cal ? 8'd0 : (dbg_sck_cnt[15:8]);
++            7'd124: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? dbg_sck_cnt[7:0] : 8'd0);
++            7'd125: tb = is_cal ? 8'd0 : ((DBG_RX != 0) ? dbg_sck_cnt[15:8] : 8'd0);
+             default: tb = 8'd0;
+         endcase
+     end
+@@ -466,6 +489,9 @@
+             h_edge_b   <= meas_periods_b;
+             h_ccd_p    <= meas_ccd_p;
+             h_ccd_s    <= meas_ccd_s;
++            h_bub_p    <= meas_bub_p;
++            h_bub_s    <= meas_bub_s;
++            h_ovl      <= meas_ovl;
+             meas_dirty <= 1'b1;
+         end else if (signal_lost && !new_meas && meas_pend == 2'd0) begin
+             data_valid <= 1'b0;          // ztráta signálu -> data nejsou platná
+@@ -535,6 +561,7 @@
+                                 8'h02: cal_mode_r <= rx_p1[0];
+                                 8'h03: chan_sel_r <= rx_p1[0];          // 0 = CH_A, 1 = CH_B
+                                 8'h04: ref_sel_r  <= rx_p1[0];          // 0 = OCXO, 1 = externi (FW >= 0x0420)
++                                8'h05: begin mask_cs_r <= rx_p1[0]; led_hb_r <= rx_p1[1]; end   // FW >= 0x0425
+                                 default: ;      // neznámé config_id = ignorovat
+                             endcase
+                         end
+@@ -824,7 +851,9 @@
+     reg [47:0] y0r = 48'd0;
+     wire [24:0] rem_n = {rem[23:0], nq[67]};
+     wire        qb    = ~dsub[25];
+-    wire [67:0] dvx   = {12'd0, sx, 8'd0};
++    // Audit 4 (N3, test T9): x se dělí s rozlišením 1/4096 hrany (dřív 1/256). Nad ~16 MHz se značkuje nepravidelně a zaokrouhlení
++    // 1/256 hrany dávalo ~56 ps rms na těžiště (20 MHz) -> fázový záznam i regrese horší než šum značky. Stejný počet kroků děličky.
++    wire [67:0] dvx   = {8'd0, sx, 12'd0};
+     wire [67:0] dvy   = {sy, 4'd0};
+ 
+     // dalsi stav ridicich signalu (z registru -> kratke cesty); kopie se registruji ze stejneho vyrazu
+@@ -884,7 +913,7 @@
+             else if (ldy_q[i / 9])  nq[i] <= dvy[i];
+             else if (sh_q[i / 9])   nq[i] <= (i == 0) ? qb : nq[(i == 0) ? 0 : i - 1];
+         end
+-        if (done_sel & ~phase_y) xq <= {nq[38:0], qb};                 // podil sum(x-x0)*256/n
++        if (done_sel & ~phase_y) xq <= {nq[38:0], qb};                 // podil sum(x-x0)*4096/n (audit 4; <= 2^36)
+         // FW 0x041E: posledni krok (48bitovy soucet s y0r) se odlozi o takt: podil {nq,qb} se nejdriv ZAREGISTRUJE
+         // (`fin_q`), teprve pak se scita. Driv vedla cesta dsub[25] -> qb -> carry chain 48 b -> ym_a/ym_b
+         // (nejhorsi cesta navrhu pri nejistote hodin 0,9 ns). n, x0, xq, y0r jsou v tu chvili stabilni.
+@@ -893,9 +922,9 @@
+         fin_va <= {2{finp_a}};                           // o dalsi takt: ym = y0r + fin_q ma 2 takty (multicycle v SDC)
+         fin_vb <= {2{finp_b}};
+         if (done_sel & phase_y) fin_q <= {nq[46:0], qb};
+-        if (fin_vb[0]) begin n_b <= n; xm_b <= {x0, 8'd0} + xq; end
++        if (fin_vb[0]) begin n_b <= n; xm_b <= {2'd0, x0, 12'd0} + xq; end   // audit 4: x0*4096 <= 2^38
+         if (fin_vb[1]) begin ym_b <= y0r + fin_q; ok_b <= 1'b1; end
+-        if (fin_va[0]) begin n_a <= n; xm_a <= {x0, 8'd0} + xq; end
++        if (fin_va[0]) begin n_a <= n; xm_a <= {2'd0, x0, 12'd0} + xq; end
+         if (fin_va[1]) begin ym_a <= y0r + fin_q; ok_a <= 1'b1; end
+         // nove okno: stare vysledky neplati
+         if (beg_a) ok_a <= 1'b0;
+@@ -917,6 +946,13 @@
+     input  wire         hold,          // 1 = kalibrace/neplatny TDC: zahod rozpracovane okno
+     input  wire         seg_a,         // REGR: segment A okna aktivni (staticke; mimo okamzik prechodu)
+     input  wire         seg_b,         // REGR: segment B okna aktivni
++    // FW 0x0425 (audit 2026-10-20): diagnostika O4 a omezeni ruseni
++    input  wire [7:0]   alias_lim,     // mez aliasu [pocet gate_tick bez uzavreni]; podle hradla (1 s: 170 < 171,8 s preteceni r_dt)
++    input  wire         bub,           // tdc_chan.bub_o: bublina u prave casovane hrany (platne v ts_valid)
++    input  wire         cs_act,        // CS SPI aktivni (synchronizovane do clk, uroven)
++    input  wire         mask_cs,       // 1 = vnitrni hrany (segmenty) se pri aktivnim CS NEspousteji (rusení SPI se do regrese nedostane)
++    output reg  [7:0]   r_bub,         // pocet casovanych hran okna s bublinou (vcetne uzaviraci; saturuje 255)
++    output reg  [3:0]   r_ovl,         // pocet casovanych hran okna pri aktivnim CS (saturuje 15)
+     output wire         want,          // okno ceka na presny cas pristi hrany
+     output wire         want_seg,      // REGR: i vnitrni hrany maji dostat presny cas (do tdc_chan.want_seg)
+     output reg  [25:0]  r_periods,
+@@ -970,7 +1006,12 @@
+ 
+     initial begin
+         r_periods = 26'd0; r_dt = 48'd0; r_dt_alias = 1'b0; res_tgl = 1'b0; r_ce = 9'd0; r_cs = 9'd0; r_ccd = 8'd0;
++        r_bub = 8'd0; r_ovl = 4'd0;
+     end
++    // FW 0x0425: citace diagnostiky okna (bubliny, znacky pri aktivnim SPI). Zachyti se SPOLU s vystupem okna (tsc_q), tedy vcetne
++    // uzaviraci znacky (jeji ts_valid prijde ~9 taktu po uzavreni, az po vynulovani count v cl_q2).
++    reg [7:0]  bubc = 8'd0;
++    reg [3:0]  ovlc = 4'd0;
+ 
+     // ---- FW 0x041F: KONTROLNI pocitani hran (samokontrola) ----
+     // Merena cesta = vzorek carry retezu -> dR/dRp -> ec_r -> rise_q -> count_lo/count_hi (s registrovanym
+@@ -1028,7 +1069,8 @@
+         gate_q <= gate_tick;
+         hold_q <= hold;
+         hold_o <= hold;
+-        cy_q   <= inc & (count_lo == 8'hFF) & ~hold_q;
++        // FW 0x0425: v taktu nulovani (cl_q2) se prenos stareho okna do noveho nesmi propsat (hrana v close+2 viz nize)
++        cy_q   <= inc & (count_lo == 8'hFF) & ~hold_q & ~cl_q2;
+         if (cy_q) count_hi <= count_hi + 18'd1;
+         // FW 0x041F: uzavreni okna se provadi az DVA TAKTY PO `close` (z registru cl_q2): zachyceni `snap` a nulovani
+         // citace. Driv je ridil primo kombinacni `close` (trig_q, pend, rise_q) s fanoutem 26 CE + 26 RESET -- prave
+@@ -1058,7 +1100,13 @@
+             age      <= 8'd0;
+             sg_pend  <= 1'b0;
+             ts_seg   <= 1'b0;
++            bubc     <= 8'd0;
++            ovlc     <= 4'd0;
+         end else begin
++            if (ts_valid) begin                    // kazda casovana hrana (uzaviraci i vnitrni)
++                if (bub    && bubc != 8'hFF) bubc <= bubc + 8'd1;
++                if (cs_act && ovlc != 4'hF)  ovlc <= ovlc + 4'd1;
++            end
+             if (gate_q) begin
+                 armed <= 1'b1;
+                 if (age != 8'hFF) age <= age + 8'd1;
+@@ -1073,12 +1121,16 @@
+                 armed    <= 1'b0;
+             end
+             if (cl_q) begin                        // FW 0x041F: o takt pozdeji (fanout `close`); gate_tick v tomto
+-                alias_s  <= (age >= 8'd250);       // taktu se nezapocte -- na mezi 250 oken bez hrany nezalezi
++                alias_s  <= (age >= alias_lim);    // taktu se nezapocte. FW 0x0425: mez podle hradla (driv pevne 250: pri 1 s
++                                                   // 250 s > 171,8 s preteceni 48b r_dt -> okno 171,8..250 s se tise zabalilo)
+                 age      <= 8'd0;
+             end
+             if (cl_q2) begin                       // dva takty po close (viz vyse)
+                 snap     <= count;                 // vcetne uzaviraci hrany (zapoctena v taktu close)
+-                count_lo <= 8'd0;
++                // FW 0x0425 (oprava close+2): hrana, jejiz `inc` padne PRAVE do taktu nulovani, uz patri NOVEMU oknu. Driv nulovani
++                // jeji pricteni prepsalo (posledni prirazeni vyhrava) -> nad 33 MHz chybela v casti oken jedna perioda a kontrolni
++                // pocitani (|ccd| <= 1) ji propustilo. Ted plati hrany >= 2 takty od sebe (fyzicka mez ~40-45 MHz dana vzorkovanim).
++                count_lo <= {7'd0, inc};
+                 count_hi <= 18'd0;
+             end
+             // vnitrni hrana ve segmentu: poradi hrany se zachyti, az ji napocita rise_q (0..1 takt po trig)
+@@ -1098,7 +1150,11 @@
+                 r_ce       <= code_i;
+                 r_cs       <= code_cur;
+                 r_ccd      <= cdd8;               // hotove 4 takty po close (<= T+6), ts_close je T+7 (T = trig_ack)
++                r_bub      <= bubc;               // FW 0x0425 (vcetne uzaviraci znacky: jeji ts_valid byl v predchozim taktu)
++                r_ovl      <= ovlc;
+             end
++            bubc <= 8'd0;                          // dalsi okno zacina (tsc_q je mimo hold, ts_valid ve stejnem taktu nenastane)
++            ovlc <= 4'd0;
+         end
+         if (tsc_q2) begin                          // reference pro dalsi okno az o takt po zachyceni vystupu (viz tsc_q2)
+             code_cur <= code_i;
+@@ -1109,7 +1165,9 @@
+ 
+     generate
+         if (REGR != 0) begin : rg
+-            assign want_seg = seg_a | seg_b;
++            // FW 0x0425: pri aktivnim CS (a mask_cs) se vnitrni hrany nespousti: SPI asynchronni k signalu -> vynechani znacek
++            // stredni hodnotu segmentu nevychyli, rušení přenosem se do regrese nedostane (ztrata ~0,2 % znacek)
++            assign want_seg = (seg_a | seg_b) & ~(mask_cs & cs_act);
+             regr_acc u_rg (.clk(clk), .seg_a(seg_a), .seg_b(seg_b), .ref_ts(ref_ts),
+                            .samp_v(ts_valid & ts_seg), .samp_b(sg_b), .samp_x(sg_x), .samp_ts(ts_ps),
+                            .n_a(rg_n_a), .n_b(rg_n_b), .xm_a(rg_xm_a), .xm_b(rg_xm_b),
+@@ -1208,3 +1266,75 @@
+     end
+     assign ref_ctrl = sel;
+ endmodule
++
++
++// ============================================================
++// FW 0x0425 (audit 2026-10-20, slabina 4): PRISNY HLIDAC KOHERENCE 100 MHz <-> 10 MHz.
++// Obe hodiny jsou z tehoz OCXO (100 MHz = Si5356 z 10 MHz), takze mezi dvema preklopenimi bitu `tgl10` (preklapi se kazdy takt
++// 10 MHz = kazdych 100 ns) musi byt PRESNE 10 taktu 100 MHz. Stavajici hlidac (640 +- 4 za 102,4 us) vidi jen hrube chyby;
++// tenhle pozna jediny chybejici / navic pulz 100 MHz, zakmit 10 MHz a fazovy skok >= 10 ns (validace 2026-10-20: skok 5-10 ns
++// jen kdyz prekroci vzorkovaci okamzik OBOU cest, skok 6 ns v modelu nezachycen; mensi skoky nejsou cilem).
++// Metastabilita: pomer fazi obou hodin je PEVNY, takze synchronizator muze sedet trvale na prechodu tgl10 a davat 9/11 misto 10.
++// Proto DVE cesty: vzorkovani nabeznou a sestupnou hranou 100 MHz (posun 5 ns); obe zaroven marginalni byt nemohou. V epose
++// 1024 preklopeni (102,4 us) se spocitaji odchylky (interval != 10) v kazde ceste; skutecna chyba se projevi v OBOU (deterministicka
++// cesta ji vidi vzdy), metastabilita jen v jedne -> chyba epochy = min(odchylky_P, odchylky_N) > 0. Citac chybnych epoch roste
++// nejvys o 1 za epochu -> GRAY kod, bezpecny prenos do 10 MHz domeny (top.v).
++// Cena: ~35 FF, ~35 LUT (odchylky 3b). Nezachyti: jitter a skoky < 10 ns spolehlive, pomale putovani fazi.
++// ============================================================
++module coh_mon (
++    input  wire       clk,        // clk_p0_100m
++    input  wire       tgl10,      // z domeny clk_ref_10m: preklapi se kazdy jeji takt
++    input  wire       en,         // 1 = hodiny OK (mimo vypadek / zotaveni)
++    output reg  [7:0] err_gray,   // pocet epoch s chybou, GRAY kod (saturuje na binarnich 255)
++    output reg        ep_ok,      // posledni ukoncena epocha bez chyby
++    output reg        err_seen,   // od nahrani aspon jedna chybna epocha
++    output reg        path_n,     // cesta s mene odchylkami v posledni epose (0 = nabezna, 1 = sestupna)
++    output reg        valid       // aspon jedna epocha dokoncena od povoleni
++);
++    // cesta P: nabezna hrana
++    reg p1 = 1'b0, p2 = 1'b0, p3 = 1'b0;
++    // cesta N: sestupna hrana, pak dva stupne nabeznou (n1 -> n2 ma pul periody = 5 ns, jen vodic)
++    reg n1 = 1'b0, n2 = 1'b0, n3 = 1'b0;
++    always @(negedge clk) n1 <= tgl10;
++    always @(posedge clk) begin p1 <= tgl10; p2 <= p1; p3 <= p2; n2 <= n1; n3 <= n2; end
++    wire tr_p = p2 ^ p3;
++    wire tr_n = n2 ^ n3;
++
++    reg [3:0]  ip = 4'd0, in = 4'd0;          // takty od posledniho preklopeni (saturuji na 15 = vypadek preklapeni)
++    reg        pp = 1'b0, pn = 1'b0;          // prvni interval po povoleni se nehodnoti
++    reg [2:0]  dp = 3'd0, dn = 3'd0;          // odchylky v aktualni epose (saturuji na 7; staci >= 1 a porovnani)
++    reg [9:0]  ep = 10'd0;                    // preklopeni cesty P v epose
++    reg [7:0]  err_bin = 8'd0;
++    initial begin err_gray = 8'd0; ep_ok = 1'b0; err_seen = 1'b0; path_n = 1'b0; valid = 1'b0; end
++    // odchylky VCETNE preklopeni v tomto taktu (aby se odchylka na konci epochy neztratila)
++    wire       dev_p = tr_p & pp & (ip != 4'd10);
++    wire       dev_n = tr_n & pn & (in != 4'd10);
++    wire [2:0] dp_x  = (dev_p && dp != 3'd7) ? dp + 3'd1 : dp;
++    wire [2:0] dn_x  = (dev_n && dn != 3'd7) ? dn + 3'd1 : dn;
++    wire       ep_end = tr_p & (&ep);
++    wire [7:0] err_inc = err_bin + 8'd1;
++    always @(posedge clk) begin
++        if (!en) begin
++            ip <= 4'd0; in <= 4'd0; pp <= 1'b0; pn <= 1'b0; dp <= 3'd0; dn <= 3'd0; ep <= 10'd0; valid <= 1'b0;
++        end else begin
++            if (tr_p) begin ip <= 4'd1; pp <= 1'b1; end else if (ip != 4'hF) ip <= ip + 4'd1;
++            if (tr_n) begin in <= 4'd1; pn <= 1'b1; end else if (in != 4'hF) in <= in + 4'd1;
++            if (tr_p) ep <= ep + 10'd1;
++            if (ep_end) begin                     // konec epochy (1024 preklopeni cesty P = 102,4 us)
++                ep_ok  <= (dp_x == 3'd0) | (dn_x == 3'd0);
++                path_n <= (dn_x < dp_x);
++                valid  <= 1'b1;
++                if ((dp_x != 3'd0) && (dn_x != 3'd0)) begin   // chyba videna OBEMA cestami = skutecna
++                    err_seen <= 1'b1;
++                    if (err_bin != 8'hFF) begin
++                        err_bin  <= err_inc;
++                        err_gray <= err_inc ^ (err_inc >> 1);
++                    end
++                end
++                dp <= 3'd0; dn <= 3'd0;
++            end else begin
++                dp <= dp_x; dn <= dn_x;
++            end
++        end
++    end
++endmodule

@@ -15,7 +15,7 @@
 UI_API extern const prim_font_t ui_font_mono_14;
 UI_API extern const prim_font_t ui_font_mono_16;
 UI_API extern const prim_font_t ui_font_mono_18;
-UI_API extern const prim_font_t ui_font_mono_20;
+/* ui_font_mono_20 ZRUSEN 2026-08-29 -> slouceno do ui_font_mono_22 (-39,5 KB flash). */
 UI_API extern const prim_font_t ui_font_mono_22;
 UI_API extern const prim_font_t ui_font_mono_25;
 UI_API extern const prim_font_t ui_font_mono_30;

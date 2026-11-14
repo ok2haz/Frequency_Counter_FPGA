@@ -1,0 +1,80 @@
+===== > selftest
+n
+TDC: rezerva retezu A 16, B 6 tapu z 268, za lftest
+fpga: CRC selftest crc16("123456789")=0x29B1 OK
+fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ + rezerva TDC selftest OK
+gps: parser selftest OK
+ui: fmt_frac+hist_h+gate_same selftest OK
+app: fmt_locator selftest OK (JJ0
+===== > status
+0AA00AA)
+SELFTEST: 16/16 PASS
+
+status
+RUNNING gpsdo-ui v0.15.0  uptime 447s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 30%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 2766, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6008 B
+  stack I2C4    free 1100 B
+  stack Ui      free 5512 B
+  stack Fpga    free 752 B
+VAROVANI: prio 7  TEPLOTA NEUSTALENA  - kalibrace zamcena  (celkem 1)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena ? start po zapnuti napajeni
+
+REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 6755 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.763 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 29640 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: TX watchdog zlomil zasek 1650x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x01 REGR:pouzita (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 0, hodiny 0, delka okna 0 | posledni rozdil 0
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 249999 us (`tdc` = detail)
+  TDC: teplot. rekal 1x (cal pri 35.4 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: A 16 tapu (5.9 %) OK | B 18 tapu (6.7 %) OK | z 268 tapu, za koncem A 0 B 0 ud. (cal #2)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam ->
+##### errlog dump
+===== > errlog dump 15
+`flightrec`
+DATALOG W25Q ON 226047/696960 rec seq:226047 err:0 skip:0
+
+errlog dump 15
+=
+##### errlog dump 2
+===== > errlog dump 15
+== ERRLOG (W25Q) ===
+  zaznamu 4873 / 8192   ring zahodil 0
+
+errlog dump 15
+##### errlog dump COM6
+===== > errlog dump 15
+(zadna odpoved)

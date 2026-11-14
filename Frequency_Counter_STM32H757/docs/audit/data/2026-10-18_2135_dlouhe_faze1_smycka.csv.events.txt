@@ -1,0 +1,27 @@
+=== errlog PRED ZACATKEM (total 5058) ===
+21:15:19  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:15:00  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:14:48  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:14:21  up 0  k=2  240000  HardFault 240000
+21:14:21  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+19:46:11  up 0  k=1  power-  duvod=power-, bring-up krok 0
+18:51:08  up 16193  k=11  kanal  kanal A -> B
+14:28:46  up 449  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:27:59  up 402  k=11  brana  brana 0,1s -> 0,1s
+14:21:18  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:21:17  up 0  k=1  power-  duvod=power-, bring-up krok 0
+14:20:30  up 1048  k=6  signal  ztrata signalu, CRC chyb celkem=0
+
+=== errlog PO KONCI (total 5058, pred: 5058) ===
+21:15:19  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:15:00  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:14:48  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:14:21  up 0  k=2  240000  HardFault 240000
+21:14:21  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+19:46:11  up 0  k=1  power-  duvod=power-, bring-up krok 0
+18:51:08  up 16193  k=11  kanal  kanal A -> B
+14:28:46  up 449  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:27:59  up 402  k=11  brana  brana 0,1s -> 0,1s
+14:21:18  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:21:17  up 0  k=1  power-  duvod=power-, bring-up krok 0
+14:20:30  up 1048  k=6  signal  ztrata signalu, CRC chyb celkem=0

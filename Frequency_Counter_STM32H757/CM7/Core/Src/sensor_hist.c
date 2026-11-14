@@ -15,6 +15,11 @@ typedef struct {
 
 static hist_stage_t s_hist[SENS_COUNT][SENSOR_HIST_STAGES];
 static uint8_t      s_div;          /* delic 2 Hz -> BASE_S (500ms × 4 = 2s) */
+/* #116: predstupen stage 0 — prumeruj VSECHNY 2 Hz vzorky za okno BASE_S, ne jen
+ * jeden okamzity odecet kazde 2 s. Bez toho stage 0 PODVZORKOVAVA (zahodi 3 ze 4
+ * vzorku) -> dT/dt je zbytecne zaseklane a `warmup_ready` kvuli tomu "siluje". */
+static float        s_pre[SENS_COUNT];
+static uint16_t     s_pre_n;
 
 /* Vlozi jednu hodnotu do pyramidy senzoru (kaskadova decimace jako trend_feed). */
 static void hist_push(sensor_id_t id, float v)
@@ -33,16 +38,23 @@ static void hist_push(sensor_id_t id, float v)
 
 void sensor_hist_feed(void)
 {
-    /* Feed z 2 Hz sweepu; decimuj na zakladni krok. 500ms × BASE_S/… */
+    /* Akumuluj KAZDY 2 Hz vzorek (#116) — jinak stage 0 jen podvzorkovava.
+     * Krmime i "stary" last (drzi posledni dobrou hodnotu) — dulezite pro
+     * casove zarovnani pyramidy. Dokud senzor nemel platny vzorek (samples==0),
+     * je last=0 -> okno to pozna podle count<2 a ukaze "cekam". */
+    for (int id = 0; id < SENS_COUNT; id++) s_pre[id] += g_sensors[id].last;
+    s_pre_n++;
+
     if (++s_div < (SENSOR_HIST_BASE_S * 2)) return;    /* 2 Hz -> BASE_S sekund */
     s_div = 0;
+
+    /* Do stage 0 jde PRUMER okna, ne posledni okamzity odecet. */
+    float inv = (s_pre_n > 0u) ? (1.0f / (float)s_pre_n) : 0.0f;
     for (int id = 0; id < SENS_COUNT; id++) {
-        /* Krmime i "stary" last (drzi posledni dobrou hodnotu) — dulezite pro
-         * casove zarovnani pyramidy (vsechny stage musi dostat vzorek kazdy krok).
-         * Dokud senzor nemel platny vzorek (samples==0), je last=0 -> okno pozna
-         * podle count<2 a ukaze "cekam". */
-        hist_push((sensor_id_t)id, g_sensors[id].last);
+        hist_push((sensor_id_t)id, s_pre[id] * inv);
+        s_pre[id] = 0.0f;
     }
+    s_pre_n = 0;
 }
 
 static int32_t hist_res(int s)          /* rozliseni stage [s/vzorek] = BASE_S·DECIM^s */

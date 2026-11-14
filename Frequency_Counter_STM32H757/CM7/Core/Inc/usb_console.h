@@ -29,4 +29,26 @@ void usb_console_tx_pump(void);
  * (stejna fronta jako USART1 RX -> UartTask parser beze zmeny). */
 void usb_console_on_rx(const uint8_t *data, uint32_t len);
 
+/* Kolik bajtu konzole ZAHODILA: TX pri plnem ring bufferu (host neodebira),
+ * RX pri plne `UartRxQueue` (rozpadly prikaz). Tichá ztráta bez počítadla je
+ * vada sama o sobě (L-0017) — oboje vypisuje `status`, řádek KONZOLE.
+ * ⚠️ TX zahazuje PRICHAZEJICI bajt, ne nejstarsi: nejstarsi muze byt prave
+ * vysilany (viz `s_pending` v usb_console.c, audit F-0127). */
+uint32_t usb_console_tx_dropped(void);
+uint32_t usb_console_rx_dropped(void);
+
+/* Kolikrat TX watchdog zlomil zaseknuty CDC TxState (IN transfer, ktery se po
+ * USB resetu / prvnim armu nedokoncil). >0 = zasek realne nastal a byl zotaven.
+ * Pridano 2026-10-04 po zmereni mrtveho TX pri zivem RX. */
+uint32_t usb_console_tx_recover(void);
+
+/* Pritomnost hosta (STATUS #298, 2026-10-15). Do USB se vysila jen kdyz je linka CONFIGURED a host ma port otevreny
+ * (DTR z SET_CONTROL_LINE_STATE, nebo posledni data od hosta mladsi nez 30 s). Dokud neni, plni se jen ring a pri jeho
+ * preteceni se zahazuje NEJSTARSI (`usb_console_tx_overwritten`). Prechody (otevreni/zavreni/ztrata linky/zlomeny zasek)
+ * rusi HW prenos a vyprazdnuji TX FIFO — bez toho IN FIFO drzela data o jeden prenos pozadu. */
+void     usb_console_set_dtr(uint8_t on);       /* z CDC_Control_FS (USB IRQ) */
+uint8_t  usb_console_host_open(void);           /* 1 = pumpa pokladala hosta za pritomneho */
+uint8_t  usb_console_dtr(void);
+uint32_t usb_console_tx_overwritten(void);
+
 #endif /* INC_USB_CONSOLE_H_ */

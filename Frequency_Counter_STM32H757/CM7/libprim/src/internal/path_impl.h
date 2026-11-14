@@ -15,7 +15,9 @@
  * Oblouky v UI kresli `prim_draw_arc()` (shapes.c), ktereho se to netyka.
  * Vypadlo tim i pole `p1` (bylo jen ridici bod krivky / stred oblouku), takze
  * operace se zmensila z 20 na 8 B — cesty se alokuji na halde, takze je to
- * primo uspora RAM na kazdou cestu. */
+ * primo uspora RAM na kazdou cestu.
+ * ⚠️ Doplneno 2026-08-28 (audit): osirely `bezier.c`/`bezier.h` (jedine, co ty
+ * QUAD helpery obsahovalo — `--gc-sections` je zahazoval) uz jsou take smazane. */
 typedef enum {
     PRIM_OP_MOVE,
     PRIM_OP_LINE,

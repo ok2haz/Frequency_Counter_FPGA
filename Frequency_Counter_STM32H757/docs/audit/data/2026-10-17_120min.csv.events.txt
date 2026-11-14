@@ -1,0 +1,13 @@
+=== errlog PRED ZACATKEM (total 5009) ===
+14:46:53  up 0  k=2  240000  HardFault 240000
+14:46:53  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+14:40:48  up 0  k=10  CM4  CM4 zaseklo, pocet=1
+14:40:48  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+10:16:36  up 298  k=11  brana  brana 0,1s -> 0,1s
+10:11:39  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+10:11:38  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+10:11:38  up 0  k=1  power-  duvod=power-, bring-up krok 0
+10:02:43  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+10:02:42  up 0  k=10  CM4  CM4 zaseklo, pocet=1
+10:02:42  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+21:13:48  up 216  k=11  brana  brana 10s -> 100s

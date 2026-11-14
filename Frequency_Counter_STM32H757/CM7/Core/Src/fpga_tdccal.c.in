@@ -1,0 +1,71 @@
+/* fpga_tdccal.c -- kalibracni tabulka TDC pocitana v STM (FW >= 0x0427). Viz fpga_tdccal.h.
+ * GENEROVANO z fpga_tdccal.c.in (zlate vektory z FPGA simulace sim/tb_lutequiv.sv doplni gen_tdccal.py). */
+#include "fpga_tdccal.h"
+#include "fpga_freq.h"
+
+uint64_t fpga_tdccal_lut(const uint32_t *hist, uint32_t nc, uint32_t log2n, uint8_t dual, uint16_t *lut)
+{
+    uint64_t cum = 0u;
+    const uint32_t sh = (log2n > 13u) ? (log2n - 13u) : 0u;
+    for (uint32_t a = 0; a < nc; a++) {
+        const uint64_t h  = hist[a];
+        const uint64_t xv = 2u * cum + h;                       /* (2*cum_pred + hist) */
+        cum += h;
+        uint64_t x = xv >> sh;
+        if (x > 16383u) x = 16383u;                             /* saturace (x = 2N) */
+        const uint16_t neg = (uint16_t)((0x4000u - (uint16_t)x) & 0x3FFFu);
+        const uint32_t r   = dual ? (uint32_t)(((a >> (30u - (uint32_t)__builtin_clz(nc))) & 1u) == 0u) : 1u;   /* sada R (horni bit adresy 0) dostava +T */
+        const uint32_t amt = r + ((x != 0u) ? 1u : 0u);
+        lut[a] = (uint16_t)((amt << 14) | neg);
+    }
+    return cum;
+}
+
+void fpga_tdccal_stats(const uint32_t *hist, uint32_t nc, fpga_tdccal_stats_t *s)
+{
+    s->ovf = (nc != 0u) ? hist[nc - 1u] : 0u; s->peak = 0u; s->nz = 0u; s->last = 0u; s->total = 0u;
+    for (uint32_t a = 0; a < nc; a++) {
+        const uint32_t h = hist[a];
+        s->total += h;
+        if (h != 0u) { s->nz++; s->last = (uint16_t)a; if (h > s->peak) s->peak = h; }
+    }
+}
+
+uint16_t fpga_tdccal_chk(uint8_t ch, uint16_t addr, uint16_t neg)
+{
+    return (uint16_t)((uint16_t)(((uint16_t)(ch & 1u) << 14) | (uint16_t)((addr & 0x1FFu) << 5)) ^ (uint16_t)(neg & 0x3FFFu));
+}
+
+@GOLD_HIST@
+@GOLD_LUT@
+
+int fpga_tdccal_selftest(void)
+{
+    static uint32_t h[256], h20[256];
+    static uint16_t lut[256];
+    int ok = 1;
+    for (int i = 0; i < 256; i++) { h[i] = k_gold_hist[i]; h20[i] = (uint32_t)k_gold_hist[i] << 5; }
+    /* 1) zlate vektory z FPGA simulace (2^15 udalosti) */
+    ok &= (fpga_tdccal_lut(h, 256u, 15u, 0u, lut) == (uint64_t)@SUM@u);
+    for (int i = 0; i < 256; i++) ok &= (lut[i] == k_gold_lut[i]);
+    /* 2) tatez data v meritku vyroby (2^20): shift 7 misto 2 -> stejna tabulka */
+    ok &= (fpga_tdccal_lut(h20, 256u, FPGA_TDC_CAL_LOG2, 0u, lut) == ((uint64_t)@SUM@u << 5));
+    for (int i = 0; i < 256; i++) ok &= (lut[i] == k_gold_lut[i]);
+    /* 3) statistiky retezu */
+    {   fpga_tdccal_stats_t s;
+        fpga_tdccal_stats(h, 256u, &s);
+        ok &= (s.nz == @NZ@u && s.last == @LAST@u && s.peak == @PEAK@u && s.ovf == @OVF@u && s.total == @SUM@u);
+    }
+    /* 4) hranice: prazdny histogram (vse 0 -> x = 0 -> {1, 0}); DUAL: sada F (horni bit adresy 1) ma amt o 1 mensi */
+    {   static uint32_t z[4] = { 0u, 0u, 0u, 0u }; static uint16_t zl[4];
+        (void)fpga_tdccal_lut(z, 4u, 15u, 0u, zl);
+        for (int i = 0; i < 4; i++) ok &= (zl[i] == 0x4000u);
+        static uint32_t d[4] = { 16384u, 16384u, 16384u, 16384u }; static uint16_t dl[4];
+        (void)fpga_tdccal_lut(d, 4u, 16u, 1u, dl);               /* 2^16 udalosti, DUAL: adresy 0,1 = sada R, 2,3 = sada F */
+        ok &= ((dl[0] >> 14) == 2u && (dl[1] >> 14) == 2u && (dl[2] >> 14) == 1u + 0u && (dl[3] >> 14) == 1u + 0u);
+    }
+    /* 5) kontrolni slovo shodne s FPGA: ch=1, addr=0x1FF, neg=0x3FFF -> 0x4000 | 0x3FE0 ^ 0x3FFF */
+    ok &= (fpga_tdccal_chk(1u, 0x1FFu, 0x3FFFu) == (uint16_t)((0x4000u | 0x3FE0u) ^ 0x3FFFu));
+    ok &= (fpga_tdccal_chk(0u, 0u, 0u) == 0u);
+    return ok;
+}

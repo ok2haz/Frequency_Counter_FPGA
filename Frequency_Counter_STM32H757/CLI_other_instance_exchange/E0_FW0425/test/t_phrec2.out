@@ -1,0 +1,3 @@
+T8 Σ(gate_cc - presne): -0.170 ps po 20000 oknech (bez prenosu by byl ~41 ps)
+T9 21,37 MHz, nepravidelne znackovani, bez sumu: ADEV(1 s) xm 1/256 = 8.68e-11, xm 1/4096 = 5.77e-12 (cil: pod sumem teziste ~6e-12)
+VYSLEDEK: VSE PROSLO

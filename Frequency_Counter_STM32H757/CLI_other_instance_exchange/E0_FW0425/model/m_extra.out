@@ -1,0 +1,6 @@
+A) N1 + preklapeni arm (maskovani): spatne 0/150963
+B) maskovani 2 % segmentu ve stale fazi: stredni odchylka 1.88e-12 proti bez maskovani 1.38e-12 (sigma jednoho 1.1e-11) -> vychyleni ~0
+C) coh_mon: zakmit 10 MHz -> chybnych epoch 1 (ocekavano >= 1)
+   fazovy skok 6 ns -> 0 (ocekavano 1)
+   fazovy skok 3 ns -> 0 (pod rozlisenim: 0 je v poradku)
+   bez poruchy -> 0 (ocekavano 0)
