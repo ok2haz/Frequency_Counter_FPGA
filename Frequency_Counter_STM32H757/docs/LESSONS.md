@@ -6347,3 +6347,16 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   nové varování v nedotčeném místě je latentní vada, ne šum.
 - **Detekce:** `python tools/audit.py` -> `souboru s varovanim: 2`.
 - **Stav:** ✅ build + audit; ⬜ neověřeno na HW
+
+### L-0283 — Mutace dokazuje test jen tehdy, když se pouští i na nový kód a když „přežila“, je to mezera, ne šum
+
+- **Datum:** 2026-11-14
+- **Oblast:** `tests/host/mut_ref.py`, `mp_selftest` (F-0294, F-0296)
+- **Symptom:** po v0.45.18 mutační sada neobsahovala žádnou mutaci nové větve a jedna stará mutace už nenašla kotvu.
+- **Příčina:** sada žila mimo repo (scratchpad) a po změně kódu se neaktualizovala; po doplnění mutací M12 přežila,
+  protože test nikde nezkoušel „sklon je větší, ale `lock_yoff_ok` = 0“.
+- **Oprava:** skript v `tests/host/mut_ref.py`, doplněny 3 mutace + 1 kotva, nový případ v `mp_selftest`.
+- **Pravidlo:** po každé změně chráněného kódu pusť mutační sadu a doplň mutace pro nové řádky; mutace, která přežije, se řeší
+  testem, ne mutací. Kotva, která se nenašla, je hlášena (skript to dělá) – nepřecházet.
+- **Detekce:** `CC="<zig cc>" python -I tests/host/mut_ref.py <adresář>` → „vsechny mutace zachyceny“.
+- **Stav:** ✅ host + překlad; ⬜ neověřeno na HW (selftest na desce až po nahrání)

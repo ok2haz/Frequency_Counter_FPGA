@@ -27,7 +27,7 @@ rozšířené buffery v Holdoveru. Žádná chyba chování nenalezena. F-0294 m
 - **Návrh opravy:** `docs:` commit, žádná logika.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0018 (duplicitní fakta se rozjedou).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-14 (`docs:` commit 25c8c8e), tak jak nález navrhoval
 
 ### F-0296 [S4] Mutační test `mut_ref.py` nekryje větev F-0294 a jedna mutace je zastaralá
 
@@ -43,7 +43,7 @@ rozšířené buffery v Holdoveru. Žádná chyba chování nenalezena. F-0294 m
 - **Návrh opravy:** doplnit 2 mutace, opravit kotvu. Mutace upravují zdroj dočasně, proto až ve fázi F5.
 - **Riziko opravy:** nízké (host nástroj).
 - **Vztah k lekcím:** L-0281 (host test před nahráním), L-0282.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-14 (`fix:` commit „F-0296“). Jinak než nález navrhoval: skript přenesen do repa jako `tests/host/mut_ref.py` (přenositelné cesty), a po doplnění mutací přežila **M12** (`lock_yoff_ok` vypuštěno) – skutečná mezera, proto přibyl případ do `mp_selftest` (`meas_present.c`, nezměřený sklon 0,9 ppb se bez ADEV nepoužije). Výsledek: 28 mutací, všechny zachyceny; `.text` +64 B; audit 97/0/2.
 
 ---
 
