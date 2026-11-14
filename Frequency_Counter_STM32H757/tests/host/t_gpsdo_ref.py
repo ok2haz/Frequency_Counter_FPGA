@@ -1,4 +1,5 @@
-"""Host test jadra nejistoty reference (F-0291): gp_ref_core a prislusny blok gpsdo_selftest se VYJMOU ze zdroje
+"""Host test jadra nejistoty reference (F-0291) a brany kvality GNSS (F-0290): gp_ref_core, gp_gnss_step a jejich bloky
+gpsdo_selftest se VYJMOU ze zdroje
 (CM7/Core/Src/freertos_task_fpga.c) a prelozi na PC spolu s mp_ref_ppb (meas_present.h). Testuje se tedy text,
 ktery jde do obrazu, ne kopie.
 
@@ -25,11 +26,17 @@ core = src[a:src.index('\n}\n', src.index('static int gp_ref_core', a)) + 3]
 a2 = src.index('    {   static int32_t  tx[360];')
 block = src[a2:src.index('    return ok;\n}', a2)]
 lock_y = re.search(r'#define GPSDO_FLL_LOCK_Y\s+\S+', src).group(0)
+# F-0290: brana kvality GNSS (gp_gnss_step) a jeji blok selftestu
+a3 = src.index('typedef struct { uint8_t ok, run; } gp_gnss_t;')
+gnss = src[a3:src.index('\n}\n', src.index('static int gp_gnss_step', a3)) + 3]
+a4 = src.index('    {   gp_gnss_t q = { 0u, 0u };')
+gblock = src[a4:src.index('\n    }\n', a4) + 7]
 
 c = '\n'.join([
     '#include <stdio.h>', '#include <string.h>', '#include <math.h>', '#include "meas_present.h"',
-    lock_y, core,
-    'int main(void)', '{', '    int ok = 1;', block,
+    lock_y, core, gnss,
+    'int main(void)', '{', '    int ok = 1;', block, gblock,
+    '    if (!ok) printf("blok selftestu ze zdroje: FAIL\\n");',
     '    {   static int32_t x[40]; static uint32_t cq[40]; double u, d, yo;',
     '        for (int i = 0; i < 40; i++) { x[i] = 1000 * i; cq[i] = 24970u << 16; }',
     '        (void)gp_ref_core(x, cq, 29, 3.4e-11, 1000.0, &u, &d, &yo);      /* pod 30 bodu: nic zmereno */',
@@ -38,6 +45,16 @@ c = '\n'.join([
     '        ok = ok && yo > 0.0999 && yo < 0.1001;',
     '        (void)gp_ref_core(x, cq, 40, 3.4e-11, 0.0, &u, &d, &yo);         /* tau 0: nejkratsi okno, bez deleni nulou */',
     '        ok = ok && yo > 0.0999 && yo < 0.1001;',
+    '    }',
+    '    {   mp_ref_in_t r; uint8_t m = 0u; double v;                             /* mp_ref_ppb: prebytek sklonu nad 2 x ADEV */',
+    '        memset(&r, 0, sizeof r); r.state = GPSDO_LOCK; r.locked = 1u;',
+    '        ok = ok && mp_ref_ppb(&r, &m) == MP_REF_PPB_LOCK_ENTRY && m == 0u;',
+    '        r.entry_ppb = 0.3; ok = ok && mp_ref_ppb(&r, &m) == 0.3 && m == 0u;',
+    '        r.lock_u_ppb = 0.013; r.lock_yoff_ok = 1u; r.lock_yoff_ppb = 0.02;',
+    '        ok = ok && mp_ref_ppb(&r, &m) == 0.013 && m == 1u;',
+    '        r.lock_yoff_ppb = 0.3; v = mp_ref_ppb(&r, &m); ok = ok && v > 0.2991 && v < 0.2993;',
+    '        r.state = GPSDO_HOLD; r.entry_ppb = 0.3; r.entry_meas = 1u; r.hold_drift_ppb_h = 0.4; r.state_s = 3600u;',
+    '        v = mp_ref_ppb(&r, &m); ok = ok && m == 1u && v > 0.4999 && v < 0.5001;',
     '    }',
     '    printf("%s\\n", ok ? "PASS" : "FAIL");', '    return ok ? 0 : 1;', '}', ''])
 p = os.path.join(OUT, 't_gpsdo_ref.c')

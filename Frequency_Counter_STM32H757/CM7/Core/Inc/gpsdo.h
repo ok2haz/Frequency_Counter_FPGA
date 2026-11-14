@@ -34,7 +34,7 @@ enum {
     GPSDO_HOLD         /* holdover: 1PPS chybi, drzi se posledni kod */
 };
 
-/* Duvod stavu WAIT/OFF (`why`). */
+/* Duvod stavu WAIT/OFF (`why`); u HOLD duvod, proc se 1PPS neprijima (GPSDO_WHY_NONE = hrany nechodi). */
 enum {
     GPSDO_WHY_NONE = 0,
     GPSDO_WHY_NODAC,       /* AD5693R nenalezen / bez control registru */
@@ -43,8 +43,16 @@ enum {
     GPSDO_WHY_REFEXT,      /* FPGA bezi z externi reference -- neciti se OCXO */
     GPSDO_WHY_CLK,         /* hodiny FPGA hlasi vypadek / zotaveni */
     GPSDO_WHY_DIVERGE,     /* FLL: odchylka po kroku rostla -> zastaveno (znamenko K?) */
-    GPSDO_WHY_USER         /* vypnuto uzivatelem (`gpsdo off`, rucni `dac`) */
+    GPSDO_WHY_USER,        /* vypnuto uzivatelem (`gpsdo off`, rucni `dac`) */
+    GPSDO_WHY_GNSS         /* reseni GNSS nema kvalitu pro disciplinaci: neni 3D, malo druzic nebo vysoke HDOP (F-0290) */
 };
+
+/* Meze kvality reseni GNSS pro disciplinaci (F-0290; odvozeni u gp_gnss_step ve freertos_task_fpga.c). */
+#define GPSDO_GNSS_SAT_BAD    5u      /* mene pouzitych druzic (GGA) -> kvalita nestaci */
+#define GPSDO_GNSS_SAT_GOOD   6u      /* navrat: aspon tolik */
+#define GPSDO_GNSS_HDOP_BAD   2.5f    /* HDOP nad -> kvalita nestaci */
+#define GPSDO_GNSS_HDOP_GOOD  2.0f    /* navrat: nejvys tolik */
+#define GPSDO_GNSS_GOOD_S     30u     /* navrat az po tolika hranach 1PPS v rade s dobrou kvalitou */
 
 /* Rezim opravy sawtooth (`saw`). */
 enum { GPSDO_SAW_OFF = 0, GPSDO_SAW_PLUS, GPSDO_SAW_MINUS, GPSDO_SAW_NODATA };
@@ -66,6 +74,8 @@ typedef struct {
     float    saw_var[3];   /* rozptyl 2. diferenci faze [ns^2]: bez opravy / +q / -q (posledni okno) */
     uint32_t saw_n;        /* pocet rozhodnuti sawtooth */
     double   pm_ns;        /* audit 2026-10-20: zmereny sum odectu faze 1PPS [ns] (sigma_x z druhych diferenci) */
+    uint8_t  gnss_ok;      /* F-0290: 1 = reseni GNSS ma kvalitu pro disciplinaci (3D, druzice, HDOP; s hysterezi) */
+    uint32_t gnss_drop;    /* F-0290: kolikrat kvalita reseni klesla pod mez (prechody dobra -> spatna) */
     /* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA. Drzi-li pin 1PPS pri konfiguraci FPGA uroven 1,
      * pps_cap3 (synchronizator startuje 000) ohlasi falesnou hranu v case startu -> interval 1 -> 2 neni 1 s.
      * Meri se nezavisle na fixu GPS a na smycce. */

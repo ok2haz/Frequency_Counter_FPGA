@@ -6237,3 +6237,24 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** `gpsdo` → řádek `nejistota reference … | ADEV faze … | sklon faze …`; `gpsdo test` (syntetické dosedání
   0,3 ppb); host test `python tests/host/t_gpsdo_ref.py <adresář>` (jádro vyjmuté ze zdroje).
 - **Stav:** ✅ host test, model; ⬜ neověřeno na HW (po `gpsdo off` → rozladění → `gpsdo on`)
+
+### L-0277 — Podmínka „vstup je platný“ převzatá od zdroje dat nestačí tomu, kdo z něj reguluje
+
+- **Datum:** 2026-11-14
+- **Oblast:** smyčka GPSDO (`gpsdo_tick`, `gp_gnss_step` ve `freertos_task_fpga.c`), audit F-0290, STATUS #381
+- **Symptom:** (nalezeno auditem, na desce nepozorováno: anténa na střeše má 8–12 družic a HDOP do 1,2) smyčka přijímala
+  1PPS při jakémkoli platném fixu včetně 2D, bez meze na počet družic a geometrii.
+- **Příčina:** podmínka disciplinace převzala definici „platný fix“ od přijímače (RMC `A`, režim ≥ 2D). Ta říká, že přijímač
+  má nějaké řešení, ne že jeho čas má kvalitu, kterou smyčka potřebuje. Pomalé putování času při špatné geometrii
+  (stovky ns) mez odlehlé hrany nechytí (hlídá skok 300 ns za sekundu), smyčka ho převede na kmitočet a stav zůstane LOCK.
+- **Oprava (v0.45.15):** brána kvality s hysterezí: 3D fix, ≥ 5 použitých družic, HDOP ≤ 2,5; návrat při ≥ 6 družicích
+  a HDOP ≤ 2,0 držených 30 s. Bez kvality se hrany nepřijímají a smyčka přejde do HOLD s důvodem `GPSDO_WHY_GNSS`
+  (displej, web, UART). Meze mají proti 21h záznamu rezervu 1,6× (družice) a 2× (HDOP). HOLD nově nese důvod i pro
+  ztrátu fixu.
+- **Pravidlo:** regulátor si kvalitu vstupu definuje sám, podle toho, co jeho chyba způsobí na výstupu. Mez musí mít
+  hysterezi a čas návratu (jinak přepínání na hraně) a musí být odvozená ze záznamu skutečného provozu, aby neshazovala
+  smyčku v běžném stavu. Co mez neumí (zde: NMEA nenese TDOP, závislost chyby času na HDOP není změřená), zapiš jako
+  hypotézu s postupem ověření.
+- **Detekce:** `gpsdo` → řádek `kvalita GNSS OK|NESTACI | fix … druzic … HDOP … | poklesu N`; `gpsdo test`;
+  host test `python tests/host/t_gpsdo_ref.py <adresář>` (16 mutací zachyceno).
+- **Stav:** ✅ host test + mutace; ⬜ neověřeno na HW (běžný provoz bez poklesů; pokus se zastíněnou anténou)

@@ -440,6 +440,31 @@ static void gp_pm_update(double e, uint32_t clk_mhz)
 }
 double gpsdo_pm_ns(void) { return s_pm_ns; }
 
+/* ── Kvalita reseni GNSS pro disciplinaci (F-0290; cista logika, testuje gpsdo_selftest) ─────────
+ * Do 2026-11-14 smycka brala 1PPS pri jakemkoli platnem fixu vcetne 2D. Pri spatne geometrii (zastineni, 3-4 druzice) ma cas
+ * prijimace chybu stovek ns, ktera se meni pomalu: mez odlehle hrany (300 ns za sekundu) ji nechyti, smycka ji prevede
+ * na kmitocet a stav zustane LOCK. Brana proto vyzaduje 3D fix, dost pouzitych druzic a nizke HDOP; kdyz podminka padne,
+ * hrany se neprijimaji a smycka prejde do HOLD s duvodem GPSDO_WHY_GNSS.
+ * Meze: datalog 21 h LOCK (2026-11-12/13, antena na strese): druzic 8-12, HDOP 0,7-1,2 -> rezerva 1,6x v poctu druzic
+ * a 2x v HDOP. Hystereze: zpet az pri lepsich hodnotach drzenych GPSDO_GNSS_GOOD_S sekund v rade, jinak by se smycka
+ * na hrane meze prepinala mezi LOCK a HOLD (kazdy navrat kotvi fazi znovu).
+ * NMEA nenese TDOP; HDOP je nahradni ukazatel geometrie. ⬜ HYPOTEZA: zavislost chyby casu na HDOP / poctu druzic
+ * na teto antene neni zmerena (overeni: zastineni anteny pri `gpsdo off`, pasivni fazovy monitor proti HDOP). */
+typedef struct { uint8_t ok, run; } gp_gnss_t;
+
+/* Jeden krok na hranu 1PPS. hdop <= 0 = prijimac HDOP neposlal -> bere se jako spatne. @return 1 = kvalita staci. */
+static int gp_gnss_step(gp_gnss_t *q, int fix3d, unsigned nsat, float hdop)
+{
+    if (q->ok) {
+        if (!fix3d || nsat < GPSDO_GNSS_SAT_BAD || !(hdop > 0.0f) || hdop > GPSDO_GNSS_HDOP_BAD) { q->ok = 0u; q->run = 0u; }
+    } else if (fix3d && nsat >= GPSDO_GNSS_SAT_GOOD && hdop > 0.0f && hdop <= GPSDO_GNSS_HDOP_GOOD) {
+        if (++q->run >= GPSDO_GNSS_GOOD_S) q->ok = 1u;
+    } else {
+        q->run = 0u;
+    }
+    return q->ok;
+}
+
 /* ── Jadro regulatoru (cista logika, testuje gpsdo_selftest) ───────────────────────────────────── */
 typedef struct {
     uint8_t  state;              /* GPSDO_FLL / GPSDO_LOCK (jine stavy resi obal) */
@@ -567,6 +592,9 @@ static volatile uint8_t s_g_kset;              /* uzivatel zadal nove K (prevezm
 static volatile uint32_t s_g_cmd_q16;          /* povel kodu (i virtualni pri emulaci) */
 static volatile uint8_t  s_g_virt;             /* 1 = smycka ridi virtualni DAC emulatoru (`fpgasim`) */
 static uint32_t  s_g_ok, s_g_rej, s_g_gap;
+static gp_gnss_t s_gq;                         /* F-0290: kvalita reseni GNSS (hystereze) */
+static uint32_t  s_g_gnss_drop;                /* kolikrat kvalita klesla pod mez */
+static uint8_t   s_g_blk;                      /* duvod, proc posledni hrana 1PPS nebyla prijata (GPSDO_WHY_NONE = prijata) */
 /* v0.40.1 (STATUS #337b): interval PSEQ 1 -> 2 po startu FPGA (falesna prvni hrana) */
 static uint16_t  s_st_prev_seq = 0x100u;                       /* 0x100 = zadna predchozi udalost */
 static uint8_t   s_st_have1, s_st_have12;
@@ -956,12 +984,17 @@ void gpsdo_tick(void)
         gps_data_t g;
         gps_get(&g);
         int fix = sim || (g.valid && g.fix_mode >= 2);
+        /* F-0290: kvalita reseni GNSS (3D, druzice, HDOP; s hysterezi). Emulator ma 1PPS z modelu, brana se ho netyka. */
+        const uint8_t gq_prev = s_gq.ok;
+        int gq = gp_gnss_step(&s_gq, g.valid && g.fix_mode == 3u, g.num_sat, g.hdop) || sim;
+        if (gq_prev && !s_gq.ok) s_g_gnss_drop++;
         uint8_t why = (!dac_ok && s_g_en) ? GPSDO_WHY_NODAC : p.ref_ext ? GPSDO_WHY_REFEXT : p.clk_bad ? GPSDO_WHY_CLK
-                    : !fix ? GPSDO_WHY_NOFIX : GPSDO_WHY_NONE;
+                    : !fix ? GPSDO_WHY_NOFIX : !gq ? GPSDO_WHY_GNSS : GPSDO_WHY_NONE;
+        s_g_blk = why;
         if (why != GPSDO_WHY_NONE) {
             s_g_have_prev = 0u; s_q_have = 0u; s_e_prev_ok = 0u; s_mon_x = 0.0;
             s_pm_have = 0u;                                    /* audit 2026-10-20: souvislost odhadu sumu */
-            if (s_g_state == GPSDO_WAIT) s_g_why = why;
+            if (s_g_state == GPSDO_WAIT || s_g_state == GPSDO_HOLD) s_g_why = why;   /* HOLD: proc se hrany neprijimaji */
         } else if (!s_g_have_prev || p.fine != s_g_fine_prev || p.epoch != s_g_ep_prev) {
             /* v0.37.0: novy zacatek i pri zmene osy casu 1PPS (jemny <-> hruby, nova epocha PLL ve FPGA): interval pres
              * zmenu osy by nesl posun az ~3 takty (latence + faze PLL) */
@@ -1035,8 +1068,10 @@ void gpsdo_tick(void)
     /* Bez prijateho 1PPS -> holdover (drzi posledni kod). */
     if ((s_g_state == GPSDO_FLL || s_g_state == GPSDO_LOCK) && (uint32_t)(now - s_g_last_ok_ms) > GPSDO_HOLD_MS) {
         s_g_hold_from = s_g_state;
-        g_set_state(GPSDO_HOLD, GPSDO_WHY_NONE);
+        /* duvod = proc posledni hrana nebyla prijata (bez fixu, kvalita GNSS, ...); kdyz hrany nechodi vubec, zadny */
+        g_set_state(GPSDO_HOLD, (have && (uint32_t)(now - p.first_ms) < GPSDO_HOLD_MS) ? s_g_blk : GPSDO_WHY_NONE);
     }
+    if (s_g_state == GPSDO_HOLD && !(have && (uint32_t)(now - p.first_ms) < GPSDO_HOLD_MS)) s_g_why = GPSDO_WHY_NONE;
     if (s_g_en && s_g_state == GPSDO_WAIT && !have) s_g_why = GPSDO_WHY_NOPPS;
 
     /* Vystup pro SensorsTask. DAC se ridi jen v aktivnich stavech; WAIT/OFF ho nechava byt.
@@ -1060,6 +1095,7 @@ void gpsdo_tick(void)
     st.pps_ok = s_g_ok; st.pps_rej = s_g_rej; st.pps_gap = s_g_gap;
     st.saw_var[0] = s_saw_var[0]; st.saw_var[1] = s_saw_var[1]; st.saw_var[2] = s_saw_var[2]; st.saw_n = s_saw_dec;
     st.pm_ns = s_pm_ns;
+    st.gnss_ok = (uint8_t)(s_gq.ok || sim); st.gnss_drop = s_g_gnss_drop;
     st.st_n = s_st_n; st.st_bad = s_st_bad; st.st_dev_us = s_st_dev;
     st.st_first_seq = s_st_first_seq; st.st_first_us = s_st_first_us; st.st_next_us = s_st_next_us;
     taskENTER_CRITICAL(); s_pub = st; taskEXIT_CRITICAL();
@@ -1116,8 +1152,9 @@ const char *gpsdo_why_text(uint8_t why)
 {
     static const char *const t[] = { "", "DAC nenalezen", "FPGA nehlasi 1PPS (FW < 0x0424?)", "GPS bez fixu",
                                      "FPGA na externi referenci", "hodiny FPGA vadne",
-                                     "FLL divergovala (znamenko/velikost K?)", "vypnuto uzivatelem" };
-    return (why < 8u) ? t[why] : "?";
+                                     "FLL divergovala (znamenko/velikost K?)", "vypnuto uzivatelem",
+                                     "GNSS: malo druzic / vysoke HDOP / 2D" };
+    return (why < 9u) ? t[why] : "?";
 }
 
 uint16_t gpsdo_sim_dac_code(void)
@@ -1211,6 +1248,23 @@ int gpsdo_selftest(void)
     (void)st_run(GPSDO_KDAC_DEFAULT, 1.0e-11, 3000u, &la, &ye, &xe, &dv);
     ok = ok && dv;
     ok = ok && st_tau_advise();
+    /* F-0290: brana kvality GNSS. Start = spatna; dobra az po GPSDO_GNSS_GOOD_S hranach v rade; pada hned; hystereze. */
+    {   gp_gnss_t q = { 0u, 0u };
+        for (unsigned i = 0; i + 1u < GPSDO_GNSS_GOOD_S; i++) ok = ok && !gp_gnss_step(&q, 1, 9u, 0.9f);
+        ok = ok && gp_gnss_step(&q, 1, 9u, 0.9f);                                    /* 30. dobra hrana v rade */
+        ok = ok && gp_gnss_step(&q, 1, GPSDO_GNSS_SAT_BAD, GPSDO_GNSS_HDOP_BAD);     /* presne na mezi: jeste drzi */
+        ok = ok && !gp_gnss_step(&q, 1, GPSDO_GNSS_SAT_BAD - 1u, 0.9f);              /* malo druzic: pada hned */
+        for (unsigned i = 0; i < 100u; i++) ok = ok && !gp_gnss_step(&q, 1, GPSDO_GNSS_SAT_BAD, 0.9f);   /* pasmo hystereze: nevrati se */
+        for (unsigned i = 0; i + 2u < GPSDO_GNSS_GOOD_S; i++) (void)gp_gnss_step(&q, 1, 9u, 0.9f);
+        ok = ok && !gp_gnss_step(&q, 1, 9u, 2.2f);                                   /* HDOP nad mezi navratu: pocitani rady zacina znovu */
+        for (unsigned i = 0; i + 1u < GPSDO_GNSS_GOOD_S; i++) ok = ok && !gp_gnss_step(&q, 1, 9u, 0.9f);
+        ok = ok && gp_gnss_step(&q, 1, 9u, 0.9f);
+        ok = ok && !gp_gnss_step(&q, 0, 12u, 0.7f);                                  /* 2D fix */
+        q.ok = 1u;
+        ok = ok && !gp_gnss_step(&q, 1, 12u, 0.0f);                                  /* HDOP neprislo */
+        q.ok = 1u;
+        ok = ok && !gp_gnss_step(&q, 1, 12u, 2.6f);                                  /* HDOP nad mezi */
+    }
     /* Zmerena nejistota reference: syntetika. Drift kodu 0,76 LSB/h (K 3,4e-11) = 0,0258 ppb/h; bily PM ±5 ns (σ 2,9 ns) -> ADEV @ 1000 s ~ 0,005 ppb. */
     {   static int32_t  tx[360];          /* audit 2026-10-20: faze v ps (driv int16 ns) */
         static uint32_t tc[360];

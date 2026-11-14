@@ -1130,6 +1130,17 @@ static void gpsdo_print_status(void)
            (unsigned long)fpga_pps_torn(), (unsigned long)s.fll_win_s,
            (s.saw < 4u) ? sw[s.saw] : "?", gp_round(s.saw_var[0]), gp_round(s.saw_var[1]), gp_round(s.saw_var[2]),
            (unsigned long)s.saw_n);
+    /* Kvalita reseni GNSS pro disciplinaci (F-0290): stav brany a hodnoty, podle kterych rozhoduje. */
+    {   gps_data_t gg;
+        gps_get(&gg);
+        long hd = gp_round((double)gg.hdop * 10.0);
+        const unsigned hb = (unsigned)(GPSDO_GNSS_HDOP_BAD * 10.0f + 0.5f), hg = (unsigned)(GPSDO_GNSS_HDOP_GOOD * 10.0f + 0.5f);
+        printf("GPSDO: kvalita GNSS %s | fix %uD, druzic %u, HDOP %ld.%ld | meze: 3D, druzic >= %u, HDOP <= %u.%u "
+               "(navrat %u / %u.%u po %u s) | poklesu %lu\n",
+               s.gnss_ok ? "OK" : "NESTACI", (unsigned)gg.fix_mode, (unsigned)gg.num_sat, hd / 10, labs(hd) % 10,
+               (unsigned)GPSDO_GNSS_SAT_BAD, hb / 10u, hb % 10u, (unsigned)GPSDO_GNSS_SAT_GOOD, hg / 10u, hg % 10u,
+               (unsigned)GPSDO_GNSS_GOOD_S, (unsigned long)s.gnss_drop);
+    }
     /* Nejistota reference a jeji slozky (F-0291): ADEV faze, sklon faze za poslednich tau, drift kodu, udaj pred vstupem do stavu.
      * Hodnoty v 1e-12 (ppt); "--" = nezmereno. */
     {   gpsdo_ref_parts_t rp;
