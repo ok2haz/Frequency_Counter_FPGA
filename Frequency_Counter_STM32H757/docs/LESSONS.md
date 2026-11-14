@@ -6318,3 +6318,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   do komentáře celou.
 - **Detekce:** `python tests/host/t_gpsdo_ref.py <adresář>` → `mp_selftest: PASS`; na desce `selftest` → 16/16.
 - **Stav:** ✅ na desce po resetu 16/16
+
+### L-0281 — Údaj „před vstupem do LOCK“ je po vstupu zastaralý a první minuty LOCK jsou bez měření
+
+- **Datum:** 2026-11-14
+- **Oblast:** `mp_ref_ppb` (LOCK bez ADEV), `gp_ref_core` (sklon fáze), F-0294
+- **Symptom:** test dosedání po rozladění kódu o +20 LSB (`relock_f0291.csv`): prvních 5 min LOCK udávalo 0,074 ppb,
+  ale fáze ujížděla ~0,12 ppb (0 → +15 ns za 2 min). Údaj byl 1,5–2× optimistický.
+- **Příčina:** do první změřené ADEV (od 30 bodů = 5 min) platila hodnota z posledního okna FLL, které dosednutí po
+  vstupu nevidí. Sklon fáze se přitom měřil až od stejných 30 bodů.
+- **Oprava (v0.45.18):** sklon fáze se měří už od 12 bodů (110 s, šum ~0,03 ppb) a bez ADEV platí větší z údaje před
+  vstupem a sklonu (jen dolní mez, výsledek zůstává „odhad“). S ADEV beze změny.
+- **Pravidlo:** údaj převzatý z předchozího stavu platí jen do prvního měření v novém stavu; nejkratší okno měření
+  vol podle šumu, ne podle délky jiného odhadu, který ho původně určil.
+- **Detekce:** `gpsdo` → „sklon fáze“ v prvních minutách LOCK; host test `t_gpsdo_ref.py`, `mp_selftest`.
+- **Stav:** ✅ host test, překlad; ⬜ neověřeno na HW (opakovat rozladění po flashi)
