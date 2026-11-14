@@ -3,7 +3,9 @@
 > Aktualizuj **na začátku a na konci každého sezení**. Tenhle soubor je jediný
 > zdroj pravdy o tom, co je hotové — kontext CLI sezení se nepřenáší.
 
-**Poslední aktualizace:** 2026-10-24 (večer) - **FPGA v3 FW 0x0507: externí optimalizace integrována (13 patchů), N1/N2 opraveny (`d37ed5c`, `a3f2853`), úzká hlavička + opravy časování ze statistiky 8 sestavení (`tools/pnr_seeds.py`, L-0233) -> ŘÁDNÝ bitstream `ab_test/FW_0x0507_v3_20261024-1551_7fadfec.fs` (CLS 85 %, setup +0,012 ns), `build.sh` vybírá funkční Python (`20e1458`).** STATUS #338, #339; audit `docs/audit/2026-10-24_fw0507-casovani.md`. ⬜ neověřeno na HW, ⬜ stopa a mutace nad finálním RTL.
+**Poslední aktualizace:** 2026-11-14 (odpoledne) - **přezkum v0.45.18 (F-0294) a v0.45.19 (menu UI): verdikt funkční, 2 nálezy S4 (F-0295 zastaralé komentáře/dokumentace, F-0296 mutační test nekryje větev F-0294), F5 neproběhla.** Zápis [`audit/2026-11-14_fixreview-v0.45.18-19.md`](audit/2026-11-14_fixreview-v0.45.18-19.md). F-0294 ověřeno na desce po power-cyklu; v0.45.19 (menu) ⬜ neověřeno na HW.
+
+**Předtím:** 2026-10-24 (večer) - **FPGA v3 FW 0x0507: externí optimalizace integrována (13 patchů), N1/N2 opraveny (`d37ed5c`, `a3f2853`), úzká hlavička + opravy časování ze statistiky 8 sestavení (`tools/pnr_seeds.py`, L-0233) -> ŘÁDNÝ bitstream `ab_test/FW_0x0507_v3_20261024-1551_7fadfec.fs` (CLS 85 %, setup +0,012 ns), `build.sh` vybírá funkční Python (`20e1458`).** STATUS #338, #339; audit `docs/audit/2026-10-24_fw0507-casovani.md`. ⬜ neověřeno na HW, ⬜ stopa a mutace nad finálním RTL.
 
 Předtím 2026-10-24 - **FPGA v3 0x0506 commitnuto (`c07bd23`), test 1PPS z externí instance (`0e2485e`, nálezy N1/N2), STM v0.40.0 úzká hlavička (`bf71399`, tag), host test opraven (`456dcd2`).**
 Rozhodnutí uživatele (strom rozhodnutí 2026-10-24): N1 maska `wn`, N2 H1, opravy jako samostatné commity (do `src/` po doběhnutí mutací `tb_top_v3`), úplné ověření (8× `topv3*`, P&R, deska), STM část 0x0507 hned / FPGA část až po externí optimalizaci, zkušební bitstream s výjimkou CLS 90 %, bez push. Stav a TODO: `../STATUS.md` #334..#337. Lekce L-0225..L-0227. ⬜ nic z toho neověřeno na HW.
