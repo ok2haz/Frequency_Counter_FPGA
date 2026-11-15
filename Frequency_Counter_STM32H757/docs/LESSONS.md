@@ -6360,3 +6360,14 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   testem, ne mutací. Kotva, která se nenašla, je hlášena (skript to dělá) – nepřecházet.
 - **Detekce:** `CC="<zig cc>" python -I tests/host/mut_ref.py <adresář>` → „vsechny mutace zachyceny“.
 - **Stav:** ✅ host + překlad; ⬜ neověřeno na HW (selftest na desce až po nahrání)
+
+### L-0284 — Partial redraw velkého čísla musí zahrnout i předchozí segment, když kreslí glow mimo dirty rect
+
+- **Datum:** 2026-11-15
+- **Oblast:** `CM7/app/screens/screen_main.c` `screen_main_redraw_freq` (hlášení uživatele: za běhu RUN překrývá obdélník pozadí jednu číslici za desetinnou čárkou)
+- **Symptom:** občas světlejší obdélník přes číslici za desetinnou čárkou (podtržená, poslední důvěryhodná).
+- **Příčina (HYPOTÉZA, na displeji neviděno):** clear začínal na `x0-2` změněného segmentu. Podtržení je `prim_glow_line` (šířka záře 6 px), kreslené přes `prim_internal_blend_px`, tedy mimo dirty rect a o ~6 px širší než číslice. Clear useknul záři předchozího segmentu a při změně podtržené číslice se záře vlevo přičítala snímek po snímku.
+- **Oprava:** `if (from > 0) from--;` — vždy se překreslí i předchozí segment. Cena jedna číslice na snímek.
+- **Pravidlo:** u partial redraw, kde clear začíná uvnitř sousedního prvku a ten kreslí efekt přesahující jeho okraj, musí překreslení zahrnout souseda.
+- **Detekce:** po nahrání `fbdiff` + pohled na displej při RUN (podtržená číslice a okolí); při návratu vady podezřívat změnu geometrie (`s_seg_x`) a ne DMA2D (chyby 0).
+- **Stav:** ✅ překlad (0 varování, audit 97 OK / 0 selhání / 2 s varováním), změna v obrazu (`subs r4,#1` ve `screen_main_redraw_freq`); ⬜ neověřeno na HW
