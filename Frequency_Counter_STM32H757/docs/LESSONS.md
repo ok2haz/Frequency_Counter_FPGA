@@ -6416,3 +6416,17 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** po nahrání bitstreamu vždy ověřit `FPGA BUILD` proti očekávanému sestavení, než se začne měřit.
 - **Detekce:** `status` → `FPGA BUILD: <čas>`; `programmer_cli --scan-cables`.
 - **Stav:** ✅ (postup)
+
+### L-0288 — „Skok“ v řadě intervalů posuzovat proti místnímu trendu, ne proti sousedovi
+
+- **Datum:** 2026-11-15
+- **Oblast:** rozbor t393 (celistvost A→B, APP_DIV)
+- **Symptom:** rozbor hlásil u APP_DIV 187 skoků o ±10 ns a závěr „APP_DIV rozbíjí A→B“ šel do deníku i STATUS.
+- **Příčina:** interval mezi dvěma nezávislými zdroji na začátku běhu ujížděl o −9,7 ns na vzorek; prostý rozdíl sousedů
+  > 2 ns to počítal jako skoky a překlopení přes 0/100 ns se změnou −9,7 ns (= +90,3 ns) filtr ±5 ns kolem 100 ns minul.
+- **Oprava:** odchylka od mediánu změn v bloku (`t393_drift.py`) → APP_DIV i APP_OSC 0 odchylek; deník a STATUS opraveny
+  (`b01f2d4`).
+- **Pravidlo:** u řady, která sama ujíždí, hledat skoky jako odchylku od místního trendu a překlopení přes periodu
+  rozpoznávat s tolerancí na ujíždění; před závěrem „vada“ si vypsat surové úseky kolem nalezených skoků.
+- **Detekce:** výpis úseků kolem skoků (`t393_ukaz.py`) — pravidelný krok stejné velikosti = ujíždění, ne vada.
+- **Stav:** ✅ (postup)
