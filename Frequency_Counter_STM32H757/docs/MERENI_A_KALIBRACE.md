@@ -1763,3 +1763,21 @@ Zaznam `gpsdo` po 60 s (`relock_0457.csv`, 100 radku), pak power-cyklus uzivatel
 - **Drift a prochazka kodu** se objevi az po 30 min / 1 h LOCK: drift 157 -> 37 ppt/h (kolisa se zacatkem useku), prochazka 69 -> 54 ppt/sqrt(h) (v rade 0,047-0,068 z nocnich dat, sedi).
 - **Brana GNSS:** po celou dobu OK (3D, 12 druzic, HDOP 0,7), 0 poklesu.
 - **Po power-cyklu (cold start):** SELFTEST 16/16, `gpsdo test` PASS, DAC obnoven z flash (kod 24979 -> 24982), FLL po 96 s, brana GNSS OK (po startu 15 s "GPS bez fixu" a NESTACI, pak 3D/12 druzic), FPGA FW 0x050A CAPS 0x01DF7C32 beze zmeny, TDC kalibrace OK, rezerva retezu A 8,5 % / B 10,4 %, 0 mezer, bubliny 0, CM4 alive, ETH/SCPI/HTTP OK. Varovani TEPLOTA NEUSTALENA je ocekavane po studenem startu.
+
+### 2026-11-14 20:00 -> 11-15 06:33 — holdover 2 h po odpojeni GPS a navrat do LOCK, noc 8 h (v0.45.19, FW 0x050A)
+
+Zaznam `gpsdo` 1x / 2 min pres UART (`holdover.log` 60 radku, `noc.log` 238 radku; skripty ve scratchpadu sezeni).
+
+- **Holdover 2 h (GPS odpojena, 7240 s):** stav HOLD ve vsech 60 vzorcich, kod DAC 24971,63 beze zmeny. Nejistota reference roste
+  0,100 -> 0,184 ppb (~0,04 ppb/h, model drift kodu 22 ppt/h + prochazka 75 ppt/sqrt(h)). Zobrazene y (-1,487 ppb) je udaj
+  z okamziku vstupu do HOLD, ne mereni; skutecny drift z nej nejde vycist.
+- **Navrat po pripojeni GPS:** brana GNSS (3D, 10 druzic, HDOP 0,9) -> HOLD -> LOCK za ~2 min (prvni LOCK 22:30:56). Fazova odchylka
+  po 2 h bez GPS +14 ns (tj. skutecny drift OCXO radu 1e-12 za holdover), kod 24971,63 -> 24971,05.
+- **Noc v LOCK (po prvnich 2 h):** y prumer -0,004 ppb, sm. odchylka 0,040 ppb; TIE -21 .. +10 ns (sm. odchylka 5,8 ns); kod DAC
+  24969,1 .. 24973,7, drift kodu ~+0,63 LSB/h (~21 ppt/h pri K 3,4e-11, shodne s modelem); zadny vypadek zamceni.
+  HDEV faze: 135 ps @ 10 s, 10 ps @ 1000 s (`tau min.` 100 s, nastaveno 1000 s).
+- **Omezeni:** neni zmereno skutecne tempco ani stari na dnech (jedna noc, 0,6 LSB/h je v ramci nelinearity DAC, viz F-0293).
+- **Pripravene testy (neprovedene):** F-0286 teplotni test `tools/f0286_tepl_log.ps1` (jen cteni UART: bubliny okna, vadne segmenty,
+  rezerva retezu TDC, teploty; faze ZAKLAD/TEPLO/CHLAZENI, ohrev FPGA desky o 15-20 C, strop 60 C na cidle 0x4A);
+  F-0293 mereni lokalni strmosti DAC `tools/f0293_k_kroky.ps1` + `tools/f0293_vyhodnot.py` (kroky +-1,2,4,8 LSB proti zakladnimu kodu,
+  25 min faze, ~7 h; ZAPISUJE kod DAC a vypina smycku, na konci vzdy `gpsdo on`). Vyhodnoceni overeno jen na syntetickych datech.
