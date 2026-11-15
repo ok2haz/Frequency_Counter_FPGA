@@ -4260,6 +4260,11 @@ int screen_main_redraw_freq(void)
     for (int i = 0; i < s_num.segment_count; i++)
         if (strcmp(s_num_buf[i], s_num_prev[i]) != 0) { from = i; break; }
     if (from < 0) return 0;                          /* nic se nezmenilo -> neflipovat */
+    /* Podtrzeni posledni duveryhodne cislice je glow cara sirsi nez cislice (sahá o ~6 px na obe strany) a jde
+     * pres prim_internal_blend_px, tedy mimo dirty rect. Clear zacina na x0-2, takze by useknul zari predchoziho
+     * segmentu a pri zmene podtrzene cislice by se zare vlevo pricitala snimek po snimku. Proto se vzdy
+     * prekresli i predchozi segment (jedna cislice navic na snimek). */
+    if (from > 0) from--;
 
     int16_t x0 = s_seg_x[from];                      /* cachovana geometrie (num_build) */
     /* Obnov pozadi od x0 doprava (po pravy okraj cisla vc. jednotky) a prekresli
