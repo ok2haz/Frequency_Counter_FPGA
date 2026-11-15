@@ -67,6 +67,10 @@
  * (SET_CONFIG 0x02 p1 bit3). Signal na vstupu musi byt nesoudelny se 100 MHz (faze hran rozlozena v taktu rovnomerne,
  * napr. generator 11 603 104 Hz); zdroj posledni nebo bezici kalibrace kanalu hlasi bajt 51 bit2 (A) a bit3 (B). */
 #define FPGA_V3_CAP_CALPIN     (1u << 24)
+/* v0.45.20 (FW 0x050B, STATUS #382, t390): SET_CONFIG 0x07 hodnota 7 = kanal VYPNUT (retez TDC bez hran, sonda bezi dal).
+ * Spinani retezu nemereneho kanalu zpozduje znacky mereneho o ~260 ps rms i pri P 16. Starsi FPGA 7 orizne na P 16. */
+#define FPGA_V3_CAP_CHOFF      (1u << 25)
+#define FPGA_V3_PRESC_OFF      7u           /* log2 P 7 = kanal vypnut (jen s CAPS bit25) */
 #define FPGA_V3_CAL_START      0x01u        /* SET_CONFIG 0x02 p1 bit0: start sberu histogramu (bity 2:1 = maska kanalu) */
 #define FPGA_V3_CAL_PIN        0x08u        /* SET_CONFIG 0x02 p1 bit3: zdroj = vstupni pin (CAPS bit24) */
 #define FPGA_V3_CALW_PIN(ch)   ((uint8_t)(0x04u << ((ch) & 1u)))   /* bajt 51: kalibrace kanalu je / byla ze vstupniho pinu */

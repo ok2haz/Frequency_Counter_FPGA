@@ -1193,6 +1193,12 @@ static uint32_t s3_pr_sw[2];
 static volatile uint8_t  s3_pr_guard = 1u;
 static volatile uint32_t s3_pr_hold_until = 0u;
 static uint32_t s3_pr_guard_n[2];
+/* v0.45.20 (STATUS #382, t390): s FPGA FW 0x050B (CAPS bit25) se nemereny kanal VYPNE (P 7: retez TDC bez hran),
+ * ne jen P 16 -- t390: B na jinem kmitoctu zvedal sum znacek A z ~120 na 290-355 ps i pri P 16. Jen pri jednokanalovem
+ * mereni: oba kanaly zustanou pri blokaci ochrany (udalosti, parovani A-B, kalibrace, pozdrzeni) a pri pozadavku UI
+ * (okno DVOJKANAL, funkce A-B: `fpga_freq_dual_req`). Starsi FPGA dal P 16. */
+static volatile uint8_t  s3_dual_req = 0u;
+static uint32_t s3_pr_off_n[2];
 static bool s3_cfg_any(uint8_t id, uint8_t v1, uint8_t v2);
 static void s3_range_ctl(const fpga_v3_hdr_t *h);
 
@@ -3198,11 +3204,15 @@ static void s3_range_ctl(const fpga_v3_hdr_t *h)
     const uint8_t gblock = (uint8_t)(!s3_pr_guard || s3e_on || s3e_pair != FPGA_EVP_OFF || s_lin_meas ||
                                      ((h->tdc_status[0] | h->tdc_status[1]) & 4u) ||
                                      (int32_t)(s3_pr_hold_until - HAL_GetTick()) > 0);
+    const uint8_t choff = (uint8_t)((h->caps & FPGA_V3_CAP_CHOFF) && !gblock && !s3_dual_req);
     for (uint8_t ch = 0u; ch < 2u; ch++) {
         const uint8_t cur = (uint8_t)(h->presc[ch] & 0x07u);
         if (h->presc[ch] & FPGA_V3_PRESC_PEND) { s3_pr_cand[ch] = 0xFFu; continue; }
         uint8_t want = (s3_pr_mode[ch] != 0xFFu) ? s3_pr_mode[ch] : fpga_v3_range_probe(cur, h->probe[ch]);
-        if (s3_pr_mode[ch] == 0xFFu && !gblock && ch != (s3_chan & 1u) && want < S3_GUARD_LOG2) {
+        if (choff && s3_pr_mode[ch] == 0xFFu && ch != (s3_chan & 1u)) {
+            want = FPGA_V3_PRESC_OFF;                   /* v0.45.20: nemereny kanal vypnout (sonda bezi dal) */
+            if (cur != FPGA_V3_PRESC_OFF && s3_pr_cand[ch] == FPGA_V3_PRESC_OFF) s3_pr_off_n[ch]++;
+        } else if (s3_pr_mode[ch] == 0xFFu && !gblock && ch != (s3_chan & 1u) && want < S3_GUARD_LOG2) {
             const double hz = FPGA_V3_PROBE_HZ(h->probe[ch]);
             if (hz >= ((cur >= S3_GUARD_LOG2) ? S3_GUARD_OFF_HZ : S3_GUARD_ON_HZ)) {
                 want = S3_GUARD_LOG2;
@@ -3228,6 +3238,12 @@ void fpga_freq_presc_guard(uint8_t on)
 {
     s3_pr_guard = (uint8_t)(on ? 1u : 0u);
     s3_pr_cand[0] = s3_pr_cand[1] = 0xFFu;
+}
+
+void fpga_freq_dual_req(uint8_t on)
+{
+    const uint8_t v = (uint8_t)(on ? 1u : 0u);
+    if (v != s3_dual_req) { s3_dual_req = v; s3_pr_cand[0] = s3_pr_cand[1] = 0xFFu; }
 }
 
 void fpga_freq_presc_guard_hold(uint32_t ms)
@@ -3775,6 +3791,7 @@ void fpga_freq_v3_info(fpga_v3_info_t *o)
     o->k = s3_grp.k_target; o->seg_ms = s3_grp.seg_ms; o->chan = s3_chan; o->expect = s3_link.expect;
     o->pr_mode[0] = s3_pr_mode[0]; o->pr_mode[1] = s3_pr_mode[1]; o->pr_sw[0] = s3_pr_sw[0]; o->pr_sw[1] = s3_pr_sw[1];
     o->pr_guard = s3_pr_guard; o->pr_guard_n[0] = s3_pr_guard_n[0]; o->pr_guard_n[1] = s3_pr_guard_n[1];
+    o->pr_dual = s3_dual_req; o->pr_off_n[0] = s3_pr_off_n[0]; o->pr_off_n[1] = s3_pr_off_n[1];
     if (s3_h_ok) {
         o->fw = s3_h.fw_version; o->caps = s3_h.caps; o->rec_head = s3_h.rec_head; o->rec_first = s3_h.rec_first;
         o->ring_fill = s3_h.ring_fill; o->rx_crc_err = s3_h.rx_crc_err; o->rx_len_err = s3_h.rx_len_err;

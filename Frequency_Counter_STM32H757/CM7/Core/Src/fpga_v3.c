@@ -276,7 +276,8 @@ void fpga_v3_emu_segment(fpga_v3_emu_t *e)
         if (e->p_req[c] != e->p_log2[c]) { e->p_log2[c] = e->p_req[c]; e->p_inv[c] = 2u; r.flags |= FPGA_V3_R_PRESC; }
         r.seg_idx = (uint16_t)e->seg_idx; r.ch = (uint8_t)(c | (e->p_log2[c] << 4));   /* v0.38.0: log2 P v CH 6:4 */
         if (e->p_inv[c]) { e->p_inv[c]--; r.flags |= FPGA_V3_R_INVALID; }
-        const double f = e->f_hz[c] / (double)(1u << e->p_log2[c]);   /* delene hrany */
+        /* delene hrany; v0.45.20 (FW 0x050B): P 7 = kanal vypnut -> retez bez hran, zaznam s n = 0 */
+        const double f = (e->p_log2[c] == FPGA_V3_PRESC_OFF) ? 0.0 : e->f_hz[c] / (double)(1u << e->p_log2[c]);
         if (f > 0.0) {
             const double p = 1.0 / f, t = e->t_next[c];
             uint32_t N = (t < L) ? (uint32_t)ceil((L - t) / p) : 0u;
@@ -328,7 +329,7 @@ void fpga_v3_emu_frame(fpga_v3_emu_t *e, uint8_t *f)
     wrn(f + 8, FPGA_V3_LEN, 2); f[10] = (uint8_t)FPGA_V3_NBLK;
     wrn(f + 20, e->narrow ? 0x0507u : 0x0500u, 2);                   /* FW emulatoru */
     f[22] = (uint8_t)e->clk_mhz; f[23] = (uint8_t)e->seg_ms;
-    wrn(f + 24, (1ull << 16) | FPGA_V3_CAP_PRESC | (e->narrow ? FPGA_V3_CAP_NARROW : 0u), 4);   /* bit16 v3, bit18 predelicka */
+    wrn(f + 24, (1ull << 16) | FPGA_V3_CAP_PRESC | FPGA_V3_CAP_CHOFF | (e->narrow ? FPGA_V3_CAP_NARROW : 0u), 4);   /* bit16 v3, bit18 predelicka, bit25 vypnuti kanalu */
     for (int c = 0; c < 2; c++) {                                    /* v0.38.0: PRESC, sonda /16 za 1 ms */
         f[64 + c] = (uint8_t)(e->p_log2[c] | ((e->p_req[c] != e->p_log2[c]) ? FPGA_V3_PRESC_PEND : 0u));
         const double pr = e->f_hz[c] > 0.0 ? e->f_hz[c] / 16000.0 : 0.0;
@@ -365,7 +366,8 @@ void fpga_v3_emu_rx(fpga_v3_emu_t *e, const uint8_t *f)
         }
     }
     if (f[2] == FPGA_V3_T_SETCFG && f[12] == FPGA_V3_CFG_PRESC)       /* v0.38.0: predelicka od dalsiho segmentu */
-        e->p_req[f[13] & 1u] = (f[14] > FPGA_V3_RANGE_MAXLOG2) ? (uint8_t)FPGA_V3_RANGE_MAXLOG2 : f[14];
+        e->p_req[f[13] & 1u] = (f[14] == FPGA_V3_PRESC_OFF) ? (uint8_t)FPGA_V3_PRESC_OFF     /* FW 0x050B: vypnut */
+                             : (f[14] > FPGA_V3_RANGE_MAXLOG2) ? (uint8_t)FPGA_V3_RANGE_MAXLOG2 : f[14];
 }
 
 /* ══════════════ prijem zaznamu (STM) ══════════════ */
@@ -1172,6 +1174,24 @@ bool fpga_v3_selftest(void)
     fpga_v3_grp_init(&s_g, 10u);
     nw = st_run(100u, -1, 12345678.9, &r2, &rl, &gaps);
     V3OK((nw >= 8u) && (r2 < 2e-9) && (rl < 2e-9) && (gaps == 0u));
+
+    /* 5b) v0.45.20 (FW 0x050B, STATUS #382): P 7 = kanal B vypnut -> jeho zaznamy bez hran (n = 0, P 7 v CH 6:4),
+     *     hodnota 7 se neorizne na P 16, kanal A meri dal beze zmeny */
+    fpga_v3_emu_init(&s_e, 10e6, 5e6, 0.0, 3u);
+    fpga_v3_build_cfg(s_m, 5u, FPGA_V3_CFG_PRESC, 1u, FPGA_V3_PRESC_OFF);
+    fpga_v3_emu_rx(&s_e, s_m);
+    V3OK((s_e.p_req[1] == FPGA_V3_PRESC_OFF) && (s_e.p_req[0] == 0u));
+    fpga_v3_grp_init(&s_g, 10u);
+    nw = st_run(60u, -1, 10e6, &r2, &rl, &gaps);
+    V3OK((nw >= 4u) && (r2 < 1e-11) && (gaps == 0u));
+    {
+        uint32_t nb = 0, boff = 0;
+        for (uint32_t i = 1; i <= 8u; i++) {
+            const fpga_v3_rec_t *r = &s_e.ring[(s_e.rec_head - i) % FPGA_V3_EMU_RING];
+            if (r->ch & 1u) { nb++; if (r->n == 0u && FPGA_V3_REC_PLOG2(r) == FPGA_V3_PRESC_OFF) boff++; }
+        }
+        V3OK((nb == 4u) && (boff == 4u));
+    }
 
     /* 6) vadny blok 2 v ramci c. 3: zaznamy bloku 2-3 se nepotvrdi a prijdou znovu -> zadna mezera, okna dal */
     fpga_v3_emu_init(&s_e, 5e6, 0.0, 0.0, 3u);

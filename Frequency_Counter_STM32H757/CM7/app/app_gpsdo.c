@@ -8836,6 +8836,12 @@ void app_gpsdo_tick(void)
 {
     survey_accumulate();   /* self-survey (#53) bezi na pozadi i mimo okno */
     g_vbat_fast = (s_view == 15 || s_view == 40) ? 1u : 0u;   /* VBAT 1x/s jen dokud je otevrena Kalibrace/pruvodce (STATUS #322) */
+    {   /* v0.45.20 (STATUS #382, t390): oba kanaly jen kdyz je UI potrebuje (okno DVOJKANAL, funkce A-B);
+         * jinak FPGA s CAPS bit25 nemereny kanal vypne -- jeho retez TDC jinak zvysuje sum znacek mereneho kanalu. */
+        const int fx = screen_main_mode();
+        fpga_freq_dual_req((uint8_t)(s_view == 46 || fx == SM_FX_TI || fx == SM_FX_PHASE || fx == SM_FX_RATIO ||
+                                     fx == SM_FX_PW || fx == SM_FX_DUTY));
+    }
     if (s_view == 1) app_gpsdo_render_diag();     /* live refresh of diagnostics */
     else if (s_view == 2) app_gpsdo_render_gps();     /* live refresh of GPS/GNSS okna */
     else if (s_view == 3) app_gpsdo_render_health();  /* live refresh of system health */

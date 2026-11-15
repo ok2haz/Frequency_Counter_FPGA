@@ -3114,13 +3114,20 @@ void UartTask_run(void *argument)
 				         (vi.pps_status & FPGA_V3_PPS_ST_LOCK) ? "bezi" : "STOJI", (unsigned)FPGA_V3_PPS_EPOCH(vi.pps_status),
 				         (int)vi.pps_d, (vi.pps_status & FPGA_V3_PPS_ST_NOFINE) ? ", posledni hrana BEZ jemneho casu" : "",
 				         (vi.caps & FPGA_V3_CAP_PPS_IDES) ? "ano" : "ne");
-				  for (int c = 0; c < 2; c++)
-					  printf("  predelicka %c: 1/%u%s (%s), sonda %lu kHz, prepnuti %lu (CAPS bit18 %s)\n", c ? 'B' : 'A',
-					         1u << (vi.presc[c] & 7u), (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
+				  for (int c = 0; c < 2; c++) {
+					  char pb[12];   /* v0.45.20: P 7 = kanal vypnut (FW 0x050B) */
+					  if ((vi.presc[c] & 7u) == FPGA_V3_PRESC_OFF) snprintf(pb, sizeof pb, "VYP");
+					  else snprintf(pb, sizeof pb, "1/%u", 1u << (vi.presc[c] & 7u));
+					  printf("  predelicka %c: %s%s (%s), sonda %lu kHz, prepnuti %lu (CAPS bit18 %s)\n", c ? 'B' : 'A',
+					         pb, (vi.presc[c] & FPGA_V3_PRESC_PEND) ? " -> ceka na segment" : "",
 					         vi.pr_mode[c] == 0xFFu ? "auto" : "pevne", (unsigned long)vi.probe[c] * 16ul,   /* bez %f (nano.specs, F-0276) */
 					         (unsigned long)vi.pr_sw[c], (vi.caps & FPGA_V3_CAP_PRESC) ? "ano" : "ne");
+				  }
 				  printf("  ochrana proti presluchu (`fpga presc guard on|off`): %s, P 16 nastaveno A %lu x, B %lu x\n",
 				         vi.pr_guard ? "ZAP" : "VYP", (unsigned long)vi.pr_guard_n[0], (unsigned long)vi.pr_guard_n[1]);
+				  printf("  nemereny kanal VYPNUT (P 7, CAPS bit25 %s): A %lu x, B %lu x | oba kanaly vyzaduje UI: %s\n",
+				         (vi.caps & FPGA_V3_CAP_CHOFF) ? "ano" : "ne -> jen P 16",
+				         (unsigned long)vi.pr_off_n[0], (unsigned long)vi.pr_off_n[1], vi.pr_dual ? "ano" : "ne");
 				  printf("  PSRAM: %s, latence zapisu %u B, faze cteni %u, posledni hluboky zaznam %lu znacek%s (CAPS bit21 %s)\n",
 				         (vi.deep_st & FPGA_V3_DS_RDY) ? "pripravena" : (vi.deep_st & FPGA_V3_DS_BAD) ? "KALIBRACE SELHALA" : "neni",
 				         (unsigned)(FPGA_V3_PS_W0 + (vi.deep_wsel & 0x1Fu)), (unsigned)((vi.deep_wsel >> 5) & 1u),
