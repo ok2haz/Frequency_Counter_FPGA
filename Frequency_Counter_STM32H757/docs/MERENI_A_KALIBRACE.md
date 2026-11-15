@@ -1851,13 +1851,18 @@ aplikace/SPI z deleni 100 MHz / 10 uvnitr FPGA, pevna faze; setup +0,331 ns, 7/8
 
 | | APP_OSC 0x050B | APP_DIV |
 |---|---|---|
-| sousednich dvojic se skokem > 2 ns (mimo preklopeni 0/100 ns) | **1 z 693** (-2,1 ns) | **187 z 693** |
-| velikost skoku | -- | **+-10 ns = 1 perioda taktu**, v usecich (interval preskoci a chvili drzi) |
+| odchylek od mistniho trendu > 2 ns (bloky 64 intervalu po 10 s) | 0 | 0 v blocich 2-10; v blocich 0-1 nehodnotitelne |
+| rozptyl kolem mistniho trendu | 0,15-0,35 ns | 0,19-0,33 ns |
+| rychlost ujizdeni intervalu | -1,5 .. +0,5 ns/vzorek | -9,7 / -3,4 ns/vzorek v prvnich 20 s, pak +-0,7 ns |
 
-- **APP_DIV rozbiji A->B** stejnou tridou vady jako non-APP_OSC v t386/t387 (tam skoky ~100 ns behem SPI/CS). Skoky
-  nezavisi na fazi startu A; stop B stal na 318 promile periody.
-- Zaver pro #369: na fazi domeny aplikace vuci 100 MHz zalezi -- domena koherentni se 100 MHz (pevna faze) rozbiji
-  celistvost znacek, asynchronni (APP_OSC) ne. HYPOTEZA mechanismu: spinani aplikace v pevne fazi soustavne trefuje okraj
-  casovani TDC (F-0286: `ld` po LW s optimistickou STA) -> hruby/jemny cas o takt vedle. Overeni: APP_DIV + rozlozene `ld`.
+- 🔴 **OPRAVA 2026-11-15 20:05:** prvni rozbor (pocet skoku > 2 ns mezi sousednimi intervaly) hlasil u APP_DIV 187 skoku
+  o +-10 ns a zaver „APP_DIV rozbiji A->B“ (commit `235643c`). **Byl to artefakt rozboru:** na zacatku behu interval
+  ujizdel o -9,7 ns na vzorek (kolisani externiho GPSDO nebo dosedani generatoru po `gen 4`), krok -9,7 ns vypadal
+  jako skok o periodu a preklopeni pres 0/100 ns (+90 ns) filtr preklopeni (+-5 ns kolem 100 ns) nepoznal. Po odecteni
+  mistniho trendu (`t393_drift.py`) je APP_DIV stejny jako APP_OSC.
+- Zaver pro #369: v tomto 120s testu **APP_DIV A->B nerozbiji** (na rozdil od non-APP_OSC s 10 MHz z pinu v t386/t387,
+  kde byly skoky ~100 ns zjevne) -- podporuje HYPOTEZU, ze vadu t386/t387 delalo krizeni domen s 10 MHz z pinu
+  (koherentni, ale nezname faze), ne koherence sama. **Sum znacky ale APP_DIV nesnizil** (t392), takze nahodna zpozdeni
+  znacek nedela (jen) asynchronni domena aplikace. Test ma omezenou silu (120 s, externi zdroj s velkym putovanim).
 - Vedlejsi: SPI ERR pribyly serie po 54 MAGIC/VER pri kazdem nahrani SRAM (ocekavane) a jedna serie 18:46-18:49 bez
   zjistene priciny; `spike-reject` (obri bin) 0 -> 30 oken behem pokusu s prepinanim generatoru.
