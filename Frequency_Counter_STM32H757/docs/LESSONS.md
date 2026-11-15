@@ -6413,7 +6413,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   středníkem** (dělí je jen `tools/uartq.ps1`), takže `c('fpga pw off;fpga ev off')` v Python skriptu neudělal nic.
 - **Oprava:** `--cable-index 1`, výstup programátoru se kontroluje na „Error“ a po nahrání se ověří **identita sestavení**
   (`status` → `FPGA BUILD` = BLD_TIME seedu), ne jen FW; příkazy posílat jednotlivě.
-- **Pravidlo:** po nahrání bitstreamu vždy ověřit `FPGA BUILD` proti očekávanému sestavení, než se začne měřit.
+- **Pravidlo:** po nahrání bitstreamu vždy ověřit `FPGA BUILD` **a** `FPGA FW` proti očekávanému sestavení, než se začne měřit — sestavení se stejným seedem (`appOsc@6` 0x050A a `chOffB@6` 0x050B) mají STEJNÝ `FPGA BUILD` (syntetický BLD_TIME seedu), liší se jen FW.
 - **Detekce:** `status` → `FPGA BUILD: <čas>`; `programmer_cli --scan-cables`.
 - **Stav:** ✅ (postup)
 
