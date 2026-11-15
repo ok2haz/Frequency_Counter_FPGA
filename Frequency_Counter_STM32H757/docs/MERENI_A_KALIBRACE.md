@@ -1781,3 +1781,35 @@ Zaznam `gpsdo` 1x / 2 min pres UART (`holdover.log` 60 radku, `noc.log` 238 radk
   rezerva retezu TDC, teploty; faze ZAKLAD/TEPLO/CHLAZENI, ohrev FPGA desky o 15-20 C, strop 60 C na cidle 0x4A);
   F-0293 mereni lokalni strmosti DAC `tools/f0293_k_kroky.ps1` + `tools/f0293_vyhodnot.py` (kroky +-1,2,4,8 LSB proti zakladnimu kodu,
   25 min faze, ~7 h; ZAPISUJE kod DAC a vypina smycku, na konci vzdy `gpsdo on`). Vyhodnoceni overeno jen na syntetickych datech.
+
+### 2026-11-15 13:03 -> 14:35 — t390: sum znacky TDC za behu (`TDC SUM ZNACKY`) proti kmitoctu, preddelicce a presluchu z B (v0.45.19, FW 0x050A appOscS6)
+
+Generator Si5356 CLK2 -> A (nekoherentni kmitocty), CLK4 -> B. Kazdy krok 135-150 s, pak `freq;fpga v3;status full`
+(odhad ma exponencialni zapominani ~50 s, zbytek predchoziho kroku ~5 %; pri zmene koherence se nuluje).
+Skripty `tdcsum_scan.ps1`, `tdcsum_exp2.ps1` (scratchpad sezeni).
+
+| krok | A | predd. A | B | sum znacky A | σy@hradlo 0,25 s |
+|---|---|---|---|---|---|
+| E1 | 12,345678 MHz | 1/1 | 150 MHz /16 | -- (koherentni: 100/12,345678 = 8,1000007) | 1,86e-11 |
+| E1 | 47,123456 MHz | 1/2 | 150 MHz /16 | 333 ps | 2,06e-11 |
+| E1 | 97,123456 MHz | 1/4 | 150 MHz /16 | 355 ps | 1,92e-11 |
+| E1 | 137,123456 MHz | 1/8 | 150 MHz /16 | 291 ps (drive 349) | 1,83e-11 |
+| E1 | 187,123456 MHz | 1/8 | 150 MHz /16 | 335 ps | 1,67e-11 |
+| E2a | 137,123456 MHz | 1/8 | VYP (i CLK6) | **123 ps** | 1,80e-11 |
+| E3a-d | 47,123456 MHz | 1/2, 1/4, 1/8, 1/16 pevne | VYP | 181 / 135 / 173 / 110 ps | 2,19 / 1,80 / 2,03 / 1,73e-11 |
+| E4 | 47,123456 MHz | 1/2 | 47,123456 MHz /16 | A 157 ps, B 224 ps | 1,61e-11 |
+
+- **~300 ps je hlavne presluch z kanalu B**, kdyz B bezi na JINEM kmitoctu nez A (150 MHz): po vypnuti B klesl sum A z 291-349
+  na 123 ps (po odecteni zbytku predchoziho kroku ~106 ps), tj. presluch ~260 ps rms i s ochranou /16 (t383 pri 10 MHz: prebytek 87 ps).
+  Pri STEJNEM kmitoctu A i B (E4) se vzajemna faze nemeni, presluch je stala chyba, ne sum (A 157 ps).
+- Bez B zbyva 110-180 ps (APP_OSC, e(φ) podle faze, spolecna hrana taktu ~80 ps z t374-t387); preddelicka A bez jasneho trendu (1 beh na bod).
+- **Rozliseni kmitoctu na sumu znacky nezavisi:** σy@hradlo 1,6-2,2e-11 ve vsech krocich (sum znacky 110-355 ps, 47-187 MHz).
+  Prumer segmentu prumeruje statisice hran; σy odpovida ~4 ps sumu casu prumeru segmentu (LSQ 10 segmentu po 25 ms:
+  σy = 4,4 x σ_p [1/s]) nezavisle na kmitoctu signalu. HYPOTEZA zdroje: fazovy sum mezi vystupy Si5356 (zlomkovy MultiSynth)
+  nebo modulace zpozdeni periodickou cinnosti SPI/APP_OSC. Overeni: tentyz σy s nezavislym zdrojem (externi GPSDO) a se
+  zmenenou periodou dotazovani (`spi poll`).
+- Sum znacky tedy rozhoduje u jednorazovych mereni (interval A->B, faze, sirka pulzu), ne u kmitoctu na hlavnim displeji.
+- Jak sum znacky snizit (poradi podle ceny): (1) vypnout generator/signal na B, kdyz se nepouziva (hned); (2) FPGA: skutecne
+  vypnout retez nepouziteho kanalu, ne jen /16 (maly zasah, STATUS #382); (3) korekce e(φ) tabulkou pro kanal A u jednorazovych
+  mereni (`fpga lin`, tabulky A jsou stale); (4) bitstream bez APP_OSC po zmenseni logiky na 100 MHz (#369, velky zasah);
+  (5) hrana taktu 100 MHz na pinu FPGA (#362, HW).
