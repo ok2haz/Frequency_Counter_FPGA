@@ -66,7 +66,7 @@
 | 20 | 2 | FW_VERSION (u16) | |
 | 22 | 1 | CLK_MHZ (100) | jako v2 abs 99 |
 | 23 | 1 | SEG_LEN_MS (25 nebo 10) | |
-| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)**, **bit22 = úzká hlavička (FW 0x0507, kap. 3.1b)**, **bit23 = filtr CS a čítače zahozených pulzů na CS, bajty 132..137 (FW 0x0508, kap. 3.1c)**, **bit24 = kalibrace TDC ze vstupního pinu (`SET_CONFIG 0x02` p1 bit3, FW 0x0509, kap. 6.3)** | |
+| 24 | 4 | CAPS (u32): bity 0..15 = význam jako v2 tam, kde funkce trvá; **bit16 = v3 záznamy**, bit17 = 1PPS přes IDES8, bit18 = předdělička `pin_cnt`, bit19 = banky tabulky TDC, **bit20 = zdroj kanálu B (`SET_CONFIG 0x09`, FW 0x0501)**, **bit21 = hluboký RAW do PSRAM (FW 0x0505; od FW 0x0506 jen při sestavení `-DDEEP_RAW`, výchozí bitstream má 0 a T_RAW režimy 1/2 odmítá bez potvrzení v bajtu 127)**, **bit22 = úzká hlavička (FW 0x0507, kap. 3.1b)**, **bit23 = filtr CS a čítače zahozených pulzů na CS, bajty 132..137 (FW 0x0508, kap. 3.1c)**, **bit24 = kalibrace TDC ze vstupního pinu (`SET_CONFIG 0x02` p1 bit3, FW 0x0509, kap. 6.3)**, **bit25 = vypnutí kanálu (`SET_CONFIG 0x07` hodnota 7, FW 0x050B, STATUS #382)** | |
 | 28 | 4 | TS10M (u32) – čas rámce v taktech 10 MHz | |
 | 32 | 4 | **REC_HEAD** (u32) – pořadí nejnovějšího uzavřeného záznamu v kruhu | |
 | 36 | 4 | **REC_FIRST** (u32) – pořadí prvního záznamu v blocích 1–3 | |
@@ -194,7 +194,7 @@ který je používá** (`LUT_WRITE`). Vadný použitý blok → celý příkaz s
 | 0x04 | reference: p1 bit0 0 = OCXO, 1 = externí 10 MHz | beze změny |
 | 0x05 | diagnostika: p1 bit0 `mask_cs`, bit1 `led_hb` | beze změny |
 | **0x06** | **tabulka TDC: p1 = 0 začátek zápisu (nuluje `LUT_CNT`/`LUT_CNT_B`/`LUT_SUM`), p1 = 1 potvrzení = přepnutí na zapsanou banku na nejbližší hranici segmentu; p2 = maska kanálů potvrzení (bit0 A, bit1 B, 0 = oba)** | beze změny číslování; „potvrzení" = přepnutí banky; **(FW 0x0500) maska p2**: při střídavé kalibraci smí čekat oba kanály, potvrzení A nesmí aktivovat B |
-| 0x07 | předdělička: p1 = kanál (0 A, 1 B), p2 = log2 P (0..4, víc = 4); FPGA přepne na hranici segmentu, 2 segmenty kanálu neplatné (FLAGS bit0; první s novým P má bit1) | **(FW 0x0503)** CAPS bit18, kap. 10.7; do 0x0502 neimplementováno |
+| 0x07 | předdělička: p1 = kanál (0 A, 1 B), p2 = log2 P (0..4, víc = 4); **p2 = 7 = kanál vypnut** (řetěz TDC bez hran, sonda počítá dál, záznamy kanálu s n = 0 a P 7 v CH 6:4; FW 0x050B, CAPS bit25 — starší FW 7 ořízne na 4); FPGA přepne na hranici segmentu, 2 segmenty kanálu neplatné (FLAGS bit0; první s novým P má bit1) | **(FW 0x0503)** CAPS bit18, kap. 10.7; do 0x0502 neimplementováno; hodnota 7 **(FW 0x050B)** |
 | 0x08 | délka segmentu: p1 = L [ms] (10 nebo 25) | nové |
 | **0x09** | **zdroj kanálu B**: p1 bit0 = pin A místo pinu B, bit1 = invertovat (řetěz časuje jen náběžné hrany → invertovaný = sestupné): 0 pin B, 1 pin A (kalibrace zpoždění A/B), 3 pin A invertovaný (šířka pulzu); po změně záznamy B 2 hranice segmentu neplatné (FLAGS bit0); echo bajt 66 bit3..4 | **nové (FW 0x0501)**, CAPS bit20, kap. 10.5 |
 

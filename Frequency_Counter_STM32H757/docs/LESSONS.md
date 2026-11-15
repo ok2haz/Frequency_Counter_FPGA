@@ -6371,3 +6371,33 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Pravidlo:** u partial redraw, kde clear začíná uvnitř sousedního prvku a ten kreslí efekt přesahující jeho okraj, musí překreslení zahrnout souseda.
 - **Detekce:** po nahrání `fbdiff` + pohled na displej při RUN (podtržená číslice a okolí); při návratu vady podezřívat změnu geometrie (`s_seg_x`) a ne DMA2D (chyby 0).
 - **Stav:** ✅ překlad (0 varování, audit 97 OK / 0 selhání / 2 s varováním), změna v obrazu (`subs r4,#1` ve `screen_main_redraw_freq`); ⬜ neověřeno na HW
+
+**Doplněk k L-0284 (2026-11-15, po flashi v0.45.19+fix):** uživatel hlásí obdélník pozadí přes setiny Hz dál, a to při
+9,99999999 MHz (externí GPSDO na A, σy@hradlo ~1·10⁻⁹). Hypotéza L-0284 tedy vadu NEODSTRANILA (nebo nebyla příčinou);
+⬜ příčina neznámá, čeká se na snímek displeje. Oprava `from--` zůstává (je neškodná).
+
+### L-0285 — Čekat na soubor zapsaný PowerShellem `Out-File` grepem nejde: je v UTF-16
+
+- **Datum:** 2026-11-15
+- **Oblast:** nástroje sezení (čekací smyčka `until grep -q "### KONEC" soubor`), měření t390
+- **Symptom:** druhá sada pokusů se hodinu nespustila; smyčka čekala na konec první sady, který dávno nastal.
+- **Příčina:** `Out-File` v PowerShellu 5.1 zapisuje bez `-Encoding` **UTF-16LE**; `grep` hledá ASCII řetězec, který
+  je v souboru proložený nulovými bajty, a nenajde ho nikdy. Chyba je tichá (žádná hláška, jen nekonečné čekání).
+- **Oprava:** smyčka zastavena, sada spuštěna přímo; výstupy čteny přes `iconv -f UTF-16LE`.
+- **Pravidlo:** soubor, na jehož obsah se čeká nebo který se dál zpracovává, zapisovat s `-Encoding ascii`/`utf8`
+  (`tools/f0286_tepl_log.ps1` už ano); čekací smyčka musí mít časový strop a po jeho vypršení se ozvat.
+- **Detekce:** `file <soubor>` / `od -c | head` (NUL mezi znaky).
+- **Stav:** ✅ (postup)
+
+### L-0286 — Hostitelský test „prošel“ ze starého binárního souboru, protože překlad selhal
+
+- **Datum:** 2026-11-15
+- **Oblast:** `tests/host/t_fpga_v3.c` po změně `fpga_v3.c` (v0.45.20)
+- **Symptom:** `PASS`, přestože překladač nebyl k dispozici (`No module named ziglang`).
+- **Příčina:** příkaz `cc ... -o t.exe && ./t.exe` byl napsán se středníkem místo `&&` a ve scratchpadu ležel `t_fpga_v3.exe`
+  z 8. 11. — spustil se starý kód bez nové změny.
+- **Oprava:** zig cc ve venv ve scratchpadu, binárka před překladem smazána, čas souboru zkontrolován; nový test 5b prošel.
+- **Pravidlo:** před překladem testu výstupní binárku smazat a spouštět ji jen po úspěšném překladu (`&&`); u výsledku
+  testu uvádět čas binárky, když vznikla mimo build systém.
+- **Detekce:** `ls -la --time-style=+%H:%M <binárka>` před spuštěním.
+- **Stav:** ✅ (postup)
