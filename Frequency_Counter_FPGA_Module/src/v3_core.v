@@ -526,6 +526,8 @@ endmodule
 //   hran. sel se meni jen na hranici segmentu (top_v3) a segmenty kolem zmeny jsou neplatne (hold).
 //   Sonda: c[3] (/16) se pocita v domene clk VZDY (i pri sel 0) za okno 1 ms -> STM pozna kmitocet az do ~800 MHz
 //   (f/16 < 50 MHz synchronizatoru) a P voli sam (fpga_v3_range_select).
+//   FW 0x050B (STATUS #382, t390): sel 7 = kanal VYPNUT -- do retezu TDC nejde zadna hrana (sig_out = 0), sonda
+//   (c[3]) pocita dal. Spinani retezu nemereneho kanalu zpozduje znacky mereneho o ~260 ps rms i pri P 16.
 // Rozlozeni: c[3:0] musi lezet u IOB pinu (25 = IOB8A, 27 = IOB11A) a hlavy retezu TDC (R26/R27 C2): kratke lokalni
 //   vedeni, hodiny pinu NE na globalni sit (PRIMARY je ve v3 skoro plna) -- OVERIT po P&R (create_clock pin_a/pin_b
 //   v timing_v3.sdc, mapa floorplan_svg.py). Cesta pin/c -> retez je asynchronni (false_path pres u_tdc?/sig_eff).
@@ -540,7 +542,8 @@ module pin_cnt3 (
 );
     reg [3:0] c = 4'd0;
     always @(posedge pin) c <= c + 4'd1;
-    assign sig_out = (sel == 3'd0) ? pin : (sel == 3'd1) ? c[0] : (sel == 3'd2) ? c[1] : (sel == 3'd3) ? c[2] : c[3];
+    assign sig_out = (sel == 3'd7) ? 1'b0 :
+                     (sel == 3'd0) ? pin : (sel == 3'd1) ? c[0] : (sel == 3'd2) ? c[1] : (sel == 3'd3) ? c[2] : c[3];
     reg [2:0]  s  = 3'b000;
     reg [15:0] pc = 16'd0;
     reg        pcf = 1'b0;                       // pc == 0xFFFF (o takt zpozdene; hrany /16 jsou nejmene 2 takty od sebe)

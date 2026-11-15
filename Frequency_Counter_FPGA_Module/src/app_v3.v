@@ -110,7 +110,9 @@ module app_v3 #(
     // zahozenych pulzu v hlavicce 132..137 (CAPS bit23); -DSIM_NOCSDIAG = hlavicka 0x0507 (porovnani stop)
     // FW 0x0509 (STATUS #347 krok 1, 2026-10-31): kalibrace TDC ze vstupniho pinu -- SET_CONFIG 0x02 p1 bit3, zdroj v bajtu 51
     // bit2 (A) / bit3 (B), CAPS bit24
-    localparam [15:0] FW_VERSION = 16'h050A;                                   // literal: cte ho brana vydani (tools/fpga_release.py)
+    // FW 0x050B (STATUS #382, 2026-11-15): SET_CONFIG 0x07 hodnota 7 = kanal vypnut (pin_cnt3 sel 7: retez TDC bez hran,
+    // sonda bezi dal), CAPS bit25. Starsi FW hodnotu 7 orizne na 4 (P 16) -- STM ji posila jen pri CAPS bit25.
+    localparam [15:0] FW_VERSION = 16'h050B;                                  // literal: cte ho brana vydani (tools/fpga_release.py)
     localparam [15:0] FW_VERSION_TX = CSDIAG ? FW_VERSION : 16'h0507;          // do hlavicky; -DSIM_NOCSDIAG = hlavicka FW 0x0507
     // CAPS: bity v2 tam, kde funkce trva (1 SET_CONFIG, 4 tabulku zapisuje STM, 5 cas v T/16384, 10 samokontrola, 11 volba
     // reference, 12 kmitocet hodin v ramci, 13 1PPS, 14 diagnostika E0) + bit16 zaznamy v3, bit19 banky tabulky TDC.
@@ -120,7 +122,8 @@ module app_v3 #(
     // bit22 (FW 0x0507) = uzka hlavicka (kap. 3.1b).
     // bit23 (FW 0x0508) = citace zahozenych pulzu na CS (hlavicka 132..137, kap. 3.1c).
     // bit24 (FW 0x0509) = kalibrace TDC ze vstupniho pinu (SET_CONFIG 0x02 p1 bit3).
-    localparam [31:0] CAPS = (DEEP ? 32'h017F_7C32 : 32'h015F_7C32) | (CSDIAG ? 32'h0080_0000 : 32'h0000_0000);
+    // bit25 (FW 0x050B) = vypnuti kanalu (SET_CONFIG 0x07 hodnota 7).
+    localparam [31:0] CAPS = (DEEP ? 32'h037F_7C32 : 32'h035F_7C32) | (CSDIAG ? 32'h0080_0000 : 32'h0000_0000);
     localparam [31:0] RING_USE = (32'd1 << RAW) - 32'd4;   // rezerva 2 segmentu: zapisovac neprepise zaznam, ktery se kopiruje
     // FW 0x0503: platna P ze 100 MHz (meni se jen na hranici segmentu) -> 2 FF; PRESC bit7 = pozadavek jeste neplati
     reg [2:0] pra_1 = 3'd0, pra_s = 3'd0, prb_1 = 3'd0, prb_s = 3'd0;
@@ -379,8 +382,8 @@ module app_v3 #(
                                 else if (rx_p1 == 8'd25) seg10 <= 1'b0;
                             end
                             8'h09: bsrc <= rx_p1[1:0];                                  // FW 0x0501: zdroj kanalu B
-                            8'h07: if (rx_p1[0]) pr_b_req <= (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];   // FW 0x0503: predelicka
-                                   else          pr_a_req <= (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];
+                            8'h07: if (rx_p1[0]) pr_b_req <= (rx_p2 == 8'd7) ? 3'd7 : (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];   // FW 0x0503: predelicka
+                                   else          pr_a_req <= (rx_p2 == 8'd7) ? 3'd7 : (rx_p2 > 8'd4) ? 3'd4 : rx_p2[2:0];   // 0x050B: 7 = vypnut
                             default: ;                                                  // 0x01, 0x03 (v3 bez vyznamu), 0x07
                         endcase
                         T_LUTW: begin

@@ -205,9 +205,11 @@ module tb_top_v3;
 `else
             // FW 0x0508 (L-0242): filtr CS + citace zahozenych pulzu na CS (bajty 132..136), CS_FILT v bajtu 137; v cistem CS zadne pulzy
             // FW 0x0509: kalibrace TDC ze vstupniho pinu (CAPS bit24). FW 0x050A: clear DSP lokalne registrovany (L-0252), ramec beze zmeny.
-            chk(rd(20, 2) == 16'h050A, "FW_VERSION 0x050A");
+            // FW 0x050B: SET_CONFIG 0x07 hodnota 7 = kanal vypnut (CAPS bit25, STATUS #382).
+            chk(rd(20, 2) == 16'h050B, "FW_VERSION 0x050B");
             chk(caps[23], "CAPS bit23 (citace pulzu na CS)");
             chk(caps[24], "CAPS bit24 (kalibrace ze vstupniho pinu)");
+            chk(caps[25], "CAPS bit25 (vypnuti kanalu, P 7)");
             chk(rd(132, 5) == 0 && mi[137] == 8'd16, "citace pulzu na CS = 0 (cisty CS), CS_FILT = 16");
 `endif
             // uzka hlavicka (CAPS bit22): zrusena / zuzena pole jsou 0
@@ -602,6 +604,21 @@ module tb_top_v3;
             chk(ninv_b >= e0 + 2, "B: neplatne segmenty kolem prepnuti P");
             chk(nvp[0][0] >= 10 && nvp[0][3] == 0 && nvp[0][4] == 0, "A: P = 1 po celou dobu");
             $display("predelicka: zaznamy B P=8 %0d, P=16 %0d, neplatne B %0d, A P=1 %0d", nvp[1][3], nvp[1][4], ninv_b, nvp[0][0]);
+            // ---- FW 0x050B (STATUS #382): P 7 = kanal B vypnut (retez TDC bez hran), sonda pocita dal, A beze zmeny ----
+            build(8'h01, 8'h07, 8'h01, 8'd7, 0); xfer(1024);           // B: vypnout
+            for (f = 0; f < 4; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end   // prepnuti na hranici segmentu
+            chk(mi[65] == 8'd7, "PRESC B 7 (kanal vypnut) po hranici segmentu");
+            nv0 = nvalid_b; nv1 = nvalid_a;
+            for (f = 0; f < 8; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(nvalid_b == nv0, "B vypnut: zadne platne zaznamy B");
+            chk(nvp[1][7] == 0, "B vypnut: zadny platny zaznam s P 7");
+            chk(nvalid_a > nv1 + 4, "B vypnut: A meri dal");
+            pr_e = `TB_FB / 16.0e3;
+            chk(real'(rd(110, 2)) > pr_e - 2.0 && real'(rd(110, 2)) < pr_e + 2.0, "B vypnut: sonda B pocita dal (f/16 za 1 ms)");
+            build(8'h01, 8'h07, 8'h01, 8'd4, 0); xfer(1024);           // B: zpet P 16
+            for (f = 0; f < 8; f = f + 1) begin build_ack(nxt); xfer(1024); check_frame(1); end
+            chk(mi[65] == 8'd4 && nvalid_b > nv0 + 2, "B znovu zapnut (P 16): platne zaznamy");
+            $display("vypnuti kanalu: B platnych pri P 7 %0d, po navratu %0d, A %0d", nvp[1][7], nvalid_b - nv0, nvalid_a - nv1);
         end else if (`TB_MODE == 5) begin
             // ---- FW 0x0505 PSRAM: kalibrace latence zapisu, hluboky zaznam A (1100 znacek), okna 0..2 pres stranky ----
             build(8'h01, 8'h05, 8'h00, 0, 0); xfer(1024);
