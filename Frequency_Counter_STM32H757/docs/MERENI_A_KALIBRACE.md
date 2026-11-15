@@ -1813,3 +1813,51 @@ Skripty `tdcsum_scan.ps1`, `tdcsum_exp2.ps1` (scratchpad sezeni).
   vypnout retez nepouziteho kanalu, ne jen /16 (maly zasah, STATUS #382); (3) korekce e(φ) tabulkou pro kanal A u jednorazovych
   mereni (`fpga lin`, tabulky A jsou stale); (4) bitstream bez APP_OSC po zmenseni logiky na 100 MHz (#369, velky zasah);
   (5) hrana taktu 100 MHz na pinu FPGA (#362, HW).
+
+### 2026-11-15 18:32 -> 19:50 — t391-t393: overeni FW 0x050B (vypnuti kanalu) a pokus #369 APP_DIV (STM v0.45.20, SRAM FPGA)
+
+Zapojeni: A = externi GPSDO 10 MHz, B = generator Si5356 CLK4. Bitstreamy jen do SRAM FPGA (`programmer_cli --cable-index 1
+--run 2`), flash FPGA beze zmeny (appOscS6 0x050A). Smycka GPSDO zustala po vsech nahranich v LOCK.
+
+**t391 -- vypnuti nemereneho kanalu (TEST_FW_0x050B_v3_chOffS6, APP_OSC):** mereny B 137,123456 MHz (P 8), nemereny A:
+
+| A | sum znacky B | σy@hradlo B |
+|---|---|---|
+| VYP (auto, P 7) | 105,6 / 111,3 ps | 1,49 / 1,39e-11 |
+| P 16 (stare chovani ochrany) | 122,6 ps | 1,59e-11 |
+| P 1 (bez ochrany) | 175,2 ps | 2,45e-11 |
+
+`fpga ab on` kanal A zapne (P 1), `fpga ab off` ho zase vypne. → **#382 overeno na desce (SRAM).** Prinos proti P 16 je
+tu maly (A = 10 MHz /16 = 0,6 MHz spinani retezu), proti P 1 velky; v t390 (B 150 MHz /16) byl presluch ~260 ps.
+
+**t392 -- sum znacky kanalu B (A na P 16), APP_OSC 0x050B proti APP_DIV** (`TEST_FW_0x050B_v3_appDivS0`: domena
+aplikace/SPI z deleni 100 MHz / 10 uvnitr FPGA, pevna faze; setup +0,331 ns, 7/8 seedu kladnych):
+
+| etapa | APP_OSC (2 behy) | APP_DIV |
+|---|---|---|
+| stojici faze INT0/1/2 | 80 / 54 / (odlehle) a 48 / 50 / 63 ps | 54 / 46 / 45 ps |
+| diskretni zpozdeni (urovne) | +0, -77..-82, +90, +191, +381 ps | +0, +82, +132, -84, +61 ps |
+| tocici se faze FRAC | 171 ps (a 1 odlehly beh) | 162 ps |
+| B 137 MHz, A VYP (`TDC SUM`) | 73 / 115 ps | **168 ps** |
+| σy@hradlo | 1,35e-11 | 1,57e-11 |
+
+- APP_DIV **nesnizil** sum znacky (stojici faze v rozptylu behu, zebrik diskretnich zpozdeni trva, tocici se faze horsi).
+  Trojnasobne zlepseni z t384 (bez APP_OSC, 10 MHz z pinu) se neopakovalo.
+- `fpga pw cal` s externim GPSDO na A dava nesmyslna cisla (stredni ~5,8 ns, σ 2,5 / 11,7 ns, v obou variantach stejne) --
+  nepouzitelne, nevyhodnocuje se.
+
+**t393 -- celistvost intervalu A->B** (A ext. GPSDO, B generator 10 MHz, interval pomalu ujizdi v 0..100 ns; 120 s,
+~5 100 intervalu, rozbor poslednich 64 po 10 s):
+
+| | APP_OSC 0x050B | APP_DIV |
+|---|---|---|
+| sousednich dvojic se skokem > 2 ns (mimo preklopeni 0/100 ns) | **1 z 693** (-2,1 ns) | **187 z 693** |
+| velikost skoku | -- | **+-10 ns = 1 perioda taktu**, v usecich (interval preskoci a chvili drzi) |
+
+- **APP_DIV rozbiji A->B** stejnou tridou vady jako non-APP_OSC v t386/t387 (tam skoky ~100 ns behem SPI/CS). Skoky
+  nezavisi na fazi startu A; stop B stal na 318 promile periody.
+- Zaver pro #369: na fazi domeny aplikace vuci 100 MHz zalezi -- domena koherentni se 100 MHz (pevna faze) rozbiji
+  celistvost znacek, asynchronni (APP_OSC) ne. HYPOTEZA mechanismu: spinani aplikace v pevne fazi soustavne trefuje okraj
+  casovani TDC (F-0286: `ld` po LW s optimistickou STA) -> hruby/jemny cas o takt vedle. Overeni: APP_DIV + rozlozene `ld`.
+- Vedlejsi: SPI ERR pribyly serie po 54 MAGIC/VER pri kazdem nahrani SRAM (ocekavane) a jedna serie 18:46-18:49 bez
+  zjistene priciny; `spike-reject` (obri bin) 0 -> 30 oken behem pokusu s prepinanim generatoru.

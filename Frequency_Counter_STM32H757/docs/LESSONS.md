@@ -6401,3 +6401,18 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   testu uvádět čas binárky, když vznikla mimo build systém.
 - **Detekce:** `ls -la --time-style=+%H:%M <binárka>` před spuštěním.
 - **Stav:** ✅ (postup)
+
+### L-0287 — Programátor FPGA: výchozí kabel není deska a návratový kód za rourou lže
+
+- **Datum:** 2026-11-15
+- **Oblast:** nahrávání bitstreamu do SRAM (`programmer_cli`), skript `run_t392.sh`, měření t392
+- **Symptom:** druhá polovina t392 („APP_DIV") změřila znovu starý bitstream; skript hlásil `rc programovani: 0`.
+- **Příčina:** (1) `programmer_cli` bez `--cable-index` vzal kabel 0, na kterém deska není („Cable failed to open via the
+  channel"); GW1NR-9 je na **`--cable-index 1`** (`--scan-cables`, `--cable-index N --scan` → ID 0x1100481B);
+  (2) `programmer_cli ... | tail -5; echo $?` vrací kód `tail`, ne programátoru; (3) firmware CM7 **nedělí příkazy
+  středníkem** (dělí je jen `tools/uartq.ps1`), takže `c('fpga pw off;fpga ev off')` v Python skriptu neudělal nic.
+- **Oprava:** `--cable-index 1`, výstup programátoru se kontroluje na „Error“ a po nahrání se ověří **identita sestavení**
+  (`status` → `FPGA BUILD` = BLD_TIME seedu), ne jen FW; příkazy posílat jednotlivě.
+- **Pravidlo:** po nahrání bitstreamu vždy ověřit `FPGA BUILD` proti očekávanému sestavení, než se začne měřit.
+- **Detekce:** `status` → `FPGA BUILD: <čas>`; `programmer_cli --scan-cables`.
+- **Stav:** ✅ (postup)
