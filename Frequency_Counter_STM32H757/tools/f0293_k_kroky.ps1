@@ -10,6 +10,7 @@
 # Vyhodnoceni: python -I tools\f0293_vyhodnot.py <vystupni csv>
 # Pouziti (terminal s UART zavreny):
 #   powershell -ExecutionPolicy Bypass -File tools\f0293_k_kroky.ps1 -Out C:\cesta\k_kroky.csv [-PhaseMin 40]
+#   -DryRun = jen vypis planu faz, BEZ UART a bez logu (C0 zastupne -C0Dry); do 2026-11-16 suchy beh cetl `gpsdo`.
 param(
   [string]$Port = "COM10",
   [string]$Out = "k_kroky.csv",
@@ -17,6 +18,7 @@ param(
   [int]$WaitLockMin = 60,
   [int]$WaitMaxMin = 240,
   [int[]]$Steps = @(1, -1, 2, -2, 4, -4, 8, -8),
+  [int]$C0Dry = 25000,
   [switch]$DryRun
 )
 $uartq = Join-Path $PSScriptRoot "uartq.ps1"
@@ -53,12 +55,18 @@ if (-not $DryRun) {
   }
 }
 
-$o = Q "gpsdo"
-$state = Pick $o 'GPSDO: (HOLD|LOCK|FLL|WAIT|OFF)' 1
-$kodTxt = Pick $o 'kod ([\d.]+)' 1
-if ($state -ne "LOCK" -or $kodTxt -eq "") { L "Smycka neni v LOCK (stav '$state'), test se nespousti."; exit 1 }
-$c0 = [int][math]::Round([double]::Parse($kodTxt, [Globalization.CultureInfo]::InvariantCulture))
-L ("Zakladni kod C0 = $c0 (z $kodTxt), faze $PhaseMin min, kroky: " + ($Steps -join ','))
+if ($DryRun) {
+  # Suchy beh se pristroje nedotkne: zadny UART, zadny log; C0 je jen zastupna hodnota (ostry beh ji cte z `gpsdo`).
+  $c0 = $C0Dry
+  Write-Host ("SUCHY BEH (bez UART): C0 zastupne $c0, faze $PhaseMin min, kroky: " + ($Steps -join ','))
+} else {
+  $o = Q "gpsdo"
+  $state = Pick $o 'GPSDO: (HOLD|LOCK|FLL|WAIT|OFF)' 1
+  $kodTxt = Pick $o 'kod ([\d.]+)' 1
+  if ($state -ne "LOCK" -or $kodTxt -eq "") { L "Smycka neni v LOCK (stav '$state'), test se nespousti."; exit 1 }
+  $c0 = [int][math]::Round([double]::Parse($kodTxt, [Globalization.CultureInfo]::InvariantCulture))
+  L ("Zakladni kod C0 = $c0 (z $kodTxt), faze $PhaseMin min, kroky: " + ($Steps -join ','))
+}
 $plan = @()
 $plan += ,@("base", $c0, 0)
 foreach ($d in $Steps) { $plan += ,@("krok", ($c0 + $d), $d); $plan += ,@("base", $c0, 0) }
