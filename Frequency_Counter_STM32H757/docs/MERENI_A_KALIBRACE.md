@@ -1866,3 +1866,50 @@ aplikace/SPI z deleni 100 MHz / 10 uvnitr FPGA, pevna faze; setup +0,331 ns, 7/8
   znacek nedela (jen) asynchronni domena aplikace. Test ma omezenou silu (120 s, externi zdroj s velkym putovanim).
 - Vedlejsi: SPI ERR pribyly serie po 54 MAGIC/VER pri kazdem nahrani SRAM (ocekavane) a jedna serie 18:46-18:49 bez
   zjistene priciny; `spike-reject` (obri bin) 0 -> 30 oken behem pokusu s prepinanim generatoru.
+
+### 2026-11-15 23:03 -> 11-16 10:31 — F-0293: lokalni strmost DAC (K) v pracovnim bodu (STM v0.45.20, FPGA flash 0x050A)
+
+`tools/f0293_k_kroky.ps1 -PhaseMin 40` (start 21:59; 60 min LOCK a ustalena teplota splneno ve 23:03; C0 = 24976 z 24975,63),
+vyhodnoceni `python -I tools/f0293_vyhodnot.py noc_logs/f0293_20261115/k_kroky.csv` (+ rozbor citlivosti ve scratchpadu
+`f0293_rozbor.py`). Smycka vypnuta rucnim `dac`, 17 faz po 40 min: zaklad 24976 a kroky +1, -1, +2, -2, +4, -4, +8, -8 LSB,
+radek `gpsdo` 1x/min (663 radku, vse OFF, 0 prazdnych TIE, pojistka nezasahla). Kmitocet = sklon pasivni faze TIE za
+poslednich 30 min faze. Na konci skript vratil 24976 a `gpsdo on`; v 19:05 LOCK (y +0,005 ppb, faze +23 ns, kod 24969,35,
+nejistota reference 0,012 ppb), uptime 21,5 h bez resetu.
+
+| faze | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| d [LSB] | 0 | +1 | 0 | -1 | 0 | +2 | 0 | -2 | 0 | +4 | 0 | -4 | 0 | +8 | 0 | -8 | 0 |
+| sklon [ppt] | -32,4 | -15,1 | -14,5 | -59,2 | -25,2 | +40,4 | -34,2 | -93,8 | +1,7 | +181,3 | -3,3 | -152,0 | +47,7 | +342,5 | +18,3 | -238,6 | +63,2 |
+
+| model | K [e-11/LSB] |
+|---|---|
+| **globalni: trend zakladu polynom st. 2 + K*d (17 faz)** | **3,85 +- 0,13** (1 sigma; jackknife 0,16; sum faze 17 ppt) |
+| trend st. 1 / 3 / 4 | 3,82 / 3,85 / 3,85 |
+| zahozeny zacatek faze 0 / 5 / 15 / 20 min | 3,87 / 3,87 / 3,84 / 3,83 |
+| prima minutova regrese TIE (faze spojita) | 3,74 .. 3,91 |
+| K+ / K- | 3,98 +- 0,22 / 3,71 +- 0,23 (rozdil 0,27 +- 0,35) |
+| podle kroku \|1\| / \|2\| / \|4\| / \|8\| | 2,4 +- 1,1 / 3,6 +- 0,6 / 4,4 +- 0,3 / 3,77 +- 0,14 (s jednim K v souladu, F-test p ~ 0,2) |
+| sousedni zaklady (puvodni metoda) +1 -1 +2 -2 +4 -4 +8 -8 | 0,83 3,93 3,51 3,88 4,55 4,36 3,87 3,49 |
+
+- **K = 3,85 +- 0,13e-11/LSB, o 13 % vic nez 3,4e-11 ve firmwaru (3,4 sigma), shodne s odhadem FLL z velkych kroku
+  2026-11-08 (3,86e-11, STATUS #370).** Za DAC 5,05 Hz/V; mereni 2026-10-16 po 1 V (4,31 / 4,61 Hz/V) bylo hrube a na
+  zahrivajicim se OCXO.
+- **Nelinearita:** odchylky kodu 24968..24984 od primky -0,48 .. +0,69 LSB pri 1 sigma 0,44 LSB na kod (chi2 6,1 / 8),
+  kvadraticky clen 0,02 +- 0,02e-11/LSB^2 -> INL/DNL pod rozlisenim, > ~1 LSB (2 sigma) vyloucena. **Hypoteza F-0293
+  (DNL zkresli odhad starnuti o desitky %) se nepotvrdila; vetsi chybu delalo samotne K (-12 %).**
+- **Prechod po zmene kodu nenalezen:** K nezavisi na zahozenem zacatku faze (0-20 min) -> ustaleni pod ~1 min.
+- **Sum:** bily sum 1PPS dava sklonu faze jen 1-3 ppt (rms kolem primky 3-8 ns), mezi fazemi je ale rozptyl ~17 ppt =
+  putovani OCXO proti GPS na tau ~30 min (souhlasi s HDEV faze 11-13e-12 @ 1000-2000 s). Krok +-1 LSB (38 ppt) je proto
+  jen ~2 sigma (+1 LSB vyslo 0,83); presnost davaji +-4 a +-8 LSB a globalni model driftu.
+- **Volny OCXO pres noc:** zaklad -32 -> +63 ppt (prumer +8 ppt/h; do 4:00 kolem -25 ppt, pak roste). Predchozi noc smycka
+  kod zvysovala (+0,63 LSB/h, OCXO zpomaloval), tuto noc a den OCXO zrychluje (ekvivalent kodu 24974,4 v 10:15 -> 24969,35
+  v 19:05, ~-0,6 LSB/h). Smer se meni -> HYPOTEZA: prevazuje teplota, ne starnuti; teploty test nezaznamenaval (overit
+  korelaci s datalogem `t_ocxo` / `t_board`, #311).
+- **Dusledek K 3,4e-11:** drift a prochazka kodu v nejistote reference (`gp_ref_core`, HOLD) a odhady starnuti z kodu
+  (#303, aging1112, ppt hodnoty v tomto deniku pocitane s K 3,4e-11) vychazely o 12 % nizko (prepocet x 1,13); zesileni
+  smycky o 13 % vyssi nez navrh (zeta 0,74 misto 0,70) - zanedbatelne.
+- **Oprava v0.45.21 (`5dbc057`):** `GPSDO_KDAC_DEFAULT` 3,85e-11; host test regulatoru `tests/host/t_gpsdo_core.py`
+  (PASS se 3,4 i 3,85e-11, LOCK 536/536/279 s; mutace K 1,6e-10 FAIL); `f0293_vyhodnot.py` s globalnim modelem.
+  ⬜ neovereno na HW (flash + power-cyklus + `gpsdo test`). Suchy beh skriptu uz UART necte (`5b70c6f`).
+- Vedlejsi: `status` hlasi `DAC OCXO: kod 24969 | readback 24976` - readback je z posledniho rucniho zapisu (`dac 24976`
+  v 10:31), zapisy serva s ditherem readback nedelaji; vypada to jako nesoulad (STATUS #388).

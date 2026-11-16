@@ -310,6 +310,14 @@ kmitočet / drift, nebo PI s druhým integrátorem) a τ volené podle změřen�
 - **Návrh:** u výsledků stárnutí uvádět rozsah kódu a nejistotu z DNL; pro krátké běhy vztahovat drift
   k napětí Vc změřenému ADC jen jako kontrolu (rozlišení ADS1115 je ~4 LSB DAC, samo nestačí).
 - **Riziko opravy:** nulové (metodika měření).
+- **Stav:** změřeno 2026-11-16, opraveno jinak, než navrhoval nález (`5dbc057`, v0.45.21). Noc 17 fází po 40 min
+  (`tools/f0293_k_kroky.ps1`, `tools/f0293_vyhodnot.py`, `docs/MERENI_A_KALIBRACE.md` 2026-11-15/16): globální model
+  (trend základu + K·d) dává **K = 3,85 ± 0,13·10⁻¹¹/LSB**, o 13 % víc než 3,4·10⁻¹¹ ve firmwaru, shodně s odhadem FLL
+  z 2026-11-08 (3,86·10⁻¹¹). Odchylky kódů 24968–24984 od přímky ≤ 0,7 LSB při 1σ 0,44 LSB na kód (χ² 6,1/8) →
+  **DNL/INL nad ~1 LSB vyloučena, hypotéza o desítkách procent z DNL se nepotvrdila**; větší chybu dělalo samotné K
+  (drift a procházka kódu v nejistotě reference i odhady stárnutí o 12 % nízko). Oprava: `GPSDO_KDAC_DEFAULT`
+  3,85·10⁻¹¹ + host test regulátoru `tests/host/t_gpsdo_core.py` (L-0289). U výsledků stárnutí se dál uvádí rozsah
+  kódu; DNL pod 0,44 LSB tímto testem rozlišit nejde. ⬜ neověřeno na HW (flash + `gpsdo test`).
 
 ---
 
@@ -324,7 +332,8 @@ Uživatel schválil navržené pořadí. Provedeno téhož dne:
 | F-0285 | brána vydání opravena + strop změřen | `64bb7d9` | selftest brány, reporty v2 i v3 (A 175 MHz, B 142 MHz jako WARN), L-0278; generátorem změřeno správně do 200 MHz na obou vstupech (limit generátoru a vstupního řetězce), model STA je pesimistický |
 | F-0286 | výchozí měření, RTL beze změny | – | běh 36,3 h (flash appOscS6, modul 35 °C): bubliny okna P 0 / S 0 z 523 431 oken → dopad se při pokojové teplotě neprojevuje; ⬜ test v teple |
 | F-0292 | opraven model nejistoty (v0.45.16); povel v holdoveru beze změny | `5ca59de` | dvě noci LOCK po 9,8 h (`docs/audit/sim/2026-11-14_f0292_*.py`), host test + 26 mutací, L-0279; ⬜ neověřeno holdoverem na desce |
-| F-0287, F-0288, F-0289, F-0293 | otevřeno | – | – |
+| F-0287, F-0288, F-0289 | otevřeno | – | – |
+| F-0293 | změřeno 2026-11-16 (noc, 17 fází); výchozí K 3,4 → 3,85·10⁻¹¹ opraveno v kódu (v0.45.21) | `5dbc057` | host test `tests/host/t_gpsdo_core.py` + mutace, L-0289; ⬜ neověřeno na HW |
 
 Odchylky od návrhu v nálezech:
 
@@ -336,6 +345,8 @@ Odchylky od návrhu v nálezech:
   nejlepší předpověď potřebného kódu na další 1–3 h; průměr i přímka přes poslední 1–2 h vycházejí hůř. Opraven je jen
   model nejistoty (člen náhodné procházky kódu). Část nálezu o proporcionální složce (0,7–1,4·10⁻¹¹) platí, ale je
   menší než putování potřebného kódu (2,7–3,8·10⁻¹¹ za hodinu).
+- F-0293: návrh byl jen metodika (u stárnutí uvádět nejistotu z DNL). Měření DNL nad rozlišením nenašlo, ale ukázalo,
+  že výchozí K ve firmwaru je o 12 % nízko → opraveno výchozí K (to nález nepředpokládal).
 
 Na desce (2026-11-14 09:13): v0.45.17 v obou bankách, po resetu SELFTEST 16/16, `gpsdo test` PASS, brána GNSS OK.
 Znovuzamčení (100 min záznamu) a power-cyklus v ~11:00 prošly bez nálezu; F-0290, F-0291 a model F-0292 jsou ověřeny v běhu na desce

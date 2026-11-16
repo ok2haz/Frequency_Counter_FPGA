@@ -120,7 +120,8 @@ typedef struct {
      * odhadnout, KDY ji vymenit. */
     int16_t  vbat_mv;
     /* Kod DAC ladeni OCXO (AD5693R, LSB) v okamziku zaznamu; DATALOG_DAC_NONE (0) = nezaznamenano (STATUS #311).
-     * Smyslem je STARNUTI OCXO bez PC: smycka GPSDO drzi frekvenci a kod DAC se posouva o 3,4e-11 relativne na LSB,
+     * Smyslem je STARNUTI OCXO bez PC: smycka GPSDO drzi frekvenci a kod DAC se posouva o ~3,85e-11 relativne na LSB
+     * (F-0293, lokalne v pracovnim bodu),
      * takze dlouhodobe posouvani kodu (po odecteni teploty) JE drift oscilatoru.
      * ⚠️ Na flash se veze v bajtech 30..31 (drive rezerva) a je MIMO CRC (CRC kryje bajty 0..27 a lezi na 28..29 -
      * zmena pokryti by zneplatnila vsechny dosavadni zaznamy). Poskozeny bajt v tomhle poli tedy NEzneplatni zaznam,

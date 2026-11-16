@@ -6430,3 +6430,21 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   rozpoznávat s tolerancí na ujíždění; před závěrem „vada“ si vypsat surové úseky kolem nalezených skoků.
 - **Detekce:** výpis úseků kolem skoků (`t393_ukaz.py`) — pravidelný krok stejné velikosti = ujíždění, ne vada.
 - **Stav:** ✅ (postup)
+
+### L-0289 — Konstanta regulátoru převzatá z hrubého měření se nepřeměřila v pracovním bodu
+
+- **Datum:** 2026-11-16
+- **Oblast:** GPSDO, `GPSDO_KDAC_DEFAULT` (`freertos_task_fpga.c`), nejistota reference (`gp_ref_core`), odhady stárnutí (#303), F-0293
+- **Symptom:** žádný viditelný — smyčka zamykala i s K o 12 % nízko. Chyba byla tichá v odvozených číslech: drift a procházka
+  kódu v nejistotě reference a odhad stárnutí z kódu vycházely o 12 % menší.
+- **Příčina:** K = 3,4·10⁻¹¹ pocházelo z jediného hrubého měření 2026-10-16 (průměrná strmost EFC po 1 V, OCXO 2–5 min
+  po zapnutí) a od té doby se bralo jako „změřené“. Lokální strmost v pracovním bodu (Vc ~1,9 V) je 3,85 ± 0,13·10⁻¹¹.
+  FLL ji 2026-11-08 z velkých kroků odhadl na 3,86·10⁻¹¹, ale tehdejší diagnostika řešila znaménko, ne velikost.
+- **Oprava:** `GPSDO_KDAC_DEFAULT` 3,85·10⁻¹¹ (v0.45.21, `5dbc057`); host test regulátoru `tests/host/t_gpsdo_core.py`
+  (jádro a `st_run` ze zdroje, mutace K 1,6·10⁻¹⁰ selže); měření K `tools/f0293_k_kroky.ps1` + `tools/f0293_vyhodnot.py`.
+- **Pravidlo:** konstanta, ze které regulátor nebo prezentace počítá odvozené veličiny, se měří v pracovním bodu a s nejistotou.
+  Když smyčka sama odhadne jinou hodnotu (FLL 3,86 proti 3,4), je to podnět k měření, ne šum. K měř z kroků ±4 až ±8 LSB
+  globálním modelem driftu: krok ±1 LSB (~38 ppt) je pod putováním OCXO–GPS za 30 min (~17 ppt mezi fázemi), +1 LSB
+  vyšlo 0,83·10⁻¹¹.
+- **Detekce:** `gpsdo` → `K` (po velkém kroku FLL) proti `GPSDO_KDAC_DEFAULT`; `tools/f0293_vyhodnot.py` nad nočním během.
+- **Stav:** ✅ v kódu, ⬜ neověřeno na HW (flash + power-cyklus + `gpsdo test`)

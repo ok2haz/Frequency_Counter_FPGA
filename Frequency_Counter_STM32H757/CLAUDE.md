@@ -1350,7 +1350,9 @@ Pasti ze zadání §6:
 **DAC cesta (osazeno 2026-10-16):** U12 `AD5693RBRMZ` (MSOP-10, A0=GND → 0x4C, GAIN ×2 → 0..5 V, 76,3 µV/LSB, POR = zero-scale), C55 10 nF X7R (VREF),
 **C56 neosazen** (limit 2 nF na VOUT), R78 100k + **C68 2,2 µF film** (τ 220 ms; do 2026-10-17 tu stálo 1 µF — schéma aktualizováno uživatelem), U15 OPA365 (sledovač), R73 1k0 + **C61 1 µF film**, R72 82R + C59 100 nF X7R → pin VC
 OCXO (Bliley 6891: EFC 0–4 V, 2,5–5,5 Hz/V, vstupní impedance 10–100 kΩ); U14 sleduje VC → AIN0 (÷2,5). 🔑 **Smyčka na hodnotách součástek NEZÁVISÍ:**
-K = **změřených** ~3,4·10⁻¹¹/LSB (4,3–4,6 Hz/V × 76,3 µV) zahrnuje dělič R73+R72 proti vstupní impedanci EFC; časové konstanty (100 ms, 1 ms, 8 µs)
+K = **3,85 ± 0,13·10⁻¹¹/LSB změřených lokálně v pracovním bodu** (F-0293, noc 2026-11-15/16, kód 24968–24984, Vc ~1,9 V;
+`GPSDO_KDAC_DEFAULT` od v0.45.21, shodně s FLL 3,86·10⁻¹¹; dřívější 3,4·10⁻¹¹ z hrubého měření po 1 V bylo o 12 % nízko, DNL/INL DAC
+pod 0,44 LSB/kód nerozlišená) zahrnuje dělič R73+R72 proti vstupní impedanci EFC; časové konstanty (100 ms, 1 ms, 8 µs)
 jsou o 3–4 řády rychlejší než smyčka (FLL ≥ 16 s, τ 1000 s). Dither (#317, simulace `dither_sim2.py`; výchozí 100 Hz, v simulaci „skoro stejně dobrý“ jako 200 Hz, samostatná tabulka 100 Hz nebyla zapsána): při 200 Hz zvlnění Vc ≤ 0,8·10⁻¹² p-p a ADEV 0,25–10 s ≤ 2,4·10⁻¹³ (2 Hz: 30·10⁻¹² a až 8·10⁻¹²); se zpožděnými zápisy 0–3 ms nebo 2 % vynechaných kroků ≤ 4·10⁻¹³. UART `dac dither [2..200|test]` (nepersistuje se), `status` → `DAC OCXO: dither … kroky bez mutexu … vynechano po chybe …`. ⬜ neověřeno na HW.
 
 **Naměřeno na desce (2026-10-16, první minuty po flashi, ⬜ dlouhodobě neověřeno):** `LOCK`, y −0,055 ppb, fáze −13 ns, kód 24794 (1,892 V),
