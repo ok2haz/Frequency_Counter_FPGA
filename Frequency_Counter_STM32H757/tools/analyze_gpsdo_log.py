@@ -54,8 +54,8 @@ print()
 mc = (t >= T0) & np.isfinite(code)
 Ac = np.vstack([t[mc] / 86400, np.ones(mc.sum())]).T
 sc = np.linalg.lstsq(Ac, code[mc], rcond=None)[0][0]
-print("kod DAC: zacatek(1h) %.2f, konec %.2f ; sklon %.1f LSB/den -> %.2f ppb/den (K=3.4e-11/LSB)" % (
-    code[mc][:300].mean(), code[mc][-300:].mean(), sc, sc * 3.4e-2))
+print("kod DAC: zacatek(1h) %.2f, konec %.2f ; sklon %.1f LSB/den -> %.2f ppb/den (K=3.85e-11/LSB, F-0293)" % (
+    code[mc][:300].mean(), code[mc][-300:].mean(), sc, sc * 3.85e-2))
 for a, b in (("t_ocxo", to), ("t_board", tb)):
     r = np.corrcoef(b[mc], code[mc])[0, 1]
     print("korelace kod vs %s: r=%.3f ; %s: %.2f -> %.2f C" % (a, r, a, b[mc][:300].mean(), b[mc][-300:].mean()))

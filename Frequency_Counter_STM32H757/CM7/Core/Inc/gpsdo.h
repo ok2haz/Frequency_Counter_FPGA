@@ -14,8 +14,8 @@
  *
  * Stavy: OFF (vypnuto) -> WAIT (chybi DAC/1PPS/fix/hodiny FPGA) -> FLL (rozbeh: prumer kmitoctu v okne
  * 16 -> 256 s, krok kodu -y/K) -> LOCK (PLL 2. radu na fazi, tau vychozi 1000 s) -> HOLD (ztrata 1PPS:
- * drzi posledni kod, po navratu pokracuje). K = relativni zmena kmitoctu OCXO na 1 LSB DAC (namereno
- * 2026-10-16: 4,3-4,6 Hz/V x 76,3 uV/LSB -> ~3,4e-11; kladne = vyssi kod, rychlejsi OCXO).
+ * drzi posledni kod, po navratu pokracuje). K = relativni zmena kmitoctu OCXO na 1 LSB DAC (F-0293,
+ * 2026-11-16: lokalne v pracovnim bodu 3,85e-11 +- 0,13e-11; kladne = vyssi kod, rychlejsi OCXO).
  *
  * Vlakna: gpsdo_tick a cely stav VYHRADNE defaultTask; SensorsTask cte jen `g_gpsdo_drive`/`_code_q16`
  * (32bitove, atomicke). UART/UI meni nastaveni pres gpsdo_enable/_set_* (prosty zapis, prevezme se

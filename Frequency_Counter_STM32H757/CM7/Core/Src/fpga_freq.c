@@ -479,7 +479,7 @@ static double sim_urand(void) { return (double)(sim_rand() % 100001u) / 100000.0
  * y_ocxo zavisi na kodu DAC (`gpsdo_sim_dac_code`) -> `fpgasim on` + smycka GPSDO = uplna smycka bez desky.
  * ⚠️ Kanal A (mereny signal) na OCXO NEZAVISI -- zjednoduseni, emulator neladi casovou zakladnu mereni. */
 #define SIM_OCXO_Y0    (-8.4e-7)    /* zmereno 2026-10-16 pri Vc = 0 V */
-#define SIM_OCXO_KDAC  (3.1e-11)    /* relativne / LSB -- ZAMERNE jinak nez vychozi odhad serva (3,4e-11) */
+#define SIM_OCXO_KDAC  (3.1e-11)    /* relativne / LSB -- ZAMERNE jinak nez vychozi odhad serva (3,85e-11) */
 static uint32_t s_sim_pps_next_ms;
 static double   s_sim_pps_phase;    /* idealni faze [takty] od startu emulace */
 static uint32_t s_sim_pps_ts;

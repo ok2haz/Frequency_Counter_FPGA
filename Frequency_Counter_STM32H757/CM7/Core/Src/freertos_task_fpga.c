@@ -382,7 +382,12 @@ volatile uint8_t  g_gpsdo_drive;
 volatile uint32_t g_gpsdo_code_q16;
 volatile uint8_t  g_gpsdo_lockflag;
 
-#define GPSDO_KDAC_DEFAULT  3.4e-11   /* relativne / LSB, zmereno 2026-10-16 (4,3-4,6 Hz/V x 76,3 uV/LSB) */
+/* K = relativni zmena kmitoctu OCXO na 1 LSB DAC. F-0293 (2026-11-16): lokalne v pracovnim bodu (kod 24968-24984,
+ * Vc ~1,9 V) 3,85e-11 +- 0,13e-11 (1 sigma; 17 faz po 40 min proti GPS, trend zakladu + K*d), shodne s odhadem FLL
+ * z velkych kroku 2026-11-08 (3,86e-11). Drivejsi 3,4e-11 bylo z hrubeho mereni 2026-10-16 (4,3-4,6 Hz/V po 1 V na
+ * zahrivajicim se OCXO) a bylo o 12 % nizko: drift a prochazka kodu v nejistote reference vychazely o 12 % mensi
+ * a zesileni smycky o 13 % vyssi nez navrh. FLL meri K jen z kroku > 50 LSB; jinak plati tato hodnota. */
+#define GPSDO_KDAC_DEFAULT  3.85e-11  /* relativne / LSB */
 #define GPSDO_TAU_DEFAULT   1000u     /* [s] casova konstanta PLL: sum GPS 30 ns -> ~4e-11 na povelu */
 #define GPSDO_ZETA          0.7
 #define GPSDO_FLL_WIN0      16u       /* [s] prvni okno FLL */
@@ -1184,8 +1189,9 @@ uint16_t gpsdo_sim_dac_code(void)
 
 /* ── Selftest: regulator nad modelem OCXO (bez HW) ──────────────────────────────────────────────
  * Model: y = Y0 + Ktrue * kod, faze roste o y*1e9 ns/s, kazda hrana ma sum ~N(0, 30 ns) a kvantizaci
- * 10 ns. Ktrue je ZAMERNE o ~9 % jinak nez odhad regulatoru. Pozadavky: (1) do 4000 s LOCK, (2) za
- * dalsich 8000 s |y| < 2e-10 a |faze| < 300 ns, (3) se SPATNYM znamenkem K se FLL zastavi (divergence). */
+ * 10 ns. Ktrue je ZAMERNE jinak nez odhad regulatoru (0,44x .. 3,1x vychoziho K; na PC tests/host/t_gpsdo_core.py).
+ * Pozadavky: (1) do 4000 s LOCK, (2) za dalsich 8000 s |y| < 2e-10 a |faze| < 300 ns, (3) se SPATNYM znamenkem K
+ * se FLL zastavi (divergence). */
 static uint32_t s_st_rnd;
 static double st_gauss(void)
 {
@@ -1249,7 +1255,7 @@ static int st_tau_advise(void)
 
 int gpsdo_selftest(void)
 {
-    /* Skutecne K modelu ruzne od odhadu 3,4e-11 (0,5x .. 3,5x): FLL si ho zmeri a zamkne. */
+    /* Skutecne K modelu ruzne od vychoziho odhadu 3,85e-11 (0,44x .. 3,1x): FLL si ho zmeri a zamkne. */
     static const double KT[3] = { 3.1e-11, 1.7e-11, 1.2e-10 };
     uint32_t la; double ye, xe; int dv;
     int ok = 1;
@@ -1258,7 +1264,7 @@ int gpsdo_selftest(void)
         int lk = st_run(GPSDO_KDAC_DEFAULT, KT[i], 12000u, &la, &ye, &xe, &dv);
         ok = ok && lk && la > 0u && la < 4000u && fabs(ye) < 2e-10 && fabs(xe) < 300.0 && !dv;
     }
-    /* Spatne znamenko K a rozsah EFC, ktery nestaci (K 3,4x mensi): smycka se musi ZASTAVIT. */
+    /* Spatne znamenko K a rozsah EFC, ktery nestaci (K 3,85x mensi): smycka se musi ZASTAVIT. */
     s_st_rnd = 0x12345u;
     (void)st_run(-GPSDO_KDAC_DEFAULT, 3.1e-11, 3000u, &la, &ye, &xe, &dv);
     ok = ok && dv;

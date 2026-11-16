@@ -340,7 +340,7 @@ tom = np.array([to_[kb == i].mean() for i in range(nbk)])
 tbm = np.array([tb_[kb == i].mean() for i in range(nbk)])
 th = (np.arange(nbk) + 0.5) * B / 3600.0
 print("30min bloky: kod %.2f -> %.2f LSB; t_ocxo %.3f -> %.3f C; t_board %.2f -> %.2f C" % (cm[0], cm[-1], tom[0], tom[-1], tbm[0], tbm[-1]))
-K = 3.4e-11
+K = 3.85e-11  # F-0293 (2026-11-16): lokalni strmost DAC v pracovnim bodu; do 2026-11-16 3.4e-11 (o 12 % nizko)
 
 
 def fit(cols, names):
