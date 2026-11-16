@@ -317,7 +317,7 @@ kmitočet / drift, nebo PI s druhým integrátorem) a τ volené podle změřen�
   **DNL/INL nad ~1 LSB vyloučena, hypotéza o desítkách procent z DNL se nepotvrdila**; větší chybu dělalo samotné K
   (drift a procházka kódu v nejistotě reference i odhady stárnutí o 12 % nízko). Oprava: `GPSDO_KDAC_DEFAULT`
   3,85·10⁻¹¹ + host test regulátoru `tests/host/t_gpsdo_core.py` (L-0289). U výsledků stárnutí se dál uvádí rozsah
-  kódu; DNL pod 0,44 LSB tímto testem rozlišit nejde. ⬜ neověřeno na HW (flash + `gpsdo test`).
+  kódu; DNL pod 0,44 LSB tímto testem rozlišit nejde. ✅ Ověřeno na HW 2026-11-16 po power-cyklu (`gpsdo` hlásí K 3.85e-11, `gpsdo test` PASS, SELFTEST 16/16, smyčka FLL → LOCK).
 
 ---
 
@@ -333,7 +333,7 @@ Uživatel schválil navržené pořadí. Provedeno téhož dne:
 | F-0286 | výchozí měření, RTL beze změny | – | běh 36,3 h (flash appOscS6, modul 35 °C): bubliny okna P 0 / S 0 z 523 431 oken → dopad se při pokojové teplotě neprojevuje; ⬜ test v teple |
 | F-0292 | opraven model nejistoty (v0.45.16); povel v holdoveru beze změny | `5ca59de` | dvě noci LOCK po 9,8 h (`docs/audit/sim/2026-11-14_f0292_*.py`), host test + 26 mutací, L-0279; ⬜ neověřeno holdoverem na desce |
 | F-0287, F-0288, F-0289 | otevřeno | – | – |
-| F-0293 | změřeno 2026-11-16 (noc, 17 fází); výchozí K 3,4 → 3,85·10⁻¹¹ opraveno v kódu (v0.45.21) | `5dbc057` | host test `tests/host/t_gpsdo_core.py` + mutace, L-0289; ⬜ neověřeno na HW |
+| F-0293 | změřeno 2026-11-16 (noc, 17 fází); výchozí K 3,4 → 3,85·10⁻¹¹ opraveno v kódu (v0.45.21) | `5dbc057` | host test `tests/host/t_gpsdo_core.py` + mutace, L-0289; ✅ HW 2026-11-16 po power-cyklu (`gpsdo test` PASS, K 3.85e-11) |
 
 Odchylky od návrhu v nálezech:
 

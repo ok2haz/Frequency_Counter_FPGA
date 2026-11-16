@@ -1910,6 +1910,6 @@ nejistota reference 0,012 ppb), uptime 21,5 h bez resetu.
   smycky o 13 % vyssi nez navrh (zeta 0,74 misto 0,70) - zanedbatelne.
 - **Oprava v0.45.21 (`5dbc057`):** `GPSDO_KDAC_DEFAULT` 3,85e-11; host test regulatoru `tests/host/t_gpsdo_core.py`
   (PASS se 3,4 i 3,85e-11, LOCK 536/536/279 s; mutace K 1,6e-10 FAIL); `f0293_vyhodnot.py` s globalnim modelem.
-  ⬜ neovereno na HW (flash + power-cyklus + `gpsdo test`). Suchy beh skriptu uz UART necte (`5b70c6f`).
+  ✅ Overeno na HW 2026-11-16 po power-cyklu: `version` v0.45.21, `gpsdo` K 3.85e-11, `gpsdo test` PASS (48 ms), SELFTEST 16/16; smycka FLL -> LOCK. Suchy beh skriptu uz UART necte (`5b70c6f`).
 - Vedlejsi: `status` hlasi `DAC OCXO: kod 24969 | readback 24976` - readback je z posledniho rucniho zapisu (`dac 24976`
   v 10:31), zapisy serva s ditherem readback nedelaji; vypada to jako nesoulad (STATUS #388).

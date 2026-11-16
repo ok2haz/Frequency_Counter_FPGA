@@ -6442,6 +6442,7 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   FLL ji 2026-11-08 z velkých kroků odhadl na 3,86·10⁻¹¹, ale tehdejší diagnostika řešila znaménko, ne velikost.
 - **Oprava:** `GPSDO_KDAC_DEFAULT` 3,85·10⁻¹¹ (v0.45.21, `5dbc057`); host test regulátoru `tests/host/t_gpsdo_core.py`
   (jádro a `st_run` ze zdroje, mutace K 1,6·10⁻¹⁰ selže); měření K `tools/f0293_k_kroky.ps1` + `tools/f0293_vyhodnot.py`.
+  ✅ Ověřeno na HW 2026-11-16 po power-cyklu (`gpsdo` hlásí K 3.85e-11, `gpsdo test` PASS, SELFTEST 16/16).
 - **Pravidlo:** konstanta, ze které regulátor nebo prezentace počítá odvozené veličiny, se měří v pracovním bodu a s nejistotou.
   Když smyčka sama odhadne jinou hodnotu (FLL 3,86 proti 3,4), je to podnět k měření, ne šum. K měř z kroků ±4 až ±8 LSB
   globálním modelem driftu: krok ±1 LSB (~38 ppt) je pod putováním OCXO–GPS za 30 min (~17 ppt mezi fázemi), +1 LSB
