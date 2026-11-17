@@ -4565,7 +4565,19 @@ void UartTask_run(void *argument)
 					  	printf("VBAT nabijeni: %s (VBE=%u) | mustek jen pri prevodu, perioda 600 s | korekce na baterii %+d mV\n",
 					  	       (PWR->CR3 & PWR_CR3_VBE) ? "ZAP <== MA BYT VYP" : "VYP", (unsigned)((PWR->CR3 & PWR_CR3_VBE) ? 1u : 0u),
 					  	       (int)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f)));
-					  	printf("WATCHDOG: PR=%u RLR=%u -> %lu ms%s | pipak %s\n",
+					  	/* STATUS #386: bez vlozene CR2032 vstup plave -> stav "chybi", ne vybita (alarm VBAT se neozve). */
+							if (vbat_missing(&g_sensors[SENS_VBAT]))
+								printf("VBAT: BATERIE CHYBI (%d mV < %d mV) -> alarm vybite baterie se nehlasi; cas RTC a BKP vypadek napajeni neprezije\n",
+								       (int)g_sensors[SENS_VBAT].last, (int)VBAT_MISSING_MV);
+							/* STATUS #384/#385: VREFBUF = reference ADC3; VREF+ mimo meze = teplota jadra a VBAT neplatne. */
+							printf("VREFBUF: CSR=0x%02lX %s | pri startu %s, opakovanych zapnuti %u | VREF+ mimo %u-%u mV: %lu x%s\n",
+							       (unsigned long)(VREFBUF->CSR & 0xFFu), (VREFBUF->CSR & VREFBUF_CSR_VRR) ? "VRR ok" : "VRR NENABEHL <==",
+							       g_vrefbuf_boot_ok ? "ok" : "NENABEHL", (unsigned)g_vrefbuf_retry,
+							       (unsigned)VREF_OK_MIN_MV, (unsigned)VREF_OK_MAX_MV, (unsigned long)g_vref_bad_n,
+							       g_vref_bad_n ? " (teplota jadra a VBAT neplatne)" : "");
+							if (g_vref_bad_n)
+								printf("    posledni VREF+ mimo meze: %u mV\n", (unsigned)g_vref_bad_mv);
+							printf("WATCHDOG: PR=%u RLR=%u -> %lu ms%s | pipak %s\n",
 					  	       (unsigned)watchdog_cfg_pr(), (unsigned)watchdog_cfg_rlr(),
 					  	       (unsigned long)watchdog_timeout_ms(),
 					  	       watchdog_cfg_ok() ? "" : "  <== NESEDI (ceka se 4000 ms)",

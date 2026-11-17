@@ -815,7 +815,8 @@ static int draw_diag_values(int force)
     }
     for (int k = 0; k < 2; k++) {
         const sensor_stat_t *mv = &g_sensors[SENS_VDDA + k];
-        snprintf(buf, sizeof(buf), "%ld mV", lround_f(mv->last));
+        if (k == 1 && vbat_missing(mv)) snprintf(buf, sizeof(buf), "chybi");   /* STATUS #386: bez CR2032, ne vybita */
+        else snprintf(buf, sizeof(buf), "%ld mV", lround_f(mv->last));
         snprintf(key, sizeof(key), "%c%s", mv->valid ? 'V' : 'X', buf);
         if (force || dchg(c_mcu[k], sizeof(c_mcu[k]), key)) {
             dval(DG_LVAL, (int16_t)(362 + k * 26), 100, buf, mv->valid); drew = 1; }
@@ -6316,6 +6317,7 @@ static void thr_label(int row, char *b, size_t n)
     const sensor_stat_t *s = (row == 0) ? &g_sensors[SENS_VBAT] : &g_sensors[SENS_T49];
     char cur[16];
     if (row == 3 || !s->samples) { snprintf(b, n, "%s", BASE[row]); return; }
+    if (row == 0 && vbat_missing(s)) { snprintf(b, n, "%s  (baterie chybi)", BASE[row]); return; }   /* STATUS #386 */
     if (row == 0) fmt_fixed(cur, sizeof cur, s->last / 1000.0f, 2);
     else          fmt_fixed(cur, sizeof cur, s->last, 1);
     snprintf(b, n, "%s  (ted %s%s)", BASE[row], cur, (row == 0) ? " V" : " C");

@@ -65,6 +65,19 @@ typedef struct {
 
 extern sensor_stat_t g_sensors[SENS_COUNT];
 
+/* STATUS #385: meze VREF+ (VREFBUF SCALE0 = 2,5 V, zmereno 2,515 V; ±4 % jako AUTO-CAL). Mimo ne jsou teplota jadra a VBAT
+ * spocitane proti spatne referenci a SensorsTask je oznaci za neplatne. */
+#define VREF_OK_MIN_MV     2400u
+#define VREF_OK_MAX_MV     2600u
+
+/* STATUS #386 (pozadavek 4b revize HW 2.1): bez vlozene CR2032 vstup VBAT plave a cte se pod ~1,5 V; vybita CR2032 ma
+ * vic (meze alarmu 2,70 / 2,40 V). Pod touto mezi je stav "baterie chybi": alarm ani AUTO-CAL vybitou baterii nehlasi. */
+#define VBAT_MISSING_MV    1500.0f
+static inline int vbat_missing(const sensor_stat_t *b)
+{
+    return b->samples && b->valid && b->last < VBAT_MISSING_MV;
+}
+
 /* Popisná metadata senzoru (název + jednotka) — JEDNO místo pravdy pro UART výpis
  * i UI/diagnostiku (dřív duplicitní pole v každém konzumentovi). Index = sensor_id_t.
  * Definováno ve freertos.c. */

@@ -78,6 +78,26 @@ static int adc3_read_chan(uint32_t channel, uint32_t *out)
     return 1;
 }
 
+/* ── VREFBUF a vernost VREF+ (STATUS #384/#385, pozadavky HW rev. 2.1) ─────────────────────────────────────────────────────
+ * ADC3 meri teplotu jadra a VBAT PROTI VREF+, kterou budi vnitrni VREFBUF (~2,5 V). Kdyz buffer nenabehne (rev. 2.1: VDDA zapina
+ * U12 az po PG z +3V3) nebo VDDA vypadne, VREF+ neodpovida a z prepoctu vyjdou cisla, ktera VYPADAJI platne. Proto:
+ *  - #384: VRR = 0 -> zapnuti VREFBUF znovu (vypnout a zapnout), nejvys VREFBUF_RETRY_MAX krat (1x za cyklus ADC3 = 1 s);
+ *  - #385: VREF+ (z VREFINT) mimo VREF_OK_MIN..MAX_MV -> teplota jadra a VBAT se oznaci za neplatne, VREF se ukaze s chybou.
+ * Meze VREF_OK_MIN/MAX_MV jsou v `sensor_stat.h` (cte je i `status`). */
+#define VREFBUF_RETRY_MAX  10u
+
+static void vrefbuf_service(void)
+{
+    if ((VREFBUF->CSR & VREFBUF_CSR_VRR) != 0u) return;
+    if (g_vrefbuf_retry >= VREFBUF_RETRY_MAX) return;
+    g_vrefbuf_retry++;
+    __HAL_RCC_VREF_CLK_ENABLE();                 /* bez hodin VREFEN je CSR mrtvy (CLAUDE.md, ADC3 vrstva 0) */
+    HAL_SYSCFG_DisableVREFBUF();
+    HAL_SYSCFG_VREFBUF_VoltageScalingConfig(SYSCFG_VREFBUF_VOLTAGE_SCALE0);
+    HAL_SYSCFG_VREFBUF_HighImpedanceConfig(SYSCFG_VREFBUF_HIGH_IMPEDANCE_DISABLE);
+    (void)HAL_SYSCFG_EnableVREFBUF();   /* ceka na VRR nejvys 10 ms (HAL); SensorsTask neni hlidany IWDG. Vysledek: `status` cte CSR */
+}
+
 /* Definice pro TMP117 */
 #define TMP117_ADDR         (0x48 << 1)
 #define TMP117_REG_TEMP     0x00
@@ -939,6 +959,7 @@ void SensorsTask_run(void *argument)
 	// ⚠️ JEN KAZDY 2. CYKLUS (1 Hz): jadro/VREF/VBAT se meni pomalu -> 2 Hz zbytecne;
 	// setri ~1,3 % CPU (3 kanaly x 16 vzorku busy-poll ~12,6 ms se pulnou frekvenci).
 	if ((cyc++ & 1u) == 0u) {
+	vrefbuf_service();   /* STATUS #384: VREFBUF, ktery pri startu nenabehl, zkusit znovu (pred prevodem) */
 	uint32_t rt = 0, rv = 0, rb = 0;
 	int a_t = adc3_read_chan(ADC_CHANNEL_TEMPSENSOR, &rt);
 	int a_v = adc3_read_chan(ADC_CHANNEL_VREFINT,    &rv);
@@ -959,6 +980,16 @@ void SensorsTask_run(void *argument)
 	   * VREFBUF (~2500). Zobrazuje se jako "VREF" (na teto desce ~2,5 V z VREFBUF). */
 	  uint32_t vref = ADC_VREF_CHARAC * (uint32_t)ADC_VREFINT_CAL / rv;
 	  sensor_update(SENS_VDDA, (float)vref);
+	  /* STATUS #385: VREF+ mimo meze -> prepocet teploty i VBAT stoji na spatne referenci. VREF se ukaze (hodnota zustane
+	   * v `last`), ale s chybou; teplota a VBAT neplatne. VBAT se oznaci jen v cyklu, kdy se melo merit (jinak drzi hodnotu
+	   * namerenou pri dobre referenci). */
+	  if (vref < VREF_OK_MIN_MV || vref > VREF_OK_MAX_MV) {
+		g_vref_bad_n++;
+		g_vref_bad_mv = (uint16_t)(vref > 65535u ? 65535u : vref);
+		sensor_fail(SENS_VDDA);
+		sensor_fail(SENS_CORE_T);
+		if (vbat_due) sensor_fail(SENS_VBAT);
+	  } else {
 	  if (a_t) {
 		/* TS_CAL jsou merene pri VREF+=3,3 V -> rt prepocti na 3,3V-ekvivalent
 		 * (rt * vref/3300), jinak by teplota byla mimo (VREFBUF != 3,3 V). */
@@ -996,6 +1027,7 @@ void SensorsTask_run(void *argument)
 		float vbat_batt = (float)vbat_pin + g_calib.vbat_corr_mv;
 		sensor_update(SENS_VBAT, vbat_batt);
 	  } else if (vbat_due) sensor_fail(SENS_VBAT);
+	  }   /* VREF+ v mezich */
 	} else {
 	  sensor_fail(SENS_CORE_T); sensor_fail(SENS_VDDA); sensor_fail(SENS_VBAT);
 	}

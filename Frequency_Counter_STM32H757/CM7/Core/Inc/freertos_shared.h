@@ -326,6 +326,11 @@ extern volatile uint16_t g_flightrec_staged;
 extern volatile uint16_t g_tmp117_cfg_fail;   /* nezdarena konfigurace TMP117 (F-0022) */
 extern volatile uint8_t  g_csi_ready;
 extern volatile uint8_t  g_iocomp_ready;
+/* VREFBUF (reference ADC3) a vernost VREF+ (STATUS #384/#385, pozadavky HW rev. 2.1): zapis main.c (start) a SensorsTask, cte `status`. */
+extern volatile uint8_t  g_vrefbuf_boot_ok;   /* 1 = VRR nabehl uz pri startu v main.c */
+extern volatile uint8_t  g_vrefbuf_retry;     /* pocet opakovanych zapnuti ze SensorsTasku (strop VREFBUF_RETRY_MAX) */
+extern volatile uint32_t g_vref_bad_n;        /* pocet cyklu ADC3 (1 Hz) s VREF+ mimo VREF_OK_MIN..MAX_MV */
+extern volatile uint16_t g_vref_bad_mv;       /* posledni VREF+ mimo meze [mV] */
 extern volatile uint8_t  g_pwrclk_bad;        /* 0 = vse sedi */
 extern volatile uint32_t g_pwrclk_sysclk_hz;
 extern volatile uint32_t g_pwrclk_hclk_hz;

@@ -330,6 +330,10 @@ volatile uint16_t g_tmp117_cfg_fail;
 
 volatile uint8_t  g_csi_ready;
 volatile uint8_t  g_iocomp_ready;
+volatile uint8_t  g_vrefbuf_boot_ok;
+volatile uint8_t  g_vrefbuf_retry;
+volatile uint32_t g_vref_bad_n;
+volatile uint16_t g_vref_bad_mv;
 
 volatile uint8_t  g_pwrclk_bad;        /* bitmaska PWRCLK_BAD_*, 0 = vse sedi */
 volatile uint32_t g_pwrclk_sysclk_hz;  /* skutecny SYSCLK dle RCC registru */

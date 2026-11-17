@@ -375,6 +375,22 @@ g_cm4_absent = 1;
     while (((SYSCFG->CCCSR & SYSCFG_CCCSR_READY) == 0u) && (--guard != 0u)) { }
     g_iocomp_ready = (guard != 0u) ? 1u : 0u;
   }
+  /* STATUS #383: PH1 = /RESET pameti W25Q512JV (sit QUADSPI_BK1_RESET na soucasne desce i rev. 2.1). V `.ioc` je
+   * PinAttribute=Free, takze ho CubeMX negeneruje a pin po resetu MCU plave jako analogovy vstup; pamet dnes funguje
+   * jen diky (nepotvrzenemu) vnitrnimu pull-upu. Drzet v log. 1 PRED `MX_QUADSPI_Init`, bez pulzu (reset pameti dela
+   * `w25q_init` softwarove 66h/99h). PH1 je OSC_OUT, volny diky HSE bypass (`main.c` SystemClock_Config).
+   * ⚠️ ODR nejdriv na 1, teprve pak rezim vystupu (HAL_GPIO_Init na ODR nesaha, L-0012) -> zadny kratky pulz do 0.
+   * GPIOH neinicializuje CM4 (zavod jader o MODER jako u GPIOG tu nehrozi). */
+  {
+    GPIO_InitTypeDef gi = {0};
+    __HAL_RCC_GPIOH_CLK_ENABLE();
+    HAL_GPIO_WritePin(GPIOH, GPIO_PIN_1, GPIO_PIN_SET);
+    gi.Pin = GPIO_PIN_1;
+    gi.Mode = GPIO_MODE_OUTPUT_PP;
+    gi.Pull = GPIO_NOPULL;
+    gi.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOH, &gi);
+  }
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -465,8 +481,12 @@ g_cm4_absent = 1;
   __HAL_RCC_VREF_CLK_ENABLE();
   HAL_SYSCFG_VREFBUF_VoltageScalingConfig(SYSCFG_VREFBUF_VOLTAGE_SCALE0);
   HAL_SYSCFG_VREFBUF_HighImpedanceConfig(SYSCFG_VREFBUF_HIGH_IMPEDANCE_DISABLE);
+  /* STATUS #384: kdyz VRR nenabehne (rev. 2.1: VDDA zapina U12 az po PG z +3V3, muze nabehnout pozde), zapnuti
+   * opakuje SensorsTask (`vrefbuf_service`, freertos_task_sensors.c) a stav hlasi `status` -> radek `VREFBUF:`. */
   if (HAL_SYSCFG_EnableVREFBUF() != HAL_OK) {
-    printf("[WARN] VREFBUF nenabehl (VRR timeout) - ADC reference plovouci\n");
+    printf("[WARN] VREFBUF nenabehl (VRR timeout) - ADC reference plovouci, SensorsTask zkusi znovu\n");
+  } else {
+    g_vrefbuf_boot_ok = 1u;
   }
 
   /* I2C1 (FPGA deska: TMP117 0x49/0x4A, ADS1115 0x48, Si5356A 0x70/0x71) */

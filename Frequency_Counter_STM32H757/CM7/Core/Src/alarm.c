@@ -264,7 +264,11 @@ static void mon_eval(void)
     /* VBAT — jen pri platnem cteni; neplatny senzor NENI duvod k alarmu. */
     if (g_mon_cfg.vbat_en) {
         const sensor_stat_t *b = &g_sensors[SENS_VBAT];
-        if (b->samples && b->valid) {
+        if (vbat_missing(b)) {
+            /* STATUS #386: baterie CHYBI (plovouci vstup pod VBAT_MISSING_MV), ne vybita -> zadny alarm; `_ever` se nuluje,
+             * takze po vlozeni baterie zacne hlidani zase od tiche prvni dobre hodnoty. Stav hlasi `status` a Diagnostika. */
+            g_mon_vbat_bad = 0; s_vbat_ever = 0;
+        } else if (b->samples && b->valid) {
             uint8_t bad = band_eval(g_mon_vbat_bad, b->last,
                                     g_mon_cfg.vbat_lo_mv, MON_INF, 30.0f);
             mon_edge(bad, &g_mon_vbat_bad, &s_vbat_ever, &g_alarm_vbat);

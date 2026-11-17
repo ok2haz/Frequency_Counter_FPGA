@@ -38,7 +38,9 @@ void autocal_run(void)
     /* VBAT = napeti BATERIE (pin + korekce, STATUS #322): OK od 2,70 V, vyhrada 2,40-2,70 V, kriticke pod 2,40 V; ne symetricka tolerance. */
     {
         const sensor_stat_t *b = &g_sensors[SENS_VBAT];
+        /* STATUS #386: baterie chybi (pod VBAT_MISSING_MV) = vyhrada, ne kriticka vybita baterie. */
         g_autocal.vbat = (!b->samples || !b->valid) ? AC_NA
+                        : vbat_missing(b) ? AC_WARN
                         : (b->last >= 2700.0f) ? AC_PASS
                         : (b->last >= 2400.0f) ? AC_WARN : AC_FAIL;
     }
@@ -75,12 +77,13 @@ void autocal_format_full(char *buf, int n)
              "  VREF 2V5 : %s\r\n"
              "  12V vetev: %s\r\n"
              "  5V vetev : %s\r\n"
-             "  VBAT     : %s\r\n"
+             "  VBAT     : %s%s\r\n"
              "  ADC self-cal: %s (staged)\r\n"
              "  Timebase/GPS: %s (staged, ceka na mereni)\r\n"
              "  RF gain  : %s (staged, ext. reference -> okno Kalibrace)\r\n",
              rs(g_autocal.vref), rs(g_autocal.rail12), rs(g_autocal.rail5),
-             rs(g_autocal.vbat), rs(g_autocal.adc_selfcal), rs(g_autocal.timebase),
+             rs(g_autocal.vbat), vbat_missing(&g_sensors[SENS_VBAT]) ? " (baterie chybi)" : "",
+             rs(g_autocal.adc_selfcal), rs(g_autocal.timebase),
              rs(g_autocal.rf));
 }
 
