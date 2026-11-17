@@ -890,13 +890,22 @@ void fpga_freq_ev_pair_req(uint8_t mode);
 int  fpga_freq_ev_pair_rc(void);
 /* v0.45.23: ULOZENE zpozdeni B-A z kalibrace (FPGA_EVP_SKEW, B = pin A; plati do restartu). Odecita se od sirky pulzu a stridy
  * (stejne cesty jako pri kalibraci); pro interval A-B z dvou ruznych pinu NEPLATI -- tam slouzi nula intervalu
- * (`fpga_freq_ti_offset_set`: oba vstupy na tentyz signal, nastavi se stredni interval). @return 1 = zkalibrovano */
+ * (`fpga_freq_ti_offset_set`: oba vstupy na tentyz signal, hodnotu da `fpga_freq_ti_zero_eval`). @return 1 = zkalibrovano */
 int  fpga_freq_pw_skew(double *ps, double *sd, uint32_t *n);
 /* F-0299: zrusi ulozene zpozdeni a az do dalsiho startu kalibrace (`fpga pw cal`, KALIBROVAT) ho z bezici statistiky SKEW
  * znovu neulozi (drive ho FpgaTask do 25 ms obnovil, takze ZRUSIT KAL. behem kalibrace nic nezrusilo). */
 void fpga_freq_pw_skew_clear(void);
 void fpga_freq_ti_offset_set(double ps, int ok);
 int  fpga_freq_ti_offset(double *ps);
+/* F-0297 (v0.45.25): KANDIDAT NULY intervalu A-B = stredni ZNAMENKOVA vzdalenost nejblizsi hrany B od startu (hrana A),
+ * pocitana parovanim A-B pro kazdy start proti souhrnu B (fpga_v3_ab_t.nr) -- ne prumer intervalu "prvni hrana B po A", ktery
+ * je pri zpozdeni B-A kolem nuly nebo zapornem dvojznacny o periodu (docs/audit/sim/2026-11-17_null_wrap.*). Jen parovani A-B
+ * se souhrnem B (signal nad ~120 Hz x P). Plati pri n >= FPGA_TI_ZERO_MIN_N a sigma <= FPGA_TI_ZERO_MAX_SD_PS; vetsi sigma =
+ * na A a B neni tentyz signal (nebo je faze kolem pul periody). Vola tlacitko NULA A-B (okno UDALOSTI) i UART `fpga ab zero`.
+ * @return 1 = kandidat plati (nastavit fpga_freq_ti_offset_set), 0 = malo vzorku / jine parovani, -1 = sigma nad mezi */
+#define FPGA_TI_ZERO_MIN_N      100u       /* ~2,5 s pri jednom startu na segment 25 ms */
+#define FPGA_TI_ZERO_MAX_SD_PS  1000.0     /* sigma jednoho vzorku [ps]; stejny signal na A i B ~100-450 ps */
+int  fpga_freq_ti_zero_eval(double *ps, double *sd, uint32_t *n);
 /* zjisteny protokol FPGA: 0 = jeste nezjisten, 2, 3 (emulator v3 = 3) */
 uint8_t fpga_freq_proto(void);
 /* Prumer a σ poslednich `last` intervalu kruhu (0 = vsech, nejvys 64) [ps]; *total = intervalu celkem (roste s kazdym

@@ -484,6 +484,19 @@ static void uart_ab_show(uint32_t n, int pw)
 	double corr = 0.0;
 	const int corr_ok = pw ? fpga_freq_pw_skew(&corr, NULL, NULL) : fpga_freq_ti_offset(&corr);
 	if (corr_ok) { char cb[32]; uart_ps_fmt(cb, sizeof cb, corr); printf("  korekce %s: %s odecteno\n", pw ? "zpozdeni B-A" : "nula intervalu", cb); }
+	if (!pw) {   /* F-0297: kandidat nuly = znamenkova vzdalenost k nejblizsi hrane B (nema skok o periodu jako interval) */
+		double zm, zsd; uint32_t zn;
+		const int z = fpga_freq_ti_zero_eval(&zm, &zsd, &zn);
+		if (zn) {
+			char za[32], zb[24], zr[48];
+			uart_ps_fmt(za, sizeof za, zm);
+			uart_regr_fmt(zb, sizeof zb, (zsd > 4.0e9) ? 4.0e9 : zsd, 1);
+			if (z == 1)     snprintf(zr, sizeof zr, "lze nastavit (`fpga ab zero`)");
+			else if (z < 0) snprintf(zr, sizeof zr, "NE (sigma > %u ps: jiny signal?)", (unsigned)FPGA_TI_ZERO_MAX_SD_PS);
+			else            snprintf(zr, sizeof zr, "zatim ne (malo vzorku)");
+			printf("  nejblizsi hrana B - start %lu: stredni %s, sigma %s ps -> nula %s\n", (unsigned long)zn, za, zb, zr);
+		}
+	}
 	if (ei.ab_n) uart_ab_stat(pw ? "sirka pulzu" : "intervalu", ei.ab_n, ei.ab_mean, ei.ab_sd, ei.ab_min, ei.ab_max, corr);
 	for (int g = 0; g < 2; g++) {                       /* v0.45.3: chyba hrany taktu se odecte jen ve stejne periode */
 		if (!ei.ax_n[g]) continue;
@@ -3281,14 +3294,25 @@ void UartTask_run(void *argument)
 				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_AB), "interval A->B ZAPNUTO (statistika vynulovana)");
 				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
 				  else if (strcmp(a, "zero") == 0) {
-					  /* v0.45.23: NULA intervalu A-B = stredni zmereny interval pri tomtez signalu na OBOU vstupech (rozbocovac);
-					   * odecita se od vsech dalsich intervalu a fazi (UART i hlavni obrazovka). */
-					  double m, sd; uint32_t n, tot;
-					  if (fpga_freq_ab_stat(0u, &m, &sd, &n, &tot) && n >= 8u) {
+					  /* NULA intervalu A-B pri tomtez signalu na OBOU vstupech (rozbocovac); odecita se od vsech dalsich intervalu
+					   * a fazi (UART i hlavni obrazovka). F-0297: hodnota = znamenkova vzdalenost k nejblizsi hrane B
+					   * (fpga_freq_ti_zero_eval, totez co tlacitko NULA A-B), ne prumer intervalu (dvojznacny o periodu). */
+					  double m, sd; uint32_t n;
+					  const int z = fpga_freq_ti_zero_eval(&m, &sd, &n);
+					  char b[32], c[24];
+					  uart_ps_fmt(b, sizeof b, m);
+					  uart_regr_fmt(c, sizeof c, (sd > 4.0e9) ? 4.0e9 : sd, 1);
+					  if (z == 1) {
 						  fpga_freq_ti_offset_set(m, 1);
-						  char b[32]; uart_ps_fmt(b, sizeof b, m);
-						  printf("FPGA: nula intervalu A->B nastavena na %s (z %lu intervalu; tentyz signal na oba vstupy)\n", b, (unsigned long)n);
-					  } else printf("FPGA: malo intervalu pro nulu (zapni `fpga ab on`, na A i B tentyz signal, pockej na >= 8)\n");
+						  printf("FPGA: nula intervalu A->B nastavena na %s (sigma %s ps, %lu startu; tentyz signal na oba vstupy)\n",
+						         b, c, (unsigned long)n);
+					  } else if (z < 0) {
+						  printf("FPGA: nula ODMITNUTA: sigma %s ps > %u ps (na A a B neni tentyz signal, nebo faze kolem pul periody)\n",
+						         c, (unsigned)FPGA_TI_ZERO_MAX_SD_PS);
+					  } else {
+						  printf("FPGA: malo vzorku pro nulu (%lu z %u; `fpga ab on`, na A i B tentyz signal nad ~120 Hz)\n",
+						         (unsigned long)n, (unsigned)FPGA_TI_ZERO_MIN_N);
+					  }
 				  }
 				  else if (strcmp(a, "clear") == 0) { fpga_freq_ti_offset_set(0.0, 0); printf("FPGA: nula intervalu A->B zrusena\n"); }
 				  else uart_ab_show(uart_num(a, 0u, 64u), 0);

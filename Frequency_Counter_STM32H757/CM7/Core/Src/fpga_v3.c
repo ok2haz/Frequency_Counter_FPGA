@@ -449,7 +449,13 @@ static void ab_reset(fpga_v3_ab_t *p) { p->armed = 0u; }      /* neplatny zaznam
  *    pozde). Pri P = 1 je T0 prvni hrana B v segmentu, start pred ni = stop T0 (jako u jednotlive hrany).
  * Ochrana FPGA_V3_AB_GUARD_U: PREDCHOZI hrana pinu (existuje-li) musi lezet pred startem dal nez sum znacek, jinak by mohla
  * lezet az za nim (B = A: stop ~0 nebo cela perioda podle sumu) -> start se zahodi. Stop po startu o jednotky az desitky ps
- * (T0 hned za startem, bez predchozi hrany) se bere jako dosud. @return novy pocet vystupu */
+ * (T0 hned za startem, bez predchozi hrany) se bere jako dosud.
+ * F-0297 (v0.45.25): pred ochranou se do p->nr pricte ZNAMENKOVA vzdalenost NEJBLIZSI hrany pinu od startu,
+ * kn * per - (start - T0), kn = round((start - T0) / per), |.| <= per / 2 -- pro kazdy start, ktery nelezi za koncem souhrnu
+ * a jehoz nejblizsi hrana je nejvys P period pred T0 (kn >= -P; u spojiteho signalu existuje, P = 1: posledni hrana
+ * predchoziho segmentu), tedy i pro ten, ktery ochrana zahodi. Podminka je na kn, ne na k: start, ktery sum znacek posune
+ * o kousek dal nez P period pred T0, by jinak vypadl podle sumu a prumer by se zkreslil. Z ni se pocita NULA A-B (tentyz signal na A i B): interval "prvni hrana B po startu"
+ * je pro zpozdeni B-A kolem 0 nebo zaporne dvojznacny o periodu a ochrana v nem dela diru -GUARD..0. @return novy pocet vystupu */
 static uint32_t ab_burst(fpga_v3_ab_t *p, const fpga_v3_ev_t *b, int64_t *dt_u, uint32_t out, uint32_t max_out)
 {
     p->armed = 0u;
@@ -458,8 +464,10 @@ static uint32_t ab_burst(fpga_v3_ab_t *p, const fpga_v3_ev_t *b, int64_t *dt_u, 
     if (!(per > 0.0) || b->n < 3u) { p->lost++; return out; }
     const int64_t dl = (int64_t)(p->t_start - b->t_u);                /* start - T0, rozdil v int64 (osa az 2^60) */
     int64_t k = (int64_t)floor((double)dl / per) + 1;
+    const double kn = floor((double)dl / per + 0.5);                   /* F-0297: index NEJBLIZSI hrany pinu od T0 */
     if (k < 1 - P) k = 1 - P;
     if (k > (int64_t)b->n - 1) { p->lost++; return out; }             /* start za koncem souhrnu */
+    if (kn >= (double)(-P)) fpga_v3_stat_add(&p->nr, kn * per - (double)dl);   /* nejblizsi hrana - start */
     const double d = (double)k * per - (double)dl;                     /* stop - start */
     const int prev_ok = (k <= 1 - P) || ((double)dl - (double)(k - 1) * per >= (double)FPGA_V3_AB_GUARD_U);
     if (!(d > 0.0) || !prev_ok) { p->lost++; return out; }

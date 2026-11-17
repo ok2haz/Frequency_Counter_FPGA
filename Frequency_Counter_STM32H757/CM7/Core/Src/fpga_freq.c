@@ -1359,6 +1359,7 @@ static uint32_t        s_pw_skew_n;
 static volatile uint8_t s_pw_skew_blk;
 static double          s_ti_off_ps;
 static uint8_t         s_ti_off_ok;
+static double          s3e_up;          /* F-0297: ps na jednotku T/16384 posledniho parovaneho zaznamu (prevod s3e_pr.ab.nr) */
 
 /* rozbaleny cas [T/16384] -> ps (cele sekundy zvlast, bez preteceni 64 b) */
 static uint64_t s3e_ps(uint64_t t_u, uint32_t clk)
@@ -1453,6 +1454,7 @@ static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
     int64_t dt[4];
     const uint32_t pm = __get_PRIMASK();
     __disable_irq();                                    /* UART cte s3e_pr.ab.lost a s3e_pr.sk */
+    s3e_up = up;                                        /* F-0297: jednotka k s3e_pr.ab.nr (fpga_freq_ti_zero_eval) */
     const uint32_t nd = fpga_v3_pr_rec(&s3e_pr, r, e, ne, pr == FPGA_EVP_SKEW, up, dt, 4u);
     for (uint32_t k = 0; k < nd; k++) {
         const double ps = (double)dt[k] * up;
@@ -3527,6 +3529,21 @@ int fpga_freq_ti_offset(double *ps)
     __set_PRIMASK(pm);
     if (ps) *ps = ok ? v : 0.0;
     return ok;
+}
+
+int fpga_freq_ti_zero_eval(double *ps, double *sd, uint32_t *n)
+{
+    /* F-0297: kopie statistiky pod PRIMASK (plni ji FpgaTask v s3e_rec), prevod jednotek az tady */
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const fpga_v3_stat_t s = s3e_pr.ab.nr; const double up = s3e_up; const uint8_t pr = s3e_pair;
+    __set_PRIMASK(pm);
+    const double m = fpga_v3_stat_mean(&s) * up, d = fpga_v3_stat_sd(&s) * up;
+    if (ps) *ps = m;
+    if (sd) *sd = d;
+    if (n)  *n = s.n;
+    if (pr != FPGA_EVP_AB || s.n < FPGA_TI_ZERO_MIN_N || !(up > 0.0)) return 0;   /* sirka pulzu: B = pin A invertovany */
+    return (d <= FPGA_TI_ZERO_MAX_SD_PS) ? 1 : -1;
 }
 
 void fpga_freq_v3_total_reset(void) { s3tot_gen++; }

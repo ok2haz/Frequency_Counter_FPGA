@@ -4493,11 +4493,27 @@ static void app_gpsdo_render_events(void)
         snprintf(b, sizeof b, "%s / %s", a1, a2);
     } else snprintf(b, sizeof b, "--");
     if (first || dchg(c_mm, sizeof c_mm, b)) { kv_row_live(316, "min / max:", b, UI_COLOR_INK_2, first); drew = 1; }
+    prim_color_t ccol = cok ? UI_COLOR_OK : UI_COLOR_INK_3;
     {
         char t[28];
         if (m == 0) {
             if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "nula %s odectena", t); }
-            else snprintf(b, sizeof b, "zadna (NULA A-B, spolecny signal)");   /* F-0301: <= 34 znaku (kv_row_live) */
+            else {
+                /* F-0297: co by NULA A-B nastavila (nejblizsi hrana B, fpga_freq_ti_zero_eval) nebo proc ne. Text <= 34 znaku
+                 * (kv_row_live, F-0301); sigma bez '+' (ev_time_str ho vynucuje). */
+                double zm, zsd; uint32_t zn; char t2[28];
+                const int z = fpga_freq_ti_zero_eval(&zm, &zsd, &zn);
+                ev_time_str(t2, sizeof t2, zsd);
+                if (z == 1) {
+                    ev_time_str(t, sizeof t, zm);
+                    snprintf(b, sizeof b, "kand. %s, sd %s", t, t2 + (t2[0] == '+'));
+                    ccol = UI_COLOR_INK_2;
+                } else if (z < 0) {
+                    ev_time_str(t, sizeof t, FPGA_TI_ZERO_MAX_SD_PS);
+                    snprintf(b, sizeof b, "nelze: sd %s > %s", t2 + (t2[0] == '+'), t + (t[0] == '+'));
+                    ccol = UI_COLOR_WARN;
+                } else snprintf(b, sizeof b, "zadna (NULA A-B, spolecny signal)");   /* F-0301: <= 34 znaku (kv_row_live) */
+            }
         } else if (m == 1) {
             if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "zpozdeni B-A %s odecteno", t); }
             else snprintf(b, sizeof b, "BEZ KALIBRACE (KALIBROVAT >)");
@@ -4506,7 +4522,7 @@ static void app_gpsdo_render_events(void)
             else snprintf(b, sizeof b, "ulozi se po 50 vzorcich");
         }
     }
-    if (first || dchg(c_cor, sizeof c_cor, b)) { kv_row_live(352, "korekce:", b, cok ? UI_COLOR_OK : UI_COLOR_INK_3, first); drew = 1; }
+    if (first || dchg(c_cor, sizeof c_cor, b)) { kv_row_live(352, "korekce:", b, ccol, first); drew = 1; }
 
     /* tlacitka: popisky podle rezimu a stavu korekce */
     if (first || dchg(c_mode, sizeof c_mode, EV_MODE_L[m])) {
@@ -10220,9 +10236,12 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
             if (in_rect(x, y, EV_ACT_RECT)) {
                 if (s_ev_mode == 0u) {
-                    fpga_ev_info_t ei; fpga_freq_ev_info(&ei);
+                    /* F-0297: nula = znamenkova vzdalenost k nejblizsi hrane B (fpga_freq_ti_zero_eval, totez co UART
+                     * `fpga ab zero`), jen kdyz plati (n, sigma); drive prumer intervalu, dvojznacny o periodu. Kdyz neplati,
+                     * duvod ukazuje radek "korekce". */
+                    double zm;
                     if (fpga_freq_ti_offset(NULL)) fpga_freq_ti_offset_set(0.0, 0);
-                    else if (ei.ab_n >= 8u) fpga_freq_ti_offset_set(ei.ab_mean, 1);   /* nula = stredni interval pri spolecnem signalu */
+                    else if (fpga_freq_ti_zero_eval(&zm, NULL, NULL) == 1) fpga_freq_ti_offset_set(zm, 1);
                 } else if (s_ev_mode == 1u) {
                     s_ev_mode = 2u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_SKEW);   /* zmerit zpozdeni B-A (B = pin A) */
                 } else {

@@ -301,19 +301,23 @@ uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t 
  * na pinu A invertovanem (SET_CONFIG 0x09 = 3): A nabezne, B sestupne hrany. */
 #define FPGA_V3_AB_GUARD_U     500u    /* [jednotky T/16384] ~305 ps pri 100 MHz: hrana B blize startu = soucasna */
 #define FPGA_V3_AB_TST         4u      /* v0.45.3: casu startu k prvnim vydanym intervalum jednoho volani */
+/* Prubezna statistika intervalu [ps] (Welford: rozptyl i pri velke stredni hodnote, napr. intervaly sekund v ps) */
+typedef struct { uint32_t n; double mean, m2, min, max; } fpga_v3_stat_t;
 typedef struct {
     uint8_t  armed;              /* 1 = ceka na stop */
     uint64_t t_start;
     uint64_t max_u;
     uint32_t n, lost;            /* intervalu / zahozenych startu (bez stopu do max_u) */
     uint64_t t_st[FPGA_V3_AB_TST];   /* cas startu k dt_u[i] posledniho volani fpga_v3_ab_feed (i < FPGA_V3_AB_TST) */
+    /* F-0297 (v0.45.25): ZNAMENKOVA vzdalenost NEJBLIZSI hrany pinu B od startu [jednotky T/16384] pro kazdy start reseny
+     * proti souhrnu B (i ten, ktery interval zahodi) = podklad NULY A-B pri tomtez signalu na obou vstupech. Interval
+     * "prvni hrana B po startu" je pro zpozdeni B-A kolem 0 nebo zaporne dvojznacny o periodu. */
+    fpga_v3_stat_t nr;
 } fpga_v3_ab_t;
 void     fpga_v3_ab_init(fpga_v3_ab_t *p, uint64_t max_u);
 /* @return pocet intervalu zapsanych do dt_u[0..max_out-1] [jednotky] */
 uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, int64_t *dt_u, uint32_t max_out);
 
-/* Prubezna statistika intervalu [ps] (Welford: rozptyl i pri velke stredni hodnote, napr. intervaly sekund v ps) */
-typedef struct { uint32_t n; double mean, m2, min, max; } fpga_v3_stat_t;
 void     fpga_v3_stat_init(fpga_v3_stat_t *s);
 void     fpga_v3_stat_add(fpga_v3_stat_t *s, double v);
 double   fpga_v3_stat_mean(const fpga_v3_stat_t *s);

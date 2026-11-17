@@ -528,6 +528,42 @@ int main(void)
               "ab_feed souhrn B s predelickou: %u dt %lld, %u dt %lld, za koncem %u, pred souhrnem %u dt %lld, n %u, ztraceno %u",
               (unsigned)n1, (long long)d7, (unsigned)n2, (long long)d8, (unsigned)n3, (unsigned)n4, (long long)d10,
               (unsigned)P.n, (unsigned)P.lost);
+        /* F-0297: vzdalenost k nejblizsi hrane B (ab.nr) jen pro starty uvnitr souhrnu: (7) a (8) +500 (nejblizsi hrana je
+         * tu i stopem), (9) za koncem souhrnu a (10) dal nez P period pred T0 se nepocitaji */
+        CHECK(P.nr.n == 2u && fabs(fpga_v3_stat_mean(&P.nr) - 500.0) < 1e-6, "ab_feed nejblizsi hrana B: n %u, stredni %.3f",
+              (unsigned)P.nr.n, fpga_v3_stat_mean(&P.nr));
+    }
+
+    /* F-0297 (v0.45.25): NULA A-B ze znamenkove vzdalenosti k nejblizsi hrane B. Tentyz signal 10 MHz na A i B, B = A + delta,
+     * sum znacek, nahodna faze vuci hranici segmentu 25 ms: prumer ab.nr musi dat delta i pro delta <= 0, kde prumer
+     * intervalu "prvni hrana B po startu" dava ~perioda nebo diru -GUARD..0 (docs/audit/sim/2026-11-17_null_wrap.c), a ab.nr
+     * musi zapocitat KAZDY start (i ty, ktere ochrana zahodi). */
+    {
+        static fpga_v3_ab_t P; fpga_v3_ev_t e[2]; int64_t dt[4];
+        static const double DL[5] = { -500.0, -90.0, 0.0, 90.0, 500.0 };   /* delta B - A [ps] */
+        const double U = 10000.0 / 16384.0, per = 100000.0;                 /* jednotka T/16384 pri 100 MHz [ps], 10 MHz */
+        uint32_t rs = 777u;
+        for (int i = 0; i < 5; i++) {
+            double imean = 0.0; uint32_t ni = 0u;
+            fpga_v3_ab_init(&P, 100000000000ull);
+            for (uint32_t s = 0; s < 4000u; s++) {
+                double r[3];
+                for (int j = 0; j < 3; j++) { rs = rs * 1664525u + 1013904223u; r[j] = (double)(rs >> 8) / 16777216.0; }
+                const double S = 1e9 + (double)s * 25e9, a = S + r[0] * per;   /* prvni hrana A segmentu, faze nahodna */
+                double b = a + DL[i];                                           /* odpovidajici hrana B */
+                if (b - per >= S) b -= per;                                     /* prvni hrana B segmentu muze byt predchozi */
+                if (b < S) b += per;                                            /* ... nebo az nasledujici */
+                e[0] = evk(0u, (uint64_t)((a + (r[1] - 0.5) * 240.0) / U + 0.5), 249999u, per / U);   /* sum +-120 ps */
+                e[1] = evk(1u, (uint64_t)((b + (r[2] - 0.5) * 240.0) / U + 0.5), 249999u, per / U);
+                const uint32_t k = fpga_v3_ab_feed(&P, e, 2u, dt, 4u);
+                for (uint32_t q = 0; q < k; q++) { imean += (double)dt[q] * U; ni++; }
+            }
+            const double nm = fpga_v3_stat_mean(&P.nr) * U, ns = fpga_v3_stat_sd(&P.nr) * U;
+            printf("  nula A-B: delta %+5.0f ps -> nejblizsi hrana %+7.1f ps (n %u, sigma %3.0f ps), prumer intervalu %+9.1f ps (n %u)\n",
+                   DL[i], nm, (unsigned)P.nr.n, ns, ni ? imean / ni : 0.0, (unsigned)ni);
+            CHECK(P.nr.n == 4000u && fabs(nm - DL[i]) < 8.0 && ns < 150.0,
+                  "nula A-B delta %+.0f ps: nejblizsi hrana %+.1f ps, sigma %.0f ps, n %u", DL[i], nm, ns, (unsigned)P.nr.n);
+        }
     }
 
     /* fpga_v3_pr_rec (zaznamy -> parovani jako v ovladaci): zaznam se znackami pri CS (bit3) se paruje, ale interval,

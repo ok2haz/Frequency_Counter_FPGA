@@ -35,6 +35,22 @@ M = [
     ('deje: stop souhrnu bez ochrany', 'if (!(d > 0.0) || !prev_ok) { p->lost++; return out; }',
      'if (!(d > 0.0)) { p->lost++; return out; }'),
     ('deje: predelicka souhrnu ignorovana', 'if (k < 1 - P) k = 1 - P;', 'if (k < 0) k = 0;'),
+    # F-0297 (v0.45.25): znamenkova vzdalenost k nejblizsi hrane B (ab.nr) = podklad NULY A-B
+    ('nula: predchozi hrana misto nejblizsi', 'const double kn = floor((double)dl / per + 0.5);',
+     'const double kn = floor((double)dl / per);'),
+    ('nula: obracene znamenko', 'fpga_v3_stat_add(&p->nr, kn * per - (double)dl);', 'fpga_v3_stat_add(&p->nr, (double)dl - kn * per);'),
+    ('nula: i dal nez P period pred T0', 'if (kn >= (double)(-P)) fpga_v3_stat_add', 'if (1) fpga_v3_stat_add'),
+    ('nula: dosah podle k (sum vyradi start)', 'const double kn = floor((double)dl / per + 0.5);',
+     'const double kn = (floor((double)dl / per) + 1.0 >= (double)(1 - P)) ? floor((double)dl / per + 0.5) : -1e18;'),
+    ('nula: jen starty, ktere ochrana prijme',
+     '    if (kn >= (double)(-P)) fpga_v3_stat_add(&p->nr, kn * per - (double)dl);   /* nejblizsi hrana - start */\n'
+     '    const double d = (double)k * per - (double)dl;                     /* stop - start */\n'
+     '    const int prev_ok = (k <= 1 - P) || ((double)dl - (double)(k - 1) * per >= (double)FPGA_V3_AB_GUARD_U);\n'
+     '    if (!(d > 0.0) || !prev_ok) { p->lost++; return out; }\n',
+     '    const double d = (double)k * per - (double)dl;                     /* stop - start */\n'
+     '    const int prev_ok = (k <= 1 - P) || ((double)dl - (double)(k - 1) * per >= (double)FPGA_V3_AB_GUARD_U);\n'
+     '    if (!(d > 0.0) || !prev_ok) { p->lost++; return out; }\n'
+     '    if (kn >= (double)(-P)) fpga_v3_stat_add(&p->nr, kn * per - (double)dl);\n'),
     ('par: CS bez meze intervalu', 'if (c && (uint64_t)dt_u[i] >= FPGA_V3_AB_CS_LIM_U) {', 'if (0) {'),
     ('deje: cas startu se neulozi', '                if (out < FPGA_V3_AB_TST) p->t_st[out] = p->t_start;\n                dt_u[out++] = (int64_t)(e->t_u - p->t_start);',
      '                dt_u[out++] = (int64_t)(e->t_u - p->t_start);'),
