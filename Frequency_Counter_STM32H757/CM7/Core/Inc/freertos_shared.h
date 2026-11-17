@@ -47,6 +47,9 @@ extern volatile uint8_t g_stats_reset_req;
 /* VBAT se normalne meri 1x za VBAT_PERIOD_S (600 s; mustek VBAT zatezuje clanek jen po dobu prevodu, STATUS #322). Dokud je
  * otevrene okno Kalibrace / pruvodce, nastavuje UiTask tenhle priznak a meri se kazdou sekundu, aby slo korekci ladit zive. */
 extern volatile uint8_t g_vbat_fast;
+/* v0.45.23: web / SCPI (`SENS:FREQ:DUAL 1`, IPC_CFG_DUAL) chce merit OBA kanaly; zapisuje UartTask / ipc_service, cte UiTask
+ * (`app_gpsdo_tick` -> fpga_freq_dual_req). Nepersistuje se. */
+extern volatile uint8_t g_dual_web;
 
 /* ── Kmitočet z FPGA (FpgaTask -> UiTask) ──────────────────────────────── */
 extern volatile char    g_freq_text[48];

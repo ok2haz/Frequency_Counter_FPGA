@@ -385,6 +385,9 @@ static int scpi_calc_parse(const char *hdr, const char *arg, uint8_t *key, uint3
         hdr_match(hdr, "SENSe:FREQuency:APERture"))
                                                    { *key = SCPI_CFG_GATE; *vd = scpi_num(arg, &ok);           if (!ok) *err = 1; return 1; }
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel")) { *key = SCPI_CFG_CHAN; *vu = (uint32_t)scpi_num(arg, &ok);  if (!ok) *err = 1; return 1; }
+    /* v0.45.23: DUAL ON|OFF = merit OBA kanaly (web: prepinac DVOJKANAL). Bez nej FPGA nemereny kanal potlaci (ochrana proti
+     * presluchu, #382), takze by karta DVOJKANAL ukazovala jen jeden kanal poctive. */
+    if (hdr_match(hdr, "SENSe:FREQuency:DUAL"))    { *key = SCPI_CFG_DUAL; *vu = (uint32_t)scpi_bool(arg, &ok); if (!ok) *err = 1; return 1; }
     /* INITiate[:IMMediate] = spustit mereni, ABORt = zastavit (oboji bez parametru). */
     if (hdr_match(hdr, "INITiate:IMMediate") || hdr_match(hdr, "INITiate")) { *key = SCPI_CFG_RUN; *vu = 1u; return 1; }
     if (hdr_match(hdr, "ABORt"))                                           { *key = SCPI_CFG_RUN; *vu = 0u; return 1; }
@@ -820,6 +823,9 @@ static size_t scpi_exec_one(scpi_ctx_t *c, scpi_src_t *src, const char *line, ch
     if (hdr_match(hdr, "SENSe:FREQuency:CHANnel") && is_query) {
         snprintf(out, out_sz, "%u", (unsigned)src->set_chan); return strlen(out);
     }
+    if (hdr_match(hdr, "SENSe:FREQuency:DUAL") && is_query) {        /* v0.45.23: 1 = merit oba kanaly */
+        snprintf(out, out_sz, "%u", (unsigned)src->set_dual); return strlen(out);
+    }
     /* Bezi mereni? (readback pro INITiate/ABORt) */
     if (hdr_match(hdr, "INITiate:CONTinuous") && is_query) {
         snprintf(out, out_sz, "%u", (unsigned)src->set_running); return strlen(out);
@@ -1072,6 +1078,9 @@ static int scpi_src_set_cfg_cm7(scpi_src_t *s, uint8_t key, uint32_t vu, double 
         return 1;
     }
     if (key == SCPI_CFG_STATS_CLR) { g_stats_reset_req = 1; return 1; }   /* statistiku vlastni UiTask -> jen pozadavek */
+    if (key == SCPI_CFG_DUAL) {                                          /* v0.45.23: FPGA kanaly rizeni UiTask podle g_dual_web */
+        g_dual_web = vu ? 1u : 0u; s->set_dual = g_dual_web; return 1;
+    }
     double fhz = src_freq_hz(s);   /* pro NULL_ACQ */
     meas_cfg_t tmp; taskENTER_CRITICAL(); tmp = g_meas_cfg; taskEXIT_CRITICAL();
     if (!scpi_cfg_apply(&tmp, key, vu, vd, fhz)) return 0;
@@ -1107,6 +1116,7 @@ static void scpi_src_load_cm7_ex(scpi_src_t *src, int full)
         src->set_chan     = (uint8_t)((c >> 1) & 1u);
         src->set_gate_idx = IPC_UICFG_GATE(c);
         src->set_running  = (uint8_t)((c >> 4) & 1u);
+        src->set_dual     = g_dual_web ? 1u : 0u;         /* v0.45.23 (bit ui_cfg uz neni volny -> samostatny globál) */
     }
     src->selftest_pass = (g_selftest_res == 1);
     src->uptime_s      = g_uptime_s;
@@ -1192,6 +1202,7 @@ static int scpi_test_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
     if (key == SCPI_CFG_CHAN) { if (vu > 1u) return 0; s->set_chan = (uint8_t)vu; return 1; }
     if (key == SCPI_CFG_RUN)  { s->set_running = vu ? 1u : 0u; return 1; }
     if (key == SCPI_CFG_STATS_CLR) return 1;   /* akce bez stavu v src */
+    if (key == SCPI_CFG_DUAL) { s->set_dual = vu ? 1u : 0u; return 1; }
     return scpi_cfg_apply(&s->meas, key, vu, vd, 1e7);
 }
 
@@ -1285,6 +1296,15 @@ int scpi_selftest(void)
     ok &= (b[0] == '1');
     scpi_process_ctx(&x, &src, "SENS:FREQ:CHAN 5", b, sizeof b);
     ok &= (src.set_chan == 1);                           /* mame jen 0/1 -> beze zmeny */
+    /* v0.45.23: DUAL ON|OFF|1|0 (merit oba kanaly) a readback */
+    scpi_process_ctx(&x, &src, "SENS:FREQ:DUAL ON", b, sizeof b);
+    ok &= (src.set_dual == 1);
+    scpi_process_ctx(&x, &src, "SENS:FREQ:DUAL?", b, sizeof b);
+    ok &= (b[0] == '1');
+    scpi_process_ctx(&x, &src, "SENS:FREQ:DUAL 0", b, sizeof b);
+    ok &= (src.set_dual == 0);
+    scpi_process_ctx(&x, &src, "SENS:FREQ:DUAL MAYBE", b, sizeof b);
+    ok &= (src.set_dual == 0);                           /* neplatny argument -> beze zmeny */
     /* INITiate / ABORt / INIT:CONT? */
     scpi_process_ctx(&x, &src, "ABOR", b, sizeof b);
     ok &= (src.set_running == 0);

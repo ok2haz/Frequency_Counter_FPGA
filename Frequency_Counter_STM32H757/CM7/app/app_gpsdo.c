@@ -25,6 +25,7 @@
 #include "alarm.h"              /* g_alarm_* pocitadla — okno Alarmy */
 #include "si5356.h"      /* SI5356_* bitove masky — JEDINY zdroj */
 #include "fpga_freq.h"          /* fpga_freq_get_last/format_val — okno Citac */
+#include "sdram_log.h"          /* sdram_log_stat — okno SPOJITE MERENI (s_view=56) */
 #include "calib.h"              /* g_calib, calib_load/save — okno Kalibrace */
 #include "meas_math.h"          /* g_meas_cfg + Math/limity (#43/#44) — okno MATH */
 #include "meas_present.h"       /* perioda/jednotky/nominal/statistika/TFOM (#67) — okno MERENI */
@@ -3051,6 +3052,8 @@ static void fmt_sci_ppb(double rel, char *b, size_t n);                         
 static void app_gpsdo_render_ti(void);           /* GPSDO TIE + stav smycky (s_view=45) */
 static void app_gpsdo_render_dualch(void);       /* Dvojkanal A + B + RF bargraf (s_view=46) */
 static void app_gpsdo_render_devmult(void);      /* Odchylka x N — ADRET 4110 styl (s_view=47) */
+static void app_gpsdo_render_events(void);       /* UDALOSTI: interval A-B, sirka pulzu, kalibrace zpozdeni (s_view=55) */
+static void app_gpsdo_render_contin(void);       /* SPOJITE MERENI: totalizace a prijem bez mrtve doby (s_view=56) */
 static void app_gpsdo_render_adret(void);        /* ADRET: faze normalu (s_view=54) */
 static void app_gpsdo_render_commdiag(void);     /* Blokove schema (s_view=21) — dlazdice v NASTROJE */
 /* ── Rozcestniky 3. iterace 2026-08-29 (viz CLAUDE.md) ─────────────────────────
@@ -3124,7 +3127,7 @@ static void btnreg_observer(const prim_rect_t *r)
 }
 
 /* ── PAMET FOKUSU PER OKNO (zadani UI §7 „menu si pamatuje posledni volbu") ── */
-#define S_VIEW_MAX 55   /* 0..54; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR, 53 = NASTAVENI GPS, 54 = ADRET FAZE */
+#define S_VIEW_MAX 57   /* 0..56; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR, 53 = NASTAVENI GPS, 54 = ADRET FAZE, 55 = UDALOSTI, 56 = SPOJITE */
 static int8_t s_focus_of[S_VIEW_MAX];
 static int8_t s_focus;                        /* fokus AKTUALNIHO okna */
 /* Okno, ve kterem uz je znacka fokusu vykreslena (0xFF = zadne). Prvni otoceni
@@ -3246,9 +3249,9 @@ static const menu_list_t MENU_LIST = {
 };
 /* Podrozcestnik MERENI (s_view=44) — 3×4 mrizka, stejna geometrie jako drivejsi
  * top Menu (w=248, x=14/276/538, h=76, y=68/154/240/326). */
-#define MEAS_N 12
-/* MERENI (s_view=44). 3 sloupce x 4 radky, poradi PO SLOUPCICH:
- *   sl.1 = zakladni odecty, sl.2 = analyza a zaznam, sl.3 = specialni funkce. */
+#define MEAS_N 14
+/* MERENI (s_view=44). 3 sloupce x 5 radku (v0.45.23: 62 px, bylo 4 x 76 px), poradi PO SLOUPCICH:
+ *   sl.1 = zakladni odecty a jednorazove deje, sl.2 = spojite mereni, analyza a zaznam, sl.3 = specialni funkce. */
 static const menu_item_t MEAS_ITEMS[MEAS_N] = {
     /* „Funkce" nahradila „Citac": vyber funkce podle zadani §4 IMPLIKUJE
      * navrat na hlavni obrazovku, takze zvlastni polozka „Citac" byla nadbytecna. */
@@ -3256,7 +3259,9 @@ static const menu_item_t MEAS_ITEMS[MEAS_N] = {
     { "CITAC DETAIL", app_gpsdo_render_counter  },   /* s_view=19 (FPGA reciproke) */
     { "PREZENTACE",   app_gpsdo_render_meas     },   /* s_view=34 (#67) */
     { "DVOJKANAL",    app_gpsdo_render_dualch   },   /* s_view=46 */
+    { "UDALOSTI",     app_gpsdo_render_events   },   /* s_view=55 (interval A-B, sirka pulzu, kalibrace zpozdeni) */
 
+    { "SPOJITE",      app_gpsdo_render_contin   },   /* s_view=56 (totalizace, prijem bez mrtve doby) */
     { "ANALYZA",      app_gpsdo_render_analyza  },   /* s_view=41 */
     { "HISTOGRAM",    app_gpsdo_render_histogram},   /* s_view=6 */
     { "DATALOG",      app_gpsdo_render_datalog  },   /* s_view=17 */
@@ -3268,8 +3273,9 @@ static const menu_item_t MEAS_ITEMS[MEAS_N] = {
     { "ODCHYLKA XN",  app_gpsdo_render_devmult  },   /* s_view=47 */
 };
 static const menu_list_t MEAS_LIST = {
-    MEAS_ITEMS, MEAS_N, 4, /*x0*/14, /*y0*/68, /*col_w*/248, /*row_h*/76,
-    /*col_gap*/14, /*row_gap*/10
+    /* 5 radku po 62 px (> 60 px dotykove minimum) + 4 mezery po 8 px = 342 px: 68..410, footer zacina na 417 */
+    MEAS_ITEMS, MEAS_N, 5, /*x0*/14, /*y0*/68, /*col_w*/248, /*row_h*/62,
+    /*col_gap*/14, /*row_gap*/8
 };
 /* Podstranka NASTROJE (s_view=48) — z footeru Diagnostiky. 3×2 mrizka. */
 #define TOOLS_N 7
@@ -4354,6 +4360,238 @@ static void app_gpsdo_render_devmult(void)
         ui_button_render(&mb);
         drew = 1;
     }
+    if (drew) present_now();
+}
+
+/* ── UDALOSTI (s_view=55, v0.45.23): jednorazove deje z hran casovanych ve FPGA (protokol v3) ──────────────────────────────
+ * Tri rezimy (tlacitko rezim): INTERVAL A-B (start = hrana A, stop = prvni hrana B po ni), SIRKA PULZU A (B = pin A
+ * invertovany; kanal B mezitim neměri svuj vstup), KALIBRACE ZPOZDENI (B = pin A, ZPOZDENI B-A tychz hran).
+ * Odecet zpozdeni (viz fpga_freq.h): sirka pulzu = ulozene zpozdeni B-A z kalibrace (stejne cesty), interval A-B = nula
+ * nastavena pri tomtez signalu na obou vstupech (rozbocovac) -- kalibrace B = pin A pro dva ruzne piny NEPLATI.
+ * Okno drzi parovani FPGA jen dokud je otevrene; po odchodu se vrati podle funkce hlavni obrazovky (app_gpsdo_tick).
+ * ⚠️ Statistika je od posledniho vynulovani (VYNUL. / zmena rezimu), ne okno poslednich 64 jako na hlavni obrazovce. */
+static uint8_t s_ev_mode;            /* 0 INTERVAL A-B, 1 SIRKA PULZU A, 2 KALIBRACE ZPOZDENI */
+static uint8_t s_ev_win;             /* 1 = okno drzi parovani FPGA */
+static const prim_rect_t EV_MODE_RECT = {  18, 417, 190, 61 };
+static const prim_rect_t EV_RST_RECT  = { 218, 417, 140, 61 };
+static const prim_rect_t EV_ACT_RECT  = { 368, 417, 270, 61 };
+static const char *const EV_MODE_L[3] = { "INTERVAL A-B", "SIRKA PULZU", "KAL. ZPOZDENI" };
+static const uint8_t EV_PAIR[3] = { FPGA_EVP_AB, FPGA_EVP_PW, FPGA_EVP_SKEW };
+
+/* Parovani, ktere ma bezet podle funkce hlavni obrazovky (po odchodu z okna). */
+static uint8_t ev_pair_for_fx(void)
+{
+    const int fx = screen_main_mode();
+    if (fx == SM_FX_TI || fx == SM_FX_PHASE) return FPGA_EVP_AB;
+    if (fx == SM_FX_PW || fx == SM_FX_DUTY)  return FPGA_EVP_PW;
+    return FPGA_EVP_OFF;
+}
+
+/* cas [ps] -> "+39.067 ns" (jednotka podle velikosti, pevny pocet desetin; bez %f) */
+static void ev_time_str(char *b, size_t n, double ps)
+{
+    const double a = (ps < 0.0) ? -ps : ps;
+    double sc = 1.0; const char *u = "ps"; int dec = 1;
+    if      (a >= 1e12) { sc = 1e12; u = "s";  dec = 5; }
+    else if (a >= 1e9)  { sc = 1e9;  u = "ms"; dec = 4; }
+    else if (a >= 1e6)  { sc = 1e6;  u = "us"; dec = 3; }
+    else if (a >= 1e3)  { sc = 1e3;  u = "ns"; dec = 3; }
+    char t[24];
+    fmt_sdec(t, sizeof t, ps / sc, dec);
+    snprintf(b, n, "%s %s", t, u);
+}
+
+/* velke cislo: hodnota s jednotkou casu, desetin tolik, aby posledni platna cislice byla nad nejistotou a za ni nejvys dve
+ * nejiste (jako hlavni cislo); @return pocet nejistych cislic pro card_freq_draw */
+static int ev_big_str(char *num, size_t n, const char **unit, double ps, double u_ps)
+{
+    const double a = (ps < 0.0) ? -ps : ps;
+    double sc = 1.0; const char *u = "ps";
+    if      (a >= 1e12) { sc = 1e12; u = "s";  }
+    else if (a >= 1e9)  { sc = 1e9;  u = "ms"; }
+    else if (a >= 1e6)  { sc = 1e6;  u = "us"; }
+    else if (a >= 1e3)  { sc = 1e3;  u = "ns"; }
+    const double res = u_ps / sc;
+    int dec = 0;
+    if (res > 0.0) { for (double pv = 1.0; pv > res / 10.0 && dec < 5; pv *= 0.1) dec++; } else dec = 3;
+    fmt_sdec(num, n, ps / sc, dec);
+    *unit = u;
+    return (dec >= 2) ? 2 : dec;
+}
+
+static void app_gpsdo_render_events(void)
+{
+    int first = window_first(55);
+    static char c_big[64], c_inf[64], c_sd[64], c_n[64], c_mm[64], c_cor[64], c_mode[20], c_act[20];
+    if (first) {
+        view_set(55);
+        if (!s_ev_win) { s_ev_win = 1u; fpga_freq_ev_pair_req(EV_PAIR[s_ev_mode]); }
+        window_chrome("UDALOSTI", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Jednorazove deje: hrany casovane ve FPGA (protokol v3)"};
+        ui_card_render_chrome(&c);
+        c_big[0] = c_inf[0] = c_sd[0] = c_n[0] = c_mm[0] = c_cor[0] = c_mode[0] = c_act[0] = '\0';
+        ui_button_t rb = {.rect = EV_RST_RECT, .variant = UI_BUTTON_NORMAL, .label = "VYNUL."};
+        ui_button_render(&rb);
+    }
+    fpga_ev_info_t ei;
+    fpga_freq_ev_info(&ei);
+    const int m = s_ev_mode;
+    const int rc = fpga_freq_ev_pair_rc();
+    const uint8_t pr = fpga_freq_proto();
+    double mean, sd, mn, mx; uint32_t n;
+    if (m == 2) { n = ei.sk_n; mean = ei.sk_mean; sd = ei.sk_sd; mn = ei.sk_min; mx = ei.sk_max; }
+    else        { n = ei.ab_n; mean = ei.ab_mean; sd = ei.ab_sd; mn = ei.ab_min; mx = ei.ab_max; }
+    double corr = 0.0, csd = 0.0; uint32_t cn = 0u;
+    int cok = 0;
+    if (m == 1)      cok = fpga_freq_pw_skew(&corr, &csd, &cn);
+    else if (m == 0) cok = fpga_freq_ti_offset(&corr);
+    else             cok = fpga_freq_pw_skew(&corr, &csd, &cn);
+
+    char b[64], info[64];
+    const char *why = NULL;
+    if (pr != 3u && pr != 0u)  why = "jen protokol v3 (FPGA FW 0x05xx)";
+    else if (rc == 127)        why = "ceka na nastaveni FPGA";
+    else if (rc == -2)         why = "jen protokol v3 (FPGA FW 0x05xx)";
+    else if (rc == -1)         why = "FPGA FW bez parovani (CAPS bit20)";
+    else if (rc == 0)          why = "SET_CONFIG do FPGA selhal";
+    else if (n == 0u)          why = (m == 1) ? "zadny pulz na A" : (m == 2 ? "zadny signal na A (kalibrace B = pin A)" : "zadny par A->B (signal A i B?)");
+    if (why) snprintf(info, sizeof info, "%s", why);
+    else snprintf(info, sizeof info, "%s%s", ei.sim ? "EMULATOR  " : "", (m == 2) ? "zpozdeni B-A stejne hrany" : (m == 1 ? "sirka pulzu = stop (B inv.) - start (A)" : "interval start A -> stop B"));
+    int drew = 0;
+
+    /* velke cislo */
+    if (n > 0u && !why) {
+        const double u = ((n > 1u) ? sd / sqrt((double)n) : sd);
+        const double fl = screen_main_tdc_ps() * 1.41421356 / sqrt((double)n);
+        const char *unit; char num[40];
+        const int unc = ev_big_str(num, sizeof num, &unit, mean - (m == 2 ? 0.0 : corr), (u > fl) ? u : fl);
+        snprintf(b, sizeof b, "%s %s %d", num, unit, unc);
+        if (first || dchg(c_big, sizeof c_big, b)) {
+            prim_fill_rect((prim_rect_t){DG_LLBL, 120, 720, 80}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+            card_freq_draw(DG_LLBL, 180, num, unc, UI_COLOR_ACC, unit);
+            drew = 1;
+        }
+    } else if (first || dchg(c_big, sizeof c_big, "--")) {
+        prim_fill_rect((prim_rect_t){DG_LLBL, 120, 720, 80}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){DG_LLBL, 180}, "BEZ DAT", &ui_font_mono_30, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        drew = 1;
+    }
+    if (first || dchg(c_inf, sizeof c_inf, info)) {
+        prim_fill_rect((prim_rect_t){DG_LLBL, 198, 740, 22}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){DG_LLBL, 214}, info, &ui_font_sans_16, why ? UI_COLOR_WARN : UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        drew = 1;
+    }
+    if (n > 0u) ev_time_str(b, sizeof b, sd); else snprintf(b, sizeof b, "--");
+    if (first || dchg(c_sd, sizeof c_sd, b)) { kv_row_live(244, "sigma jednoho:", b, UI_COLOR_INK_2, first); drew = 1; }
+    snprintf(b, sizeof b, "%lu / %lu", (unsigned long)n, (unsigned long)ei.ab_lost);
+    if (first || dchg(c_n, sizeof c_n, b)) { kv_row_live(280, "n / zahozeno startu:", b, UI_COLOR_INK_2, first); drew = 1; }
+    if (n > 0u) {
+        const double k = (m == 2) ? 0.0 : corr;
+        char a1[28], a2[28];
+        ev_time_str(a1, sizeof a1, mn - k); ev_time_str(a2, sizeof a2, mx - k);
+        snprintf(b, sizeof b, "%s / %s", a1, a2);
+    } else snprintf(b, sizeof b, "--");
+    if (first || dchg(c_mm, sizeof c_mm, b)) { kv_row_live(316, "min / max:", b, UI_COLOR_INK_2, first); drew = 1; }
+    {
+        char t[28];
+        if (m == 0) {
+            if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "nula %s odectena", t); }
+            else snprintf(b, sizeof b, "zadna (NULA A-B pri spolecnem signalu)");
+        } else if (m == 1) {
+            if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "zpozdeni B-A %s odecteno", t); }
+            else snprintf(b, sizeof b, "BEZ KALIBRACE (KALIBROVAT >)");
+        } else {
+            if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "ulozeno %s (%lu vz.)", t, (unsigned long)cn); }
+            else snprintf(b, sizeof b, "ulozi se po 50 vzorcich");
+        }
+    }
+    if (first || dchg(c_cor, sizeof c_cor, b)) { kv_row_live(352, "korekce:", b, cok ? UI_COLOR_OK : UI_COLOR_INK_3, first); drew = 1; }
+
+    /* tlacitka: popisky podle rezimu a stavu korekce */
+    if (first || dchg(c_mode, sizeof c_mode, EV_MODE_L[m])) {
+        prim_fill_rect(EV_MODE_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        ui_button_t mb = {.rect = EV_MODE_RECT, .variant = UI_BUTTON_NORMAL, .label = EV_MODE_L[m]};
+        ui_button_render(&mb);
+        drew = 1;
+    }
+    const char *al = (m == 0) ? (cok ? "NULA ZRUSIT" : "NULA A-B") : (m == 1 ? "KALIBROVAT >" : "ZRUSIT KAL.");
+    if (first || dchg(c_act, sizeof c_act, al)) {
+        prim_fill_rect(EV_ACT_RECT, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        ui_button_t ab = {.rect = EV_ACT_RECT, .variant = UI_BUTTON_NORMAL, .label = al};
+        ui_button_render(&ab);
+        drew = 1;
+    }
+    if (drew) present_now();
+}
+
+/* ── SPOJITE MERENI (s_view=56, v0.45.23): totalizace bez mrtve doby a stav spojiteho prijmu ──────────────────────────
+ * FPGA meri nepretrzite po segmentech 25 ms a kazdy zaznam nese ABSOLUTNI index hran; mezera v prijmu SPI hrany neztraci
+ * (rozdil indexu je obsahuje) a STM ji jen spocita. Okno ukazuje totalizaci kanalu A od vynulovani, hrany za sekundu,
+ * stav prijmu zaznamu a SDRAM log surovych mereni (~18 h, web /api/raw). */
+static const prim_rect_t CT_NUL_RECT = { 18, 417, 200, 61 };
+static void ev_u64(char *b, size_t n, uint64_t v)
+{
+    if (v >= 1000000000ull) snprintf(b, n, "%lu%09lu", (unsigned long)(v / 1000000000ull), (unsigned long)(v % 1000000000ull));
+    else                    snprintf(b, n, "%lu", (unsigned long)v);
+}
+
+static void app_gpsdo_render_contin(void)
+{
+    int first = window_first(56);
+    static char c_tot[48], c_rate[48], c_rec[64], c_log[64], c_inf[48];
+    static uint64_t p_n; static uint32_t p_ms; static double s_rate; static uint8_t s_rate_ok;
+    if (first) {
+        view_set(56);
+        window_chrome("SPOJITE MERENI", WIN_TITLE_Y);
+        ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Totalizace a prijem bez mrtve doby (absolutni index hran)"};
+        ui_card_render_chrome(&c);
+        c_tot[0] = c_rate[0] = c_rec[0] = c_log[0] = c_inf[0] = '\0';
+        p_ms = 0u; s_rate_ok = 0u;
+        ui_button_t nb = {.rect = CT_NUL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NUL totaliz."};
+        ui_button_render(&nb);
+    }
+    static fpga_v3_info_t vi;
+    fpga_freq_v3_info(&vi);
+    uint64_t tn = 0u; uint32_t rs = 0u;
+    const int tok = fpga_freq_v3_total(&tn, &rs);
+    const uint8_t pr = fpga_freq_proto();
+    char b[64];
+    int drew = 0;
+    const uint32_t now = HAL_GetTick();
+    if (tok) {
+        if (p_ms != 0u && (uint32_t)(now - p_ms) >= 400u && tn >= p_n) {
+            s_rate = (double)(tn - p_n) * 1000.0 / (double)(now - p_ms); s_rate_ok = 1u;
+            p_n = tn; p_ms = now;
+        } else if (p_ms == 0u || tn < p_n) { p_n = tn; p_ms = now; s_rate_ok = 0u; }
+    } else { p_ms = 0u; s_rate_ok = 0u; }
+    /* velke cislo: hrany A od vynulovani (cele cislo) */
+    if (tok) ev_u64(b, sizeof b, tn); else snprintf(b, sizeof b, "--");
+    if (first || dchg(c_tot, sizeof c_tot, b)) {
+        prim_fill_rect((prim_rect_t){DG_LLBL, 120, 720, 80}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        card_freq_draw(DG_LLBL, 180, b, 0, tok ? UI_COLOR_ACC : UI_COLOR_INK_4, tok ? "hran A" : "");
+        drew = 1;
+    }
+    const char *inf = (pr != 3u && pr != 0u) ? "jen protokol v3 (FPGA FW 0x05xx)"
+                    : !tok ? "ceka na hrany A od vynulovani"
+                    : (rs ? "preruseni totalizace (restart FPGA / zmena predelicky), navazano" : "bez preruseni, mezery v prijmu hrany neztraci");
+    if (first || dchg(c_inf, sizeof c_inf, inf)) {
+        prim_fill_rect((prim_rect_t){DG_LLBL, 198, 740, 22}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
+        prim_draw_text((prim_point_t){DG_LLBL, 214}, inf, &ui_font_sans_16, (rs || !tok) ? UI_COLOR_WARN : UI_COLOR_INK_3, PRIM_ALIGN_LEFT);
+        drew = 1;
+    }
+    if (s_rate_ok) fmt_hz(s_rate, b, sizeof b); else snprintf(b, sizeof b, "--");
+    if (first || dchg(c_rate, sizeof c_rate, b)) { kv_row_live(244, "hran A za sekundu:", b, UI_COLOR_INK_2, first); drew = 1; }
+    snprintf(b, sizeof b, "%lu / %lu (zmeskano %lu), preruseni %lu", (unsigned long)vi.recs, (unsigned long)vi.gaps,
+             (unsigned long)vi.gap_recs, (unsigned long)rs);
+    if (first || dchg(c_rec, sizeof c_rec, b)) { kv_row_live(280, "zaznamy / mezery:", b, (vi.gaps || rs) ? UI_COLOR_WARN : UI_COLOR_INK_2, first); drew = 1; }
+    {
+        sdram_log_stat_t ls;
+        sdram_log_stat(&ls);
+        if (ls.ready) snprintf(b, sizeof b, "%lu / %lu zaznamu%s", (unsigned long)ls.count, (unsigned long)ls.capacity,
+                               ls.wrapped ? " (kruh)" : "");
+        else          snprintf(b, sizeof b, "VYPNUT %.30s", ls.fail);
+    }
+    if (first || dchg(c_log, sizeof c_log, b)) { kv_row_live(316, "log SDRAM:", b, UI_COLOR_INK_2, first); drew = 1; }
     if (drew) present_now();
 }
 
@@ -8369,6 +8607,8 @@ static void render_view(uint8_t v)
     case 52: app_gpsdo_render_generator(); break;
     case 53: app_gpsdo_render_gpscfg();    break;
     case 54: app_gpsdo_render_adret();     break;
+    case 55: app_gpsdo_render_events();    break;
+    case 56: app_gpsdo_render_contin();    break;
     /* Modal potvrzeni restartu se po obnove ZAMERNE NEOBNOVUJE: potvrzeni
      * destruktivni akce se nema samo vynorit po udalosti, kterou uzivatel
      * nevyvolal. Vraci se tam, kam vede i tlacitko NE (`CONFIRM_NO`), takze
@@ -8841,8 +9081,10 @@ void app_gpsdo_tick(void)
     {   /* v0.45.20 (STATUS #382, t390): oba kanaly jen kdyz je UI potrebuje (okno DVOJKANAL, funkce A-B);
          * jinak FPGA s CAPS bit25 nemereny kanal vypne -- jeho retez TDC jinak zvysuje sum znacek mereneho kanalu. */
         const int fx = screen_main_mode();
-        fpga_freq_dual_req((uint8_t)(s_view == 46 || fx == SM_FX_TI || fx == SM_FX_PHASE || fx == SM_FX_RATIO ||
+        fpga_freq_dual_req((uint8_t)(s_view == 46 || s_view == 55 || g_dual_web || fx == SM_FX_TI || fx == SM_FX_PHASE || fx == SM_FX_RATIO ||
                                      fx == SM_FX_PW || fx == SM_FX_DUTY));
+        /* v0.45.23: okno UDALOSTI drzi parovani FPGA jen dokud je otevrene; po odchodu se vrati podle funkce hlavni obrazovky */
+        if (s_ev_win && s_view != 55) { s_ev_win = 0u; fpga_freq_ev_pair_req(ev_pair_for_fx()); }
     }
     if (s_view == 1) app_gpsdo_render_diag();     /* live refresh of diagnostics */
     else if (s_view == 2) app_gpsdo_render_gps();     /* live refresh of GPS/GNSS okna */
@@ -8877,6 +9119,8 @@ void app_gpsdo_tick(void)
     else if (s_view == 46) app_gpsdo_render_dualch();    /* Dvojkanal A + B + RF (zive) */
     else if (s_view == 47) app_gpsdo_render_devmult();   /* Odchylka x N (zive df) */
     else if (s_view == 54) app_gpsdo_render_adret();     /* ADRET: faze normalu (zive, 1 vzorek/s) */
+    else if (s_view == 55) app_gpsdo_render_events();    /* UDALOSTI: interval A-B / sirka pulzu / zpozdeni (zive) */
+    else if (s_view == 56) app_gpsdo_render_contin();    /* SPOJITE: totalizace + prijem bez mrtve doby (zive) */
     else if (s_view == 52) gen_tick();                   /* Generator: stav zapisu do Si5356 */
     /* ⚠️ Varovny pruh AZ NA KONCI ticku, aby lezel NAD tim, co prave
      * prekreslila okna vyse — pri plnem re-renderu by ho jinak chrome smazal. */
@@ -9953,6 +10197,38 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             nav_push(47); app_gpsdo_render_adret(); return true;
         }
         if (s_view == 54 && adret_touch(x, y)) return true;
+        /* UDALOSTI (s_view=55): rezim / vynulovani / akce (nula intervalu, kalibrace zpozdeni). SPOJITE (s_view=56): NUL totalizace. */
+        if (s_view == 55) {
+            if (in_rect(x, y, EV_MODE_RECT)) {
+                s_ev_mode = (uint8_t)((s_ev_mode + 1u) % 3u);
+                s_ev_win = 1u; fpga_freq_ev_pair_req(EV_PAIR[s_ev_mode]);
+                app_gpsdo_render_events();
+                return true;
+            }
+            if (in_rect(x, y, EV_RST_RECT)) {              /* novy start parovani = vynulovana statistika */
+                fpga_freq_ev_pair_req(EV_PAIR[s_ev_mode]);
+                tap_flash(EV_RST_RECT);
+                return true;
+            }
+            if (in_rect(x, y, EV_ACT_RECT)) {
+                if (s_ev_mode == 0u) {
+                    fpga_ev_info_t ei; fpga_freq_ev_info(&ei);
+                    if (fpga_freq_ti_offset(NULL)) fpga_freq_ti_offset_set(0.0, 0);
+                    else if (ei.ab_n >= 8u) fpga_freq_ti_offset_set(ei.ab_mean, 1);   /* nula = stredni interval pri spolecnem signalu */
+                } else if (s_ev_mode == 1u) {
+                    s_ev_mode = 2u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_SKEW);   /* zmerit zpozdeni B-A (B = pin A) */
+                } else {
+                    fpga_freq_pw_skew_clear();
+                }
+                app_gpsdo_render_events();
+                return true;
+            }
+        }
+        if (s_view == 56 && in_rect(x, y, CT_NUL_RECT)) {
+            fpga_freq_v3_total_reset();
+            tap_flash(CT_NUL_RECT);
+            return true;
+        }
         /* System Health footer -> "GRAFY" (Diagnostika + Nastaveni jsou
          * dlazdice v Menu, 2026-08-29). */
         if (s_view == 3 && in_rect(x, y, HEALTH_GRAPH_BTN_RECT)) {   /* Health -> Grafy (#31) */

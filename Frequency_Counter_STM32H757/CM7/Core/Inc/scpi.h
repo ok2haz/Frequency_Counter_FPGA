@@ -117,6 +117,7 @@ enum {
     SCPI_CFG_CHAN,         /* vu = kanal 0/1 (A/B) */
     SCPI_CFG_RUN,          /* vu = 0 STOP / 1 RUN */
     SCPI_CFG_STATS_CLR,    /* akce `CALC:AVER:CLE`: vynulovat statistiku stability (Allan/histogram/trend), 2026-10-16 */
+    SCPI_CFG_DUAL,         /* `SENS:FREQ:DUAL`: vu 0/1 = merit OBA kanaly (v0.45.23; IPC_CFG_DUAL) */
 };
 
 typedef struct scpi_src scpi_src_t;
@@ -134,6 +135,7 @@ struct scpi_src {
      * Zdroj je `g_ui_cfg` (CM7) resp. snapshot (CM4) — NE posledni FPGA ramec. */
     uint8_t  set_gate_idx;          /* 0..5 */
     uint8_t  set_chan;              /* 0/1 */
+    uint8_t  set_dual;              /* v0.45.23: 1 = web/SCPI zada mereni obou kanalu (`SENS:FREQ:DUAL?`) */
     uint8_t  set_running;           /* 0 STOP / 1 RUN */
     uint8_t  freq_err;              /* SIGNAL_LOST/MEAS chyba (pro QUEStionable) */
     /* ⚠️ 1 = kmitocet je z EMULATORU (`fpgasim`), ne z FPGA. Musi byt v `scpi_src_t`,

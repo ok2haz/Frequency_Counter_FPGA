@@ -888,6 +888,13 @@ int  fpga_freq_ab_ph(uint32_t back, uint16_t *ph_start, uint16_t *ph_stop);
  * fpga_freq_ev_pair_rc = jeho vysledek, 127 = jeste neprovedeno. */
 void fpga_freq_ev_pair_req(uint8_t mode);
 int  fpga_freq_ev_pair_rc(void);
+/* v0.45.23: ULOZENE zpozdeni B-A z kalibrace (FPGA_EVP_SKEW, B = pin A; plati do restartu). Odecita se od sirky pulzu a stridy
+ * (stejne cesty jako pri kalibraci); pro interval A-B z dvou ruznych pinu NEPLATI -- tam slouzi nula intervalu
+ * (`fpga_freq_ti_offset_set`: oba vstupy na tentyz signal, nastavi se stredni interval). @return 1 = zkalibrovano */
+int  fpga_freq_pw_skew(double *ps, double *sd, uint32_t *n);
+void fpga_freq_pw_skew_clear(void);
+void fpga_freq_ti_offset_set(double ps, int ok);
+int  fpga_freq_ti_offset(double *ps);
 /* zjisteny protokol FPGA: 0 = jeste nezjisten, 2, 3 (emulator v3 = 3) */
 uint8_t fpga_freq_proto(void);
 /* Prumer a σ poslednich `last` intervalu kruhu (0 = vsech, nejvys 64) [ps]; *total = intervalu celkem (roste s kazdym

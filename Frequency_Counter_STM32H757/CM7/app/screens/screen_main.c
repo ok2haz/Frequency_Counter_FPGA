@@ -1219,14 +1219,21 @@ static void fx_eval(fx_val_t *o)
         }
         if (tot != s_tot) { s_tot = tot; s_tot_ms = now; }
         else if ((uint32_t)(now - s_tot_ms) > 2000u) { snprintf(o->info, sizeof o->info, "zadny novy interval > 2 s"); return; }
-        const double t = mean * 1e-12;
+        /* v0.45.23: odecet zpozdeni kanalu. Sirka pulzu / strida: ulozene zpozdeni B-A z kalibrace (stejne cesty); interval
+         * a faze A-B: nula nastavena pri spolecnem signalu na obou vstupech (oba kanaly jdou pres predelicku, kalibrace
+         * B = pin A tu neplati). Bez kalibrace se hodnota nekoriguje a popisek to rika. */
+        const int is_pw = (s_fx == SM_FX_PW || s_fx == SM_FX_DUTY);
+        double corr_ps = 0.0;
+        const int corr_ok = is_pw ? fpga_freq_pw_skew(&corr_ps, NULL, NULL) : fpga_freq_ti_offset(&corr_ps);
+        const double t = (mean - corr_ps) * 1e-12;
         double ut = ((n > 1u) ? sd / sqrt((double)n) : sd) * 1e-12;
         const double fl = screen_main_tdc_ps() * 1e-12 * 1.41421356 / sqrt((double)n);   /* dvojice znacek na interval */
         if (ut < fl) ut = fl;
         if (s_fx == SM_FX_TI || s_fx == SM_FX_PW) {
             o->v = t; o->u = ut; o->time = 1u;
             const unsigned long s10 = (sd < 9.9e6) ? (unsigned long)(sd * 10.0 + 0.5) : 99999990ul;   /* bez %f; strop 9,99 us */
-            snprintf(o->info, sizeof o->info, "n=%lu  jedno %lu,%lu ps", (unsigned long)n, s10 / 10ul, s10 % 10ul);
+            snprintf(o->info, sizeof o->info, "n=%lu  jedno %lu,%lu ps%s", (unsigned long)n, s10 / 10ul, s10 % 10ul,
+                     corr_ok ? (is_pw ? "  kal" : "  nula") : (is_pw ? "  BEZ KAL" : ""));
         } else {
             const double fa = live ? fx_ch_hz(&m, 0) : 0.0;
             if (!(fa > 0.0)) { snprintf(o->info, sizeof o->info, "chybi kmitocet A"); return; }

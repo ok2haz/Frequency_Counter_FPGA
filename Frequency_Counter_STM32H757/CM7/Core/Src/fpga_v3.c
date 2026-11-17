@@ -420,7 +420,7 @@ uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t 
     u->x_raw[ch] = r->x0;
     fpga_v3_ev_t *e = &out[0];
     memset(e, 0, sizeof *e);
-    e->ch = ch; e->seg = r->seg_idx; e->x = u->x_un[ch]; e->t_u = u->t_un;
+    e->ch = ch; e->seg = r->seg_idx; e->x = u->x_un[ch]; e->t_u = u->t_un; e->plog2 = FPGA_V3_REC_PLOG2(r);
     if (r->n >= 3u) {
         e->kind = FPGA_V3_EV_BURST; e->n = r->n << FPGA_V3_REC_PLOG2(r);      /* v0.38.0: periody pinu (P x znacky) */
         e->per_u = r->sx ? (double)r->st / (double)r->sx / (double)(1u << FPGA_V3_REC_PLOG2(r)) : 0.0;
@@ -437,6 +437,40 @@ uint32_t fpga_v3_ev_from_rec(fpga_v3_evu_t *u, const fpga_v3_rec_t *r, uint32_t 
 void fpga_v3_ab_init(fpga_v3_ab_t *p, uint64_t max_u) { memset(p, 0, sizeof *p); p->max_u = max_u; }
 static void ab_reset(fpga_v3_ab_t *p) { p->armed = 0u; }      /* neplatny zaznam / mezera: rozpracovany start pryc */
 
+/* v0.45.23: stop ze SOUHRNU B (N >= 3) pro rozpracovany start. Souhrn nese presne jen prvni casovanou hranu T0 a stredni
+ * periodu PINU (ST/SX / P), hrany pinu lezi na T0 + k * perioda. Stop = prvni z nich po startu, k = floor((start - T0) / per)
+ * + 1, spocteny ve dvou omezenich:
+ *  - k <= N - 1: jen UVNITR souhrnu = interpolace stredni periody tehoz segmentu (chyba = odchylka mistni periody od
+ *    stredni; u stabilniho signalu jednotky ps). Do v0.45.22 se smel start nachazet jen do JEDNE periody za T0, takze start
+ *    dal v segmentu (1PPS na A proti 10 MHz na B) a hlavne B s predelickou (perioda pinu 6,7 ns pri 150 MHz) se zahazoval
+ *    vzdy (deska 2026-11-17: 531 z 531 startu zahozeno);
+ *  - k >= 1 - P: s predelickou P je T0 jen KAZDA P-ta hrana pinu; P - 1 hran pinu pred ni u spojiteho signalu existuje,
+ *    takze prvni hrana PO startu muze lezet az o P - 1 period PRED T0 (drive se bral stop az na T0 = az o P - 1 period
+ *    pozde). Pri P = 1 je T0 prvni hrana B v segmentu, start pred ni = stop T0 (jako u jednotlive hrany).
+ * Ochrana FPGA_V3_AB_GUARD_U: PREDCHOZI hrana pinu (existuje-li) musi lezet pred startem dal nez sum znacek, jinak by mohla
+ * lezet az za nim (B = A: stop ~0 nebo cela perioda podle sumu) -> start se zahodi. Stop po startu o jednotky az desitky ps
+ * (T0 hned za startem, bez predchozi hrany) se bere jako dosud. @return novy pocet vystupu */
+static uint32_t ab_burst(fpga_v3_ab_t *p, const fpga_v3_ev_t *b, int64_t *dt_u, uint32_t out, uint32_t max_out)
+{
+    p->armed = 0u;
+    const double per = b->per_u;
+    const int64_t P = (int64_t)1 << (b->plog2 & 7u);
+    if (!(per > 0.0) || b->n < 3u) { p->lost++; return out; }
+    const int64_t dl = (int64_t)(p->t_start - b->t_u);                /* start - T0, rozdil v int64 (osa az 2^60) */
+    int64_t k = (int64_t)floor((double)dl / per) + 1;
+    if (k < 1 - P) k = 1 - P;
+    if (k > (int64_t)b->n - 1) { p->lost++; return out; }             /* start za koncem souhrnu */
+    const double d = (double)k * per - (double)dl;                     /* stop - start */
+    const int prev_ok = (k <= 1 - P) || ((double)dl - (double)(k - 1) * per >= (double)FPGA_V3_AB_GUARD_U);
+    if (!(d > 0.0) || !prev_ok) { p->lost++; return out; }
+    if (out < max_out) {
+        if (out < FPGA_V3_AB_TST) p->t_st[out] = p->t_start;
+        dt_u[out++] = (int64_t)(d + 0.5);
+    }
+    p->n++;
+    return out;
+}
+
 uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, int64_t *dt_u, uint32_t max_out)
 {
     const fpga_v3_ev_t *o[8];
@@ -444,9 +478,15 @@ uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, in
     for (uint32_t i = 0; i < n && m < 8u; i++) o[m++] = &ev[i];
     for (uint32_t i = 1; i < m; i++)                                       /* serazeni v case (<= 8 udalosti) */
         for (uint32_t j = i; j > 0 && o[j]->t_u < o[j - 1]->t_u; j--) { const fpga_v3_ev_t *t = o[j]; o[j] = o[j - 1]; o[j - 1] = t; }
+    const fpga_v3_ev_t *bb = NULL;                                         /* souhrn B teto davky */
     for (uint32_t i = 0; i < m; i++) {
         const fpga_v3_ev_t *e = o[i];
         if (p->armed && e->t_u - p->t_start > p->max_u) { p->armed = 0u; p->lost++; }   /* start bez stopu */
+        if (e->ch == 1u && e->kind == FPGA_V3_EV_BURST) {                  /* souhrn B: stop se dopocte z jeho periody */
+            bb = e;
+            if (p->armed) out = ab_burst(p, bb, dt_u, out, max_out);      /* start pred prvni hranou souhrnu */
+            continue;
+        }
         if (!p->armed) {
             if (e->ch == 0u) { p->armed = 1u; p->t_start = e->t_u; }
         } else if (e->ch == 1u && e->t_u > p->t_start) {
@@ -458,33 +498,7 @@ uint32_t fpga_v3_ab_feed(fpga_v3_ab_t *p, const fpga_v3_ev_t *ev, uint32_t n, in
             p->armed = 0u;
         }
     }
-    /* souhrn B (N >= 3) zacal pred startem a trva pres nej: presna je jen prvni hrana souhrnu. Lezi-li start do jedne
-     * periody za ni, je stopem DRUHA hrana souhrnu = T0 + stredni perioda (chyba = odchylka jedne periody B od stredni,
-     * u spojiteho signalu jednotky ps). To je bezny pripad spojitych signalu na obou kanalech: prvni hrany A i B lezi
-     * do jedne periody od zacatku segmentu, a kdyz je B prvni, bez tohoto by se start zahodil vzdy (koherentni signal
-     * = zadny interval, noc20/t364). Dal za startem by se chyba stredni periody scitala -> start zahodit. Prvni hrana B
-     * blize startu nez FPGA_V3_AB_GUARD_U je s nim soucasna v ramci sumu znacek (B = A): stop by podle sumu vysel ~0 nebo
-     * cela perioda -> start zahodit jako dosud. */
-    if (p->armed) {
-        for (uint32_t i = 0; i < m; i++) {
-            const fpga_v3_ev_t *e = o[i];
-            if (e->ch == 1u && e->kind == FPGA_V3_EV_BURST && e->t_u <= p->t_start &&
-                (double)e->t_u + (double)(e->n - 1u) * e->per_u > (double)p->t_start) {
-                const double d = (double)e->t_u + e->per_u - (double)p->t_start;     /* druha hrana souhrnu - start */
-                if (d > 0.0 && p->t_start - e->t_u >= FPGA_V3_AB_GUARD_U) {
-                    if (out < max_out) {
-                        if (out < FPGA_V3_AB_TST) p->t_st[out] = p->t_start;
-                        dt_u[out++] = (int64_t)(d + 0.5);
-                    }
-                    p->n++;
-                } else {
-                    p->lost++;
-                }
-                p->armed = 0u;
-                break;
-            }
-        }
-    }
+    if (p->armed && bb) out = ab_burst(p, bb, dt_u, out, max_out);        /* start za prvni hranou souhrnu */
     return out;
 }
 

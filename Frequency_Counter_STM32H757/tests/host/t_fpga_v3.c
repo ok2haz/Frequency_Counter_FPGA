@@ -495,18 +495,39 @@ int main(void)
         CHECK(n1 == 0u && n2 == 0u && P.lost == 1u && !P.armed, "ab_feed souhrn B pres start: %u %u, ztraceno %u",
               (unsigned)n1, (unsigned)n2, (unsigned)P.lost);
         /* (4) start do jedne periody za prvni hranou souhrnu B: stop = druha hrana = T0 + perioda (14000 - 15000 + 10000);
-         * (5) start dal nez perioda za ni (25500 + 1000 < 27000): druha hrana je pred startem -> start zahodit;
+         * (5) v0.45.23: start 1,5 periody za ni (25500 + 1500 = 27000) -> stop = T0 + 2 periody uvnitr souhrnu (500);
+         *     do v0.45.22 se zahodil;
          * (6) prvni hrana B blize startu nez FPGA_V3_AB_GUARD_U (soucasna, B = A): zahodit */
+        int64_t d5;
         fpga_v3_ab_init(&P, 1000000u);
         e[0] = evk(0u, 15000u, 1u, 0.0); e[1] = evk(1u, 14000u, 5u, 10000.0);
         n1 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u); d2 = dt[0];
         e[0] = evk(0u, 27000u, 1u, 0.0); e[1] = evk(1u, 25500u, 5u, 1000.0);
-        n2 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u);
+        n2 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u); d5 = dt[0];
         e[0] = evk(0u, 50000u, 1u, 0.0); e[1] = evk(1u, 50000u - FPGA_V3_AB_GUARD_U + 1u, 5u, 10000.0);
         n3 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u);
-        CHECK(n1 == 1u && d2 == 9000 && n2 == 0u && n3 == 0u && P.n == 1u && P.lost == 2u && !P.armed,
-              "ab_feed druha hrana souhrnu B: %u dt %lld, %u, %u, n %u, ztraceno %u", (unsigned)n1, (long long)d2, (unsigned)n2,
-              (unsigned)n3, (unsigned)P.n, (unsigned)P.lost);
+        CHECK(n1 == 1u && d2 == 9000 && n2 == 1u && d5 == 500 && n3 == 0u && P.n == 2u && P.lost == 1u && !P.armed,
+              "ab_feed druha hrana souhrnu B: %u dt %lld, %u dt %lld, %u, n %u, ztraceno %u", (unsigned)n1, (long long)d2,
+              (unsigned)n2, (long long)d5, (unsigned)n3, (unsigned)P.n, (unsigned)P.lost);
+        /* v0.45.23: souhrn B s predelickou P = 16 (T0 = kazda 16. hrana pinu, perioda pinu 1000):
+         * (7) start 6,5 periody PRED T0 -> stop = prvni hrana pinu po startu = T0 - 6 period (500), ne T0 (6500);
+         * (8) start 37,5 periody za T0 -> stop T0 + 38 period (500);
+         * (9) bez predelicky start za koncem souhrnu (k > N - 1) -> zahodit;
+         * (10) start dlouho pred souhrnem bez predelicky -> stop = T0 (B do T0 nemel hranu) */
+        int64_t d7, d8, d10; uint32_t n4;
+        fpga_v3_ab_init(&P, 100000000u);
+        e[0] = evk(0u, 93500u, 1u, 0.0); e[1] = evk(1u, 100000u, 80u, 1000.0); e[1].plog2 = 4u;
+        n1 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u); d7 = dt[0];
+        e[0] = evk(0u, 137500u, 1u, 0.0); e[1] = evk(1u, 100000u, 80u, 1000.0); e[1].plog2 = 4u;
+        n2 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u); d8 = dt[0];
+        e[0] = evk(0u, 204500u, 1u, 0.0); e[1] = evk(1u, 200000u, 5u, 1000.0);
+        n3 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u);
+        e[0] = evk(0u, 300000u, 1u, 0.0); e[1] = evk(1u, 400000u, 5u, 1000.0);
+        n4 = fpga_v3_ab_feed(&P, e, 2u, dt, 4u); d10 = dt[0];
+        CHECK(n1 == 1u && d7 == 500 && n2 == 1u && d8 == 500 && n3 == 0u && n4 == 1u && d10 == 100000 && P.n == 3u && P.lost == 1u,
+              "ab_feed souhrn B s predelickou: %u dt %lld, %u dt %lld, za koncem %u, pred souhrnem %u dt %lld, n %u, ztraceno %u",
+              (unsigned)n1, (long long)d7, (unsigned)n2, (long long)d8, (unsigned)n3, (unsigned)n4, (long long)d10,
+              (unsigned)P.n, (unsigned)P.lost);
     }
 
     /* fpga_v3_pr_rec (zaznamy -> parovani jako v ovladaci): zaznam se znackami pri CS (bit3) se paruje, ale interval,

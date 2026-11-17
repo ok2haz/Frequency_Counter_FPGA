@@ -1345,6 +1345,17 @@ static volatile uint8_t s3tot_gen = 0u;
 static uint32_t s3tot_resync = 0u;      /* skok X0 (restart FPGA / zmena predelicky): navazano bez pricteni */
 static uint8_t        s3e_seen[4];
 static uint8_t        s3e_bsrc = 0u;    /* posledni odeslany SET_CONFIG 0x09 */
+/* v0.45.23: ULOZENE zpozdeni B-A (kalibrace `fpga pw cal` / tlacitko KAL v okne UDALOSTI) a NULA intervalu A-B.
+ * Statistika kalibrace (s3e_pr.sk) se pri prepnuti parovani nuluje (fpga_v3_pr_init pri OFF -> ON), proto se vysledek ulozi
+ * zvlast: FpgaTask ho prepise vzdy, kdyz sber v rezimu SKEW dosahne SKEW_MIN_N vzorku. Plati do restartu (nepersistuje se).
+ *  - s_pw_skew: B = pin A (A pres predelickou, B primo) -- STEJNE cesty jako sirka pulzu (B = pin A invertovany), takze se
+ *    odecita od sirky pulzu / strida. Pro interval A-B z DVOU ruznych pinu NEPLATI (oba kanaly jdou pres predelicku);
+ *  - s_ti_off: nulovani intervalu A-B pri spolecnem signalu na obou vstupech (rozbocovac) -- zapisuje UiTask / UART. */
+#define SKEW_MIN_N 50u
+static double          s_pw_skew_ps, s_pw_skew_sd;
+static uint32_t        s_pw_skew_n;
+static double          s_ti_off_ps;
+static uint8_t         s_ti_off_ok;
 
 /* rozbaleny cas [T/16384] -> ps (cele sekundy zvlast, bez preteceni 64 b) */
 static uint64_t s3e_ps(uint64_t t_u, uint32_t clk)
@@ -1454,6 +1465,9 @@ static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
         }
         s3e_abph[s3e_abw % S3E_AB][0] = ph0; s3e_abph[s3e_abw % S3E_AB][1] = ph1;
         s3e_ab[s3e_abw % S3E_AB] = ps; s3e_abw++;
+    }
+    if (pr == FPGA_EVP_SKEW && s3e_pr.sk.n >= SKEW_MIN_N) {          /* v0.45.23: ulozit vysledek kalibrace zpozdeni */
+        s_pw_skew_ps = fpga_v3_stat_mean(&s3e_pr.sk); s_pw_skew_sd = fpga_v3_stat_sd(&s3e_pr.sk); s_pw_skew_n = s3e_pr.sk.n;
     }
     __set_PRIMASK(pm);
 }
@@ -3471,6 +3485,44 @@ int fpga_freq_ab_stat(uint32_t last, double *mean_ps, double *sd_ps, uint32_t *n
     if (mean_ps) *mean_ps = m;
     if (sd_ps)   *sd_ps = (last > 1u) ? sqrt(ss / (double)(last - 1u)) : 0.0;
     return 1;
+}
+
+int fpga_freq_pw_skew(double *ps, double *sd, uint32_t *n)
+{
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const double v = s_pw_skew_ps, s = s_pw_skew_sd; const uint32_t k = s_pw_skew_n;
+    __set_PRIMASK(pm);
+    if (ps) *ps = (k >= SKEW_MIN_N) ? v : 0.0;
+    if (sd) *sd = s;
+    if (n)  *n = k;
+    return k >= SKEW_MIN_N;
+}
+
+void fpga_freq_pw_skew_clear(void)
+{
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_pw_skew_n = 0u; s_pw_skew_ps = 0.0; s_pw_skew_sd = 0.0;
+    __set_PRIMASK(pm);
+}
+
+void fpga_freq_ti_offset_set(double ps, int ok)
+{
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    s_ti_off_ps = ok ? ps : 0.0; s_ti_off_ok = (uint8_t)(ok ? 1u : 0u);
+    __set_PRIMASK(pm);
+}
+
+int fpga_freq_ti_offset(double *ps)
+{
+    const uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    const double v = s_ti_off_ps; const uint8_t ok = s_ti_off_ok;
+    __set_PRIMASK(pm);
+    if (ps) *ps = ok ? v : 0.0;
+    return ok;
 }
 
 void fpga_freq_v3_total_reset(void) { s3tot_gen++; }

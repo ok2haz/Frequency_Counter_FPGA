@@ -236,6 +236,7 @@ void ipc_publish(void)
     if (g_si5356_ok && (g_si5356_status & (1u << 3))) flags |= IPC_F_SI5356_LOS;
     if (g_ui_cfg & (1u << 4))            flags |= IPC_F_RUNNING;    /* bit4 = RUN (BKP_DR1) */
     if (fpga_sim_active())               flags |= IPC_F_SIM;        /* emulovana data, ne mereni */
+    if (g_dual_web)                      flags |= IPC_F_DUAL;       /* v0.45.23: web / SCPI zada mereni obou kanalu */
 
     uint8_t sysl = ipc_sys_level(&g);
 
@@ -679,6 +680,7 @@ _Static_assert((int)SCPI_CFG_GATE     == (int)IPC_CFG_GATE,     "SCPI/IPC klic G
 _Static_assert((int)SCPI_CFG_CHAN     == (int)IPC_CFG_CHAN,     "SCPI/IPC klic CHAN se rozesel");
 _Static_assert((int)SCPI_CFG_RUN      == (int)IPC_CFG_RUN,      "SCPI/IPC klic RUN se rozesel");
 _Static_assert((int)SCPI_CFG_STATS_CLR == (int)IPC_CFG_STATS_CLR, "SCPI/IPC klic STATS_CLR se rozesel");
+_Static_assert((int)SCPI_CFG_DUAL      == (int)IPC_CFG_DUAL,      "SCPI/IPC klic DUAL se rozesel");
 
 /* ⚠️ Totez pro masku platnosti: `snap.sens_valid` se na CM4 priradi PRIMO do
  * `scpi_src_t.valid`, takze bitove pozice musi sedet 1:1 se `SCPI_V_*`.
@@ -775,6 +777,8 @@ static int ipc_service_rings(volatile ipc_cmd_ring_t *cmd, volatile ipc_resp_rin
                     if (!ipc_ui_cfg_apply(c.key, c.arg)) r.status = 1u;
                 } else if (c.key == IPC_CFG_STATS_CLR) {
                     g_stats_reset_req = 1;      /* stav statistiky vlastni UiTask (screen_main_stats_reset) -> jen pozadavek */
+                } else if (c.key == IPC_CFG_DUAL) {
+                    g_dual_web = c.arg ? 1u : 0u;   /* v0.45.23: UiTask z toho slozi pozadavek na FPGA (app_gpsdo_tick) */
                 } else if (!ipc_cfg_apply(cfg, c.key, c.arg, c.argd, freq_hz)) {
                     r.status = 1u;
                 }

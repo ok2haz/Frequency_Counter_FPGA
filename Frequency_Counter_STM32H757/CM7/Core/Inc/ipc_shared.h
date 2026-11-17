@@ -735,6 +735,9 @@ _Static_assert(sizeof(ipc_shared_t) <= 65536, "IPC struktura se nevejde do SRAM4
  * UART `status` i datalog (`DATALOG_F_SIM`) je pritom oznacuji. Volny bit ve
  * `flags`, takze snapshot NEroste a `IPC_VERSION` se kvuli nemu nezvedá. */
 #define IPC_F_SIM          (1u << 8)   /* data z emulatoru fpgasim (NE realne mereni) */
+/* v0.45.23: web / SCPI pozadal o MERENI OBOU KANALU (`SENS:FREQ:DUAL 1`, klic IPC_CFG_DUAL) -- FPGA pak nemereny kanal
+ * nevypina ani nezvysuje jeho predelicku (ochrana proti presluchu). Dalsi volny bit ve `flags`: snapshot NEroste. */
+#define IPC_F_DUAL         (1u << 9)
 
 /* ── Typy prikazu (CM4 -> CM7). */
 enum {
@@ -764,6 +767,7 @@ enum {
     IPC_CFG_CHAN,         /* arg = kanal 0/1 */
     IPC_CFG_RUN,          /* arg = 0 STOP / 1 RUN */
     IPC_CFG_STATS_CLR,    /* akce: vynulovat statistiku stability (Allan/histogram/trend) -> g_stats_reset_req (2026-10-16) */
+    IPC_CFG_DUAL,         /* arg = 0/1: web / SCPI chce merit OBA kanaly (v0.45.23) -> g_dual_web, bit IPC_F_DUAL ve flags */
 };
 
 /* ── Pametova bariera (core-agnostic; funguje na CM7 i CM4, bez CMSIS zavislosti). */

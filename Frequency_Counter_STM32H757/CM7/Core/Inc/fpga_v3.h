@@ -276,10 +276,11 @@ uint32_t fpga_v3_link_take(fpga_v3_link_t *L, const fpga_v3_hdr_t *h, uint32_t n
 typedef struct {
     uint8_t  ch, kind;
     uint16_t seg;                /* SEG_IDX zaznamu */
-    uint32_t n;                  /* hran (EDGE: 1) */
+    uint32_t n;                  /* hran (EDGE: 1; BURST: hran PINU = znacky x P) */
     uint64_t x;                  /* rozbaleny index (prvni) hrany */
     uint64_t t_u;                /* rozbaleny cas (prvni) hrany [T/16384] (osa FPGA, spolecna pro A, B i 1PPS) */
-    double   per_u;              /* BURST: stredni perioda [jednotky], jinak 0 */
+    double   per_u;              /* BURST: stredni perioda PINU [jednotky], jinak 0 */
+    uint8_t  plog2;              /* v0.45.23: log2 P predelicky zaznamu (casovana je kazda P-ta hrana pinu) */
 } fpga_v3_ev_t;
 typedef struct {
     uint8_t  have;               /* cas: SPOLECNY pro oba kanaly (jedna osa FPGA) */

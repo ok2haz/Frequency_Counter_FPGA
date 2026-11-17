@@ -469,6 +469,7 @@ static size_t build_state_json(char *out, size_t out_sz, const ipc_snapshot_t *s
     jputf(&j, "\"seq_meas\":%lu,", (unsigned long)snap->seq_meas);
     jputf(&j, "\"channel\":%u,", (unsigned)s.channel_id);
     jputf(&j, "\"set_chan\":%u,", (unsigned)s.set_chan);
+    jputf(&j, "\"dual\":%u,", (unsigned)s.set_dual);          /* v0.45.23: 1 = web / SCPI zada mereni obou kanalu */
     jputf(&j, "\"set_gate_idx\":%u,", (unsigned)s.set_gate_idx);
     { char gb[24]; fmt_scpi_hz_d(scpi_gate_s(s.set_gate_idx), gb, sizeof gb);
       jputf(&j, "\"set_gate_s\":%s,", gb); }
@@ -1537,6 +1538,8 @@ static const char SPA_HTML[] =
 "<button data-g='4'>10 s</button><button data-g='5'>100 s</button></div></div>\n"
 "<div class='grp'><span>VSTUP</span><div class='seg' id='segChan'>\n"
 "<button data-c='0'>A</button><button data-c='1'>B</button></div></div>\n"
+"<div class='grp'><span>KANALY</span><div class='seg' id='segDual'>\n"
+"<button data-k='0'>JEDEN</button><button data-k='1'>A + B</button></div></div>\n"
 "<div class='grp'><span>OKNO GRAFU</span><div class='seg' id='segWin'>\n"
 "<button data-w='60'>1 min</button><button data-w='300'>5 min</button>\n"
 "<button data-w='900'>15 min</button><button data-w='3600'>1 h</button>\n"
@@ -3381,7 +3384,8 @@ static const char SPA_HTML[] =
 "  segset('segRun','data-r',s.running?1:0);\n"
 "  segset('segGate','data-g',s.set_gate_idx);\n"
 "  segset('segChan','data-c',s.set_chan);\n"
-"  var dis=!s.web_ctrl_en, bs=document.querySelectorAll('#segRun button,#segGate button,#segChan button');\n"
+"  segset('segDual','data-k',s.dual?1:0);\n"
+"  var dis=!s.web_ctrl_en, bs=document.querySelectorAll('#segRun button,#segGate button,#segChan button,#segDual button');\n"
 "  for(var i=0;i<bs.length;i++) bs[i].disabled=dis;\n"
 "  $('lock').textContent=dis?'Ovladani je na pristroji ZAKAZANE. Povol ho v Nastaveni > SIT > PRISTUP.':'';\n"
 "\n"
@@ -3862,6 +3866,10 @@ static const char SPA_HTML[] =
 "  $('dualNote').textContent='CH A a CH B jsou dva symetricke vstupy (dva TDC kanaly FPGA, spolecne hodiny 100 MHz). Je-li na obou tentyz signal,'\n"
 "    +' rozdil B-A je kontrola mereni; pri ruznych signalech je to jen rozdil dvou mereni. Rozsah dnes do ~30 MHz bez deliciho clenu;'\n"
 "    +' vstupni modul DC-200 MHz / 1,1 GHz (preddelic /10) se teprve stavi.';\n"
+"  /* v0.45.23: bez prepinace KANALY = A + B FPGA mereny kanal rozlisuje: nemereny kanal potlaci (ochrana proti presluchu,\n"
+"     snizuje sum znacky mereneho), takze radek druheho kanalu je prazdny / nepresny. Prepinac to rekne pristroji. */\n"
+"  if(s&&s.dual!==undefined&&!s.dual)\n"
+"    $('dualNote').textContent+=' Pozor: prepinac KANALY je na JEDEN - FPGA nemereny kanal potlacuje (ochrana proti presluchu); pro oba kanaly najednou zvol A + B v ovladani.';\n"
 "}\n"
 "\n"
 "/* -- LINKA FPGA / CITAC ------------------------------------------------------\n"
@@ -4628,6 +4636,7 @@ static const char SPA_HTML[] =
 "wire('segRun','data-r',function(v){ cmd(v==='1'?'INIT':'ABOR'); });\n"
 "wire('segGate','data-g',function(v){ cmd('SENS:FREQ:GATE '+GATE[+v]); });\n"
 "wire('segChan','data-c',function(v){ cmd('SENS:FREQ:CHAN '+v); });\n"
+"wire('segDual','data-k',function(v){ cmd('SENS:FREQ:DUAL '+v); });   /* v0.45.23: merit OBA kanaly (jinak FPGA nemereny kanal potlaci) */\n"
 "wire('segWin','data-w',function(v){ var w=+v; segset('segWin','data-w',w);\n"
 "  if(w!==(dlWin>0?dlWin:win)) freezeDrop('zmenilo se okno grafu');\n"
 "  if(w>3600){ dlWin=w; fetchLog(w); }\n"

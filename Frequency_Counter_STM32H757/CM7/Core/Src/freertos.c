@@ -125,6 +125,7 @@ volatile uint8_t g_screen_req  = 0;
  * UiTask, viz screen_main_stats_reset). Stejny duvod jako g_screen_req. */
 volatile uint8_t g_stats_reset_req = 0;
 volatile uint8_t g_vbat_fast = 0;
+volatile uint8_t g_dual_web = 0;
 
 /* INJEKTOR DOTEKU (diagnostika F-0140): UART `tap <idx>` zada stisk tlacitka
  * patky, UiTask ho provede PRESNE tou cestou, kterou jde skutecny prst —

@@ -85,6 +85,7 @@ int ipc_scpi_src_from_snap(void *src_out, const void *snap_in)
     s->set_chan      = (uint8_t)((sn->ui_cfg >> 1) & 1u);
     s->set_gate_idx  = IPC_UICFG_GATE(sn->ui_cfg);
     s->set_running   = (sn->flags & IPC_F_RUNNING) ? 1u : 0u;   /* tentyz bit4 `g_ui_cfg`, jen uz zabaleny ve flags */
+    s->set_dual      = (sn->flags & IPC_F_DUAL) ? 1u : 0u;      /* v0.45.23: `SENS:FREQ:DUAL?` shodne s USB cestou */
 
     /* Math/limit cfg mirror (CALC readbacky). */
     s->meas.math_en  = sn->math_en ? 1 : 0;
@@ -140,6 +141,10 @@ int ipc_scpi_set_cfg(scpi_src_t *s, uint8_t key, uint32_t vu, double vd)
             break;
         case SCPI_CFG_STATS_CLR:
             break;                                /* akce bez lokalniho zrcadla; jde jen pres ring na CM7 */
+        case SCPI_CFG_DUAL:
+            c.arg = vu ? 1u : 0u;
+            s->set_dual = (uint8_t)c.arg;         /* v0.45.23: zrcadlo pro compound SET;readback */
+            break;
         default:
             /* Math/limity: aplikuj i na lokalni zrcadlo (`scpi_cfg_apply` je cista
              * funkce nad `meas_cfg_t`), aby readback ve stejne zprave sedel. */

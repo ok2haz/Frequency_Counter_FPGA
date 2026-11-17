@@ -480,7 +480,10 @@ static void uart_ab_show(uint32_t n, int pw)
 	fpga_freq_ev_info(&ei);
 	printf("FPGA parovani: %s; zdroj B odeslan %u, echo %u (0 pin B, 1 pin A, 3 pin A invertovany), FW 0x%04X%s\n",
 	       pm[ei.pair & 3u], (unsigned)ei.bsrc, (unsigned)ei.echo, (unsigned)ei.fw, ei.sim ? " EMULATOR" : "");
-	const double corr = (pw && ei.sk_n) ? ei.sk_mean : 0.0;
+	/* v0.45.23: korekce z ULOZENYCH hodnot (prezije prepnuti parovani): sirka pulzu = zpozdeni B-A z kalibrace, interval = nula */
+	double corr = 0.0;
+	const int corr_ok = pw ? fpga_freq_pw_skew(&corr, NULL, NULL) : fpga_freq_ti_offset(&corr);
+	if (corr_ok) { char cb[32]; uart_ps_fmt(cb, sizeof cb, corr); printf("  korekce %s: %s odecteno\n", pw ? "zpozdeni B-A" : "nula intervalu", cb); }
 	if (ei.ab_n) uart_ab_stat(pw ? "sirka pulzu" : "intervalu", ei.ab_n, ei.ab_mean, ei.ab_sd, ei.ab_min, ei.ab_max, corr);
 	for (int g = 0; g < 2; g++) {                       /* v0.45.3: chyba hrany taktu se odecte jen ve stejne periode */
 		if (!ei.ax_n[g]) continue;
@@ -509,7 +512,7 @@ static void uart_ab_show(uint32_t n, int pw)
 	       (unsigned long)ei.lost_cs);
 	if (pw) {
 		if (ei.sk_n) uart_ab_stat("zpozdeni B-A", ei.sk_n, ei.sk_mean, ei.sk_sd, ei.sk_min, ei.sk_max, 0.0);
-		else printf("  zpozdeni B-A nekalibrovano (`fpga pw cal`, pak `fpga pw on`): sirka bez korekce\n");
+		else if (!corr_ok) printf("  zpozdeni B-A nekalibrovano (`fpga pw cal`, pak `fpga pw on`): sirka bez korekce\n");
 	}
 	for (uint32_t i = n; i-- > 0u; ) {
 		double v;
@@ -3252,6 +3255,17 @@ void UartTask_run(void *argument)
 				  const char *a = (RxBuffer[7] == ' ') ? &RxBuffer[8] : "";
 				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_AB), "interval A->B ZAPNUTO (statistika vynulovana)");
 				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
+				  else if (strcmp(a, "zero") == 0) {
+					  /* v0.45.23: NULA intervalu A-B = stredni zmereny interval pri tomtez signalu na OBOU vstupech (rozbocovac);
+					   * odecita se od vsech dalsich intervalu a fazi (UART i hlavni obrazovka). */
+					  double m, sd; uint32_t n, tot;
+					  if (fpga_freq_ab_stat(0u, &m, &sd, &n, &tot) && n >= 8u) {
+						  fpga_freq_ti_offset_set(m, 1);
+						  char b[32]; uart_ps_fmt(b, sizeof b, m);
+						  printf("FPGA: nula intervalu A->B nastavena na %s (z %lu intervalu; tentyz signal na oba vstupy)\n", b, (unsigned long)n);
+					  } else printf("FPGA: malo intervalu pro nulu (zapni `fpga ab on`, na A i B tentyz signal, pockej na >= 8)\n");
+				  }
+				  else if (strcmp(a, "clear") == 0) { fpga_freq_ti_offset_set(0.0, 0); printf("FPGA: nula intervalu A->B zrusena\n"); }
 				  else uart_ab_show(uart_num(a, 0u, 64u), 0);
 			  }
 			  else if (strncmp(RxBuffer, "fpga pw", 7) == 0 && (RxBuffer[7] == '\0' || RxBuffer[7] == ' ')) {
@@ -3261,6 +3275,7 @@ void UartTask_run(void *argument)
 				  if (strcmp(a, "on") == 0)       uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_PW), "sirka pulzu ZAPNUTO (B = pin A invertovany)");
 				  else if (strcmp(a, "cal") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_SKEW), "kalibrace zpozdeni A/B (B = pin A), pak `fpga pw on`");
 				  else if (strcmp(a, "off") == 0) uart_ev_pair_rc(fpga_freq_ev_pair(FPGA_EVP_OFF), "parovani vypnuto, zdroj B = pin B");
+				  else if (strcmp(a, "clear") == 0) { fpga_freq_pw_skew_clear(); printf("FPGA: ulozene zpozdeni B-A zruseno (sirka pulzu bez korekce)\n"); }
 				  else uart_ab_show(uart_num(a, 0u, 64u), 1);
 			  }
 			  else if (strncmp(RxBuffer, "fpga raw", 8) == 0 && (RxBuffer[8] == '\0' || RxBuffer[8] == ' ')) {
