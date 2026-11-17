@@ -146,6 +146,7 @@ void usb_console_tx_pump(void)
 }
 
 uint32_t usb_console_tx_dropped(void) { return s_tx_dropped; }
+uint32_t usb_console_tx_used(void) { return (uint16_t)(s_head - s_tail); }   /* v0.45.28 */
 uint32_t usb_console_rx_dropped(void) { return s_rx_dropped; }
 uint32_t usb_console_tx_recover(void) { return s_tx_recover; }
 uint32_t usb_console_tx_overwritten(void) { return s_tx_overwritten; }

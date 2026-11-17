@@ -6641,3 +6641,16 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
 - **Detekce:** `grep -n "tap_flash(" CM7/app/app_gpsdo.c` a u kazdeho vyskytu hledat prekresleni tehoz RECT do `return`; kandidati k overeni
   z L-0081 pruchodu: REF_CLR_RECT, MEMB_RUN_RECT, ACC_TOGGLE_RECT/ACC_NEWPASS_RECT, DL_STORE_RECT.
 - **Stav:** ✅ v kodu (55/56), ⬜ ostatni kandidati neovereni
+
+### L-0303 — Neblokujici vystup, ktery zahazuje, se pro davku dat musi doplnit o cekani na misto
+
+- **Datum:** 2026-11-17
+- **Oblast:** `screenshot` pres USB CDC (`screenshot.c` `emit`, `usb_console_tx`), v0.45.28
+- **Symptom:** `tools/screenshot_uart.py` stahl jen 420-435 kB z 1,15 MB (reprodukovatelne, 4 pokusy); nastroj hlasil "snimek se nestahl".
+- **Priciny:** `usb_console_tx` je neblokujici a pri plnem ringu (4 KB) zahazuje NOVY bajt (L-0017, pocita ho `tx_dropped`); `emit` posilal
+  256 B bloky rychleji, nez je CDC odesila, takze doslo ~37 % dat.
+- **Oprava:** `emit` pred zapisem pocka na uvolneni mista (`usb_console_tx_used`, max ~300 ms na blok); UartTask neni hlidany watchdogem.
+- **Pravidlo:** davku, ktera nesmi prijit o data (snimek, export), neposilej pres vystup se zahazovanim bez cekani na misto; kontrola: pocitadlo
+  zahozenych bajtu pred a po akci.
+- **Detekce:** `status` radek TX dropped po `screenshot`; velikost stazeneho souboru = 1 152 054 B.
+- **Stav:** ✅ v kodu, ⬜ neovereno na HW

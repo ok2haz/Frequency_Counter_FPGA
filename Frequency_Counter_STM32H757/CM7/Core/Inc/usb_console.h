@@ -24,6 +24,8 @@ void usb_console_tx(const uint8_t *data, uint16_t len);
 /* Vyprazdni co je v ringu do CDC. Vola usb_console_tx; po regenu lze pripojit
  * i na CDC TxComplete callback pro spolehlivy drain bez dalsiho printf. */
 void usb_console_tx_pump(void);
+/* v0.45.28: kolik bajtu cekajicich v TX ringu jeste neodeslo CDC (pro davky, ktere nesmi prijit o data: `screenshot`). */
+uint32_t usb_console_tx_used(void);
 
 /* RX: zavolat z generovaneho CDC_Receive_FS — nacpe bajty do UartRxQueue
  * (stejna fronta jako USART1 RX -> UartTask parser beze zmeny). */

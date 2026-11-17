@@ -24,7 +24,15 @@ static void le32(uint8_t *p, uint32_t v)
 { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
 
 /* Odešle blok + hned pumpne do CDC (nechá ring odtéct). */
-static void emit(const uint8_t *d, uint16_t n) { usb_console_tx(d, n); usb_console_tx_pump(); }
+static void emit(const uint8_t *d, uint16_t n)
+{
+    /* v0.45.28: usb_console_tx je NEBLOKUJICI a pri plnem ringu zahazuje novy bajt, takze snimek 1,15 MB (rychleji, nez CDC odesila)
+     * prisel jen z ~37 % -- na desce `screenshot` pres UART dal 420-435 kB z 1,15 MB. Pred zapisem se proto pocka (UartTask neni
+     * hlidany watchdogem), az se v ringu uvolni misto; nejvys ~300 ms na blok, pak se jede dal (zahozeni se pocita v tx_dropped). */
+    for (uint32_t w = 0u; w < 300u && usb_console_tx_used() + n > 3072u; w++) { usb_console_tx_pump(); osDelay(1); }
+    usb_console_tx(d, n);
+    usb_console_tx_pump();
+}
 
 /* Naplni 54B BITMAPINFOHEADER hlavicku BMP (24 bpp, bottom-up). Sdili ji obe
  * cesty (USB i SD), aby se format nemohl rozejit. */
