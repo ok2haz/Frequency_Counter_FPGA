@@ -6448,4 +6448,65 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   globálním modelem driftu: krok ±1 LSB (~38 ppt) je pod putováním OCXO–GPS za 30 min (~17 ppt mezi fázemi), +1 LSB
   vyšlo 0,83·10⁻¹¹.
 - **Detekce:** `gpsdo` → `K` (po velkém kroku FLL) proti `GPSDO_KDAC_DEFAULT`; `tools/f0293_vyhodnot.py` nad nočním během.
-- **Stav:** ✅ v kódu, ⬜ neověřeno na HW (flash + power-cyklus + `gpsdo test`)
+- **Stav:** ✅ v kódu, ✅ ověřeno na HW 2026-11-16 po power-cyklu (noc LOCK 2026-11-16/17 bez nálezu)
+
+### L-0290 — Pin označený v `.ioc` jako „Free“ CubeMX nevygeneruje, i když má signál, popisek a výchozí úroveň
+
+- **Datum:** 2026-11-17
+- **Oblast:** GPIO / CubeMX `.ioc`, QSPI W25Q512JV (PH1 = /RESET), STATUS #383
+- **Symptom:** žádný viditelný. /RESET paměti po resetu MCU plaval (analogový vstup) a paměť fungovala jen díky
+  nepotvrzenému vnitřnímu pull-upu. Našla to až kontrola schématu revize desky 2.1.
+- **Příčina:** v `.ioc` měl PH1 `Signal=GPIO_Output`, `PinState=GPIO_PIN_SET` a popisek „QSPI Flash RST“, ale zároveň
+  `PinAttribute=Free`. Takový pin CubeMX do `gpio.c` nevygeneruje — popisek i výchozí stav vypadají jako konfigurace, ale
+  nic z nich se neprovede. `CLAUDE.md` přitom psal „/RESET = PH1 (GPIO out high), v .ioc, CubeMX-managed“.
+- **Oprava:** `main.c` `USER CODE BEGIN SysInit`: PH1 push-pull v log. 1 před `MX_QUADSPI_Init`, ODR nejdřív (L-0012);
+  `.ioc` beze změny (`04f8940`, v0.45.22).
+- **Pravidlo:** pin, na kterém závisí funkce, ověř v `gpio.c` / USER CODE, ne v `.ioc`. `PinAttribute=Free` spolu
+  se `Signal=GPIO_*` = pin, který nikdo nenastaví.
+- **Detekce:** `Select-String 'PinAttribute=Free' H757_LED.ioc` a ke každému jeho `Signal=` (2026-11-17: jediný výstupní
+  pin je PH1, ostatní jsou piny oscilátorů, které obsluhuje RCC).
+- **Stav:** ✅ v kódu, ⬜ neověřeno na HW (flash + power-cyklus, `qspitest` / `storetest`, datalog)
+
+### L-0291 — Hodnota spočtená proti referenci nesmí být „platná“, dokud se neověřila reference
+
+- **Datum:** 2026-11-17
+- **Oblast:** ADC3 (teplota jádra, VBAT), VREFBUF, STATUS #384 / #385
+- **Symptom:** na současné desce žádný (VREF+ 2,515 V). Na rev. 2.1 zapíná VDDA U12 až po PG z +3V3: když VREFBUF
+  nenaběhne nebo VDDA vypadne, přepočet teploty jádra a VBAT dá čísla s `valid = 1`, která vypadají věrohodně.
+- **Příčina:** `main.c` při selhání VREFBUF jen vypsal `[WARN]` (v době, kdy konzole po USB ještě neběží) a nic dál;
+  SensorsTask VREF+ měřil (`SENS_VDDA`), ale výsledek nikde nepoužil jako podmínku.
+- **Oprava:** SensorsTask opakuje zapnutí VREFBUF (nejvýš 10×, `vrefbuf_service`), VREF+ mimo 2400–2600 mV → teplota
+  jádra a VBAT neplatné, VREF s chybou; `status` → `VREFBUF:` (`04f8940`).
+- **Pravidlo:** veličina počítaná proti referenci, kterou přístroj sám měří, je platná jen při referenci v mezích; jinak
+  `sensor_fail`, ne číslo. Varování z bootu před konzolí nikdo neuvidí — stav patří do `status`.
+- **Detekce:** `status` → `VREFBUF: ... VRR ok | pri startu ok ... | VREF+ mimo 2400-2600 mV: 0 x`.
+- **Stav:** ✅ v kódu, ⬜ neověřeno na HW
+
+### L-0292 — „Chybí“ není nejhorší konec stupnice „vybitá“
+
+- **Datum:** 2026-11-17
+- **Oblast:** VBAT (záložní CR2032), alarm, AUTO-CAL, Diagnostika, web, STATUS #386
+- **Symptom:** podle požadavku revize HW (nezměřeno) plave vstup VBAT bez vložené CR2032 pod ~1,5 V a přístroj by hlásil
+  vybitou baterii (alarm pod 2,70 V, AUTO-CAL FAIL pod 2,40 V) — tedy radil vyměnit baterii, která tam není.
+- **Příčina:** monitor znal jen jednu stupnici (dobrá → slabá → vybitá); hodnotu mimo fyzikální rozsah zdroje bral jako
+  její nejhorší konec.
+- **Oprava:** `vbat_missing()` (`sensor_stat.h`, mez `VBAT_MISSING_MV` 1500 mV): alarm se neozve, AUTO-CAL WARN
+  „(baterie chybi)“, Diagnostika / PRAHY / `status` / web „chybi“ (`04f8940`).
+- **Pravidlo:** hodnota, kterou daný zdroj fyzicky dát nemůže, je jiný stav (chybí, odpojeno), ne extrém stupnice.
+- **Detekce:** `status` → `VBAT: BATERIE CHYBI`; ověření na HW = vyjmout CR2032 (jen se zapnutým přístrojem, jinak se ztratí čas RTC).
+- **Stav:** ✅ v kódu, ⬜ neověřeno na HW
+
+### L-0293 — Diagnostický údaj obnovovaný jen jednou cestou lže ve všech ostatních
+
+- **Datum:** 2026-11-17
+- **Oblast:** DAC OCXO (AD5693R), `status` / `dac`, STATUS #388
+- **Symptom:** `status` celou noc `kod 24970 | readback 24963`; vypadalo to jako nesoulad zápisu DAC, přitom
+  `readback nesedi 0` a DAC zapisoval správně.
+- **Příčina:** readback se četl jen při ručním `dac` a obnově po startu; zápisy serva (DacTask, 100/s) ho neobnovovaly
+  a řádek ho tiskl vedle živého kódu bez stáří i bez zdroje.
+- **Oprava:** kontrolní readback za běhu serva 1×/min pod mutexem I2C1 (DAC musí držet přesně poslední zapsaný kód),
+  `status` ukazuje stáří a počet kontrol (`07c8085`).
+- **Pravidlo:** diagnostický údaj vedle živé hodnoty musí mít stejnou kadenci, nebo vypsané stáří; jinak čtenář srovnává
+  dvě různé chvíle.
+- **Detekce:** `dac` / `status` → `readback ... (pred N s)` pod 60 s, `kontrol za behu` roste 1×/min, `readback nesedi 0`.
+- **Stav:** ✅ v kódu, ⬜ neověřeno na HW

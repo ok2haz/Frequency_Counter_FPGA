@@ -422,7 +422,7 @@ Deska je **generická** → regiony obecné, ne GPSDO-specifické. Zarovnané na
 | `0x030000` | ~63,8 MB | **DATA** | generický bulk / datalog (⚠️ base posunut z `0x020000` kvůli SETUP → datalog se jednou založí znovu) |
 
 **Piny QUADSPI (v .ioc, CubeMX-managed → regen-safe):** CLK=**PF10**(AF9), NCS=**PG6**(AF10),
-IO0=**PD11**(AF9), IO1=**PD12**(AF9), IO2=**PF7**(AF9), IO3=**PD13**(AF9), /RESET=**PH1**(GPIO out high).
+IO0=**PD11**(AF9), IO1=**PD12**(AF9), IO2=**PF7**(AF9), IO3=**PD13**(AF9), /RESET=**PH1**(GPIO out high — ⚠️ v `.ioc` je `PinAttribute=Free`, CubeMX ho NEgeneruje; nastavuje ho `main.c` `USER CODE SysInit` od v0.45.22, #383 / L-0290).
 **CubeMX QUADSPI:** `FlashSize=25` (2²⁶ = 64 MB — KRITICKÉ), `SampleShifting=HALFCYCLE`, `ClockMode=0`, single flash.
 Driver `w25q_init` přebíjí prescaler na `W25Q_SCK_PRESCALER=3` → SCLK 60 MHz. Read = Quad Fast Read 0x6C (4-line, 8 dummy).
 4-byte adresování: `EN4B` (0xB7) v initu + nativní 4B příkazy (READ `0x13` / PP `0x12` / SE `0x21`).
