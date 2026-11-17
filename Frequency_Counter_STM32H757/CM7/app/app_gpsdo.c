@@ -4473,7 +4473,8 @@ static void app_gpsdo_render_events(void)
         }
     } else if (first || dchg(c_big, sizeof c_big, "--")) {
         prim_fill_rect((prim_rect_t){DG_LLBL, 120, 720, 80}, UI_COLOR_BG_CARD, PRIM_BLEND_REPLACE);
-        prim_draw_text((prim_point_t){DG_LLBL, 180}, "BEZ DAT", &ui_font_mono_30, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
+        /* F-0300: mono_25 (velka pismena a mezera); mono_30 ma jen 0-9 , . + - a text by byl neviditelny (FONTY +7) */
+        prim_draw_text((prim_point_t){DG_LLBL, 180}, "BEZ DAT", &ui_font_mono_25, UI_COLOR_INK_4, PRIM_ALIGN_LEFT);
         drew = 1;
     }
     if (first || dchg(c_inf, sizeof c_inf, info)) {
@@ -4496,7 +4497,7 @@ static void app_gpsdo_render_events(void)
         char t[28];
         if (m == 0) {
             if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "nula %s odectena", t); }
-            else snprintf(b, sizeof b, "zadna (NULA A-B pri spolecnem signalu)");
+            else snprintf(b, sizeof b, "zadna (NULA A-B, spolecny signal)");   /* F-0301: <= 34 znaku (kv_row_live) */
         } else if (m == 1) {
             if (cok) { ev_time_str(t, sizeof t, corr); snprintf(b, sizeof b, "zpozdeni B-A %s odecteno", t); }
             else snprintf(b, sizeof b, "BEZ KALIBRACE (KALIBROVAT >)");
@@ -4538,14 +4539,14 @@ static void ev_u64(char *b, size_t n, uint64_t v)
 static void app_gpsdo_render_contin(void)
 {
     int first = window_first(56);
-    static char c_tot[48], c_rate[48], c_rec[64], c_log[64], c_inf[48];
+    static char c_tot[48], c_rate[48], c_rec[64], c_gap[64], c_log[64], c_inf[48];
     static uint64_t p_n; static uint32_t p_ms; static double s_rate; static uint8_t s_rate_ok;
     if (first) {
         view_set(56);
         window_chrome("SPOJITE MERENI", WIN_TITLE_Y);
         ui_card_t c = {.rect = DG_CARD_FULL_B, .header_label = "Totalizace a prijem bez mrtve doby (absolutni index hran)"};
         ui_card_render_chrome(&c);
-        c_tot[0] = c_rate[0] = c_rec[0] = c_log[0] = c_inf[0] = '\0';
+        c_tot[0] = c_rate[0] = c_rec[0] = c_gap[0] = c_log[0] = c_inf[0] = '\0';
         p_ms = 0u; s_rate_ok = 0u;
         ui_button_t nb = {.rect = CT_NUL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NUL totaliz."};
         ui_button_render(&nb);
@@ -4581,17 +4582,20 @@ static void app_gpsdo_render_contin(void)
     }
     if (s_rate_ok) fmt_hz(s_rate, b, sizeof b); else snprintf(b, sizeof b, "--");
     if (first || dchg(c_rate, sizeof c_rate, b)) { kv_row_live(244, "hran A za sekundu:", b, UI_COLOR_INK_2, first); drew = 1; }
-    snprintf(b, sizeof b, "%lu / %lu (zmeskano %lu), preruseni %lu", (unsigned long)vi.recs, (unsigned long)vi.gaps,
-             (unsigned long)vi.gap_recs, (unsigned long)rs);
-    if (first || dchg(c_rec, sizeof c_rec, b)) { kv_row_live(280, "zaznamy / mezery:", b, (vi.gaps || rs) ? UI_COLOR_WARN : UI_COLOR_INK_2, first); drew = 1; }
+    /* F-0301: hodnota kv_row_live smi mit nejvys 34 znaku (mazaci box 380 px, mono_18 = 11 px/znak); drive jeden radek
+     * "zaznamy / mezery (zmeskano), preruseni" prerostl box od 10 000 zaznamu (~2 min) a jeho konec se nemazal. */
+    snprintf(b, sizeof b, "%lu", (unsigned long)vi.recs);
+    if (first || dchg(c_rec, sizeof c_rec, b)) { kv_row_live(280, "zaznamy:", b, UI_COLOR_INK_2, first); drew = 1; }
+    snprintf(b, sizeof b, "%lu (zmeskano %lu) / %lu", (unsigned long)vi.gaps, (unsigned long)vi.gap_recs, (unsigned long)rs);
+    if (first || dchg(c_gap, sizeof c_gap, b)) { kv_row_live(316, "mezery / preruseni:", b, (vi.gaps || rs) ? UI_COLOR_WARN : UI_COLOR_INK_2, first); drew = 1; }
     {
         sdram_log_stat_t ls;
         sdram_log_stat(&ls);
         if (ls.ready) snprintf(b, sizeof b, "%lu / %lu zaznamu%s", (unsigned long)ls.count, (unsigned long)ls.capacity,
                                ls.wrapped ? " (kruh)" : "");
-        else          snprintf(b, sizeof b, "VYPNUT %.30s", ls.fail);
+        else          snprintf(b, sizeof b, "VYPNUT %.26s", ls.fail);
     }
-    if (first || dchg(c_log, sizeof c_log, b)) { kv_row_live(316, "log SDRAM:", b, UI_COLOR_INK_2, first); drew = 1; }
+    if (first || dchg(c_log, sizeof c_log, b)) { kv_row_live(352, "log SDRAM:", b, UI_COLOR_INK_2, first); drew = 1; }
     if (drew) present_now();
 }
 
