@@ -144,6 +144,9 @@ volatile int8_t g_tap_btn_req = -1;
  * pocitadlo je zadarmo a je to odolnejsi nez 0/1 priznak). */
 volatile int16_t g_shot_view_req  = -1;
 volatile uint32_t g_shot_view_done = 0;
+/* F-0303: okno, ktere se pri poslednim pozadavku SKUTECNE vykreslilo (`s_view` po render_view); zapisuje UiTask PRED
+ * `g_shot_view_done++`, cte UART `view` (cislo bez vlastniho vykresleni = hlavni obrazovka, 13 = menu 12). -1 = zatim nic. */
+volatile int16_t g_shot_view_got  = -1;
 /* 1 = bezi mereni chybovosti I2C4 podle taktu (UART `i2cspeed`). Po tu dobu se
  * sbernice NESMI dotknout nikdo jiny: UiTask preskoci cteni dotyku i zapis jasu
  * a SensorsTask cteni TMP117 0x48. Bez toho by (a) cizi transakce pri rozhozenem

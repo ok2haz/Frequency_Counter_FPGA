@@ -454,7 +454,7 @@ void StartUiTask(void *argument)
     if (g_shot_view_req >= 0) {
       int v = g_shot_view_req;
       g_shot_view_req = -1;
-      app_gpsdo_render_view_for_shot(v);
+      g_shot_view_got = (int16_t)app_gpsdo_render_view_for_shot(v);   /* F-0303: PRED done++ (UART `view` cte po done) */
       g_shot_view_done++;
     }
 

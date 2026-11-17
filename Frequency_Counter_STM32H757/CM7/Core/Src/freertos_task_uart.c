@@ -1987,7 +1987,7 @@ void UartTask_run(void *argument)
 					  printf("     ZADNA UDALOST — encoder klidny (nebo nezapojen: konektor J2)\r\n");
 				  }
 			  else if (strcmp(RxBuffer, "help") == 0) {
-				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz|err|poll|pins|dma] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab|pw|raw\r\n");
+				  printf("ping | screen main | clear | version | help | ui | freq | gps | gpsraw | gps glonass|ack|gnss gps|gnss multi|survey on|survey off|nav5 stationary|nav5 auto | rtc | adcraw | stats | status | sensors [reset] | temperature | beep [on|off|test] | spi [MHz|err|poll|pins|dma] | selftest | scpi [ipc] <cmd> | datalog [on|off|erase|dump|csv] | meas reset | meas gate [on|off] | meas outlier [on|off] | allan log | fpgasim [on|off|fault] | flightrec [test] | screenshot [sd|all] | view <n> | autocal | membench | sdramlog [dump N|reset] | stacktest | eth [clk] | enc | d2ddt [0..255] | bgcheck | fbdiff | tap <0-4> | sdrtr [n] | rpipe [0-2] | dac [probe|<kod>|mv <mV>] | gpsdo [on|off|tau|kdac|test] | ref [ext|int] | fpga v3|ev|ab [zero|clear]|pw [cal|clear]|raw\r\n");
 			  }
 			  else if (strcmp(RxBuffer, "selftest") == 0) {
 				  /* Ciste-logicke unit testy (zadny HW, zadny sdileny stav) — bezpecne za
@@ -2300,11 +2300,18 @@ void UartTask_run(void *argument)
 				  if (*p >= '0' && *p <= '9') {
 					  unsigned v = 0;
 					  while (*p >= '0' && *p <= '9' && v < 1000u) { v = v * 10u + (unsigned)(*p - '0'); p++; }
-					  uint32_t before = g_shot_view_done;
-					  g_shot_view_req = (int16_t)v;
-					  uint32_t t0 = HAL_GetTick();
-					  while (g_shot_view_done == before && (HAL_GetTick() - t0) < 2000u) osDelay(5);
-					  printf(g_shot_view_done == before ? "VIEW %u: UiTask nestihl\n" : "VIEW %u: vykresleno\n", v);
+					  if (v > 255u) {   /* F-0303: render_view bere uint8_t -> `view 300` by vykreslilo okno 44 */
+						  printf("VIEW: cislo okna %u mimo rozsah 0..255\n", v);
+					  } else {
+						  uint32_t before = g_shot_view_done;
+						  g_shot_view_req = (int16_t)v;
+						  uint32_t t0 = HAL_GetTick();
+						  while (g_shot_view_done == before && (HAL_GetTick() - t0) < 2000u) osDelay(5);
+						  /* F-0303: hlasit SKUTECNE vykreslene okno (cislo bez vlastniho vykresleni -> hlavni obrazovka, 13 -> menu) */
+						  if (g_shot_view_done == before) printf("VIEW %u: UiTask nestihl\n", v);
+						  else printf("VIEW %u: vykresleno okno %d%s\n", v, (int)g_shot_view_got,
+						              ((int)g_shot_view_got != (int)v) ? " (pozadovane cislo nema vlastni vykresleni)" : "");
+					  }
 				  } else {
 					  printf("VIEW: pouziti `view <cislo okna>`, pak `screenshot`\n");
 				  }

@@ -8629,7 +8629,11 @@ static void render_view(uint8_t v)
 /* Verejny obal nad `render_view()` (jinak static) — pro export vsech oken
  * (UART `screenshot all`, obsluha `g_shot_view_req` ve `freertos_task_ui.c`).
  * Nedela nic navic: `render_view` uz sam vola `window_prep()`/`present_now()`. */
-void app_gpsdo_render_view_for_shot(int v) { render_view((uint8_t)v); }
+int app_gpsdo_render_view_for_shot(int v)
+{
+    render_view((v >= 0 && v <= 255) ? (uint8_t)v : 0u);   /* F-0303: zadne tiche oriznuti na uint8_t */
+    return s_view;
+}
 
 /* ── Banner „DOTYK NEDOSTUPNY" pri trvale mrtve I2C4 ──────────────────────────
  * 🔴 Kdyz na I2C4 prestanou odpovidat slave cipy, firmware s tim NEMA CO DELAT:

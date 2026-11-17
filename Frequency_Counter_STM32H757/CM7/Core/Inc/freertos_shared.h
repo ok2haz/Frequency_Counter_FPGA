@@ -39,6 +39,7 @@ extern volatile int8_t  g_tap_btn_req;
 /* Export vsech oken na SD (UART `screenshot all`) — viz definice ve `freertos.c`. */
 extern volatile int16_t  g_shot_view_req;
 extern volatile uint32_t g_shot_view_done;
+extern volatile int16_t  g_shot_view_got;    /* F-0303: skutecne vykreslene okno posledniho pozadavku (UART `view`) */
 
 /* ── Požadavek na reset Allan/Histogram/Trend akumulace (UART "meas reset" ->
  * UiTask). Stejný důvod jako `g_screen_req`: `screen_main.c` stav smí měnit
