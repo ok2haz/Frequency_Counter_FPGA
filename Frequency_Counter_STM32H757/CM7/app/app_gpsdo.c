@@ -4787,8 +4787,13 @@ static void wz_btn(prim_rect_t r, const char *label, char *cache, int first, int
     char lb[24];
     snprintf(lb, sizeof lb, "%s", label);
     if (first || dchg(cache, 24, lb)) {                   /* cache ma 24 B jako lb (invariant dchg) */
-        prim_fill_rect(r, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
-        if (lb[0]) { ui_button_t b = {.rect = r, .variant = UI_BUTTON_NORMAL, .label = lb}; ui_button_render(&b); }
+        if (lb[0]) {
+            prim_fill_rect(r, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+            ui_button_t b = {.rect = r, .variant = UI_BUTTON_NORMAL, .label = lb};
+            ui_button_render(&b);
+        } else {   /* skryte tlacitko: vrat pozadi okna (plna BG_0 vypadla na gradientu jako cerny obdelnik) */
+            prim_blit(r, screen_main_bg() + (int32_t)r.y * UI_DIM_SCREEN_W + r.x, UI_DIM_SCREEN_W * (int16_t)sizeof(prim_pixel_t));
+        }
         *drew = 1;
     }
 }
