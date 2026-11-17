@@ -1913,3 +1913,54 @@ nejistota reference 0,012 ppb), uptime 21,5 h bez resetu.
   ✅ Overeno na HW 2026-11-16 po power-cyklu: `version` v0.45.21, `gpsdo` K 3.85e-11, `gpsdo test` PASS (48 ms), SELFTEST 16/16; smycka FLL -> LOCK. Suchy beh skriptu uz UART necte (`5b70c6f`).
 - Vedlejsi: `status` hlasi `DAC OCXO: kod 24969 | readback 24976` - readback je z posledniho rucniho zapisu (`dac 24976`
   v 10:31), zapisy serva s ditherem readback nedelaji; vypada to jako nesoulad (STATUS #388).
+
+### 2026-11-16 22:23 -> 11-17 08:00 — noc1116: 9,6 h LOCK s K 3,85e-11 (v0.45.21, FPGA flash 0x050A) — STATUS #381/#311
+
+Zaznam `gpsdo` + `sensors` po 60 s a `status` po 10 min pres UART (logger uz cte i kladna cisla), od 8 min po power-cyklu
+(uptime 501 s), LOCK od 22:19:38. 577 radku, 0 chyb cteni, 0 mezer > 90 s, 58 vypisu `status`. Data:
+`noc_logs/20261116_lock/` (`overnight_lock.csv`, `status.log`; lokalni archiv). Rozbory `docs/audit/sim/2026-11-17_noc1116_*.py`
+(`rozbor` souhrn a ADEV, `tie_drift` TIE proti rychlosti driftu, `tempco` teplota a zpozdeni v obou nocich, `hold_model` model
+nejistoty HOLD).
+
+- **Smycka:** LOCK ve vsech 577 vzorcich bez preruseni, bez resetu (uptime monotonni), jedine varovani nabehove
+  `TEPLOTA NEUSTALENA` (zhaslo 22:33). 1PPS 34 561 hran za 34 561 s, odmitnuto 0, diry 0, roztrzena cteni 0, sawtooth -q
+  (rozptyl ns2 bez 246 / -q 1). GNSS 3D celou dobu, 8-12 druzic (median 10), HDOP 0,7-1,1, poklesu kvality 0.
+- **Kmitocet a faze:** zbytkova odchylka y prumer +0,3 ppt, sm. odchylka 45 ppt (-146 .. +211 ppt); TIE -36 .. +33 ns
+  (sm. odchylka 13,2 ns, prumer -5,8 ns); stredni kmitocet za noc z koncovych bodu TIE 0,0 ppt, LS sklon TIE +0,7 ppt.
+- **ADEV z TIE** (tau0 60 s, prekryvajici): 60 s 7,7e-11 | 120 s 4,7e-11 | 300 s 2,5e-11 | 600 s 1,5e-11 | 1200 s 1,3e-11 |
+  3000 s 8,0e-12 | 6000 s 3,0e-12 (jen ~6 nezavislych useku). HDEV faze z firmwaru v 07:53 [e-12]: 10 s 129, 100 s 46,
+  1000 s 12, 2000 s 4; `tau min.` 100 s.
+- **Nejistota reference:** `odhad` -> `zmereno` v 22:25:29, pak median 0,011 ppb, p95 0,026, max 0,044 ppb.
+- **Zdravi:** heap min 21 104 B beze zmeny, CPU 8-37 % (na konci 13 %), volne zasobniky beze zmeny; DAC 1 655 633 zapisu,
+  chyb I2C 0, readback nesedi 0; podteceni LTDC, chyby I2C4, CRC FPGA, mezery SEQ, rekalibrace TDC, sticky Si5356
+  a chybejici glyfy 0.
+- **Kod DAC a teplota (#311):** kod 24963,96 -> 24969,19 (+5,23 LSB = +201 ppt), primka pres noc +0,49 +- 0,02 LSB/h
+  (+19 ppt/h, r 0,74). T_ocxo 48,29 -> 47,19 °C, T_deska 30,51 -> 28,92 °C, T_modul 39,24 -> 37,41 °C. Hodinove prirustky
+  23..07 h: +1,89 +1,18 +1,76 +0,89 +0,13 +0,67 -1,46 +0,55 -0,33 LSB. V chladnuti 22:23 -> 05:00 kod ~ T_deska
+  -4,60 +- 0,06 LSB/°C (r -0,97) a s casem jako dalsi promennou cas -0,03 +- 0,07 LSB/h -> narust kodu cely vysvetli teplota.
+  Pri ustalene teplote 05:00 -> 08:00 (T_deska p-p 0,19 °C) kod +0,08 +- 0,03 LSB/h (+3 +- 1 ppt/h, jen 3 h).
+- **Porovnani s noci 13/14 (stejnou metodou):** bez udalosti v 07:00 kod ~ T_deska -5,33 LSB/°C (r -0,89), ale v useku
+  chladnuti 21:11 -> 03:00 je s casem jako promennou teplota neprukazna (+0,23 +- 0,29 LSB/°C) a cas +0,61 LSB/h. Zpozdeni
+  s nejlepsi korelaci se lisi (16/17 kod predbiha T_ocxo o >= 60 min, 13/14 je 10 min za T_deska i T_ocxo; na monotonnim
+  chladnuti je zpozdeni spatne urcene). Pri udalosti 14. 11. (uklid, proudeni vzduchu) T_ocxo kleslo o 1,85 °C a T_deska
+  soucasne stouplo o 0,6 °C; kod sel s T_ocxo (+8 LSB za 30 min), ne s deskou.
+- **Zaver k teplote:** kod (= kmitocet volneho OCXO) sleduje teplotu a proudeni vzduchu kolem OCXO: vuci cidlu desky
+  -4,2 az -5,3 LSB/°C (-160 az -205 ppt/°C), vuci cidlu na plasti OCXO -5,5 az -7,1 LSB/°C (pri udalosti -3,2), radove shodne
+  s -0,21 ppb/°C z behu 2026-10-17 (#311). Koeficient, zpozdeni ani nejlepsi cidlo ale nejsou mezi nocemi stejne, takze
+  dopredna teplotni vazba z jednoho cidla by z techto dat nebyla spolehliva (pri udalosti 14. 11. by s cidlem desky tlacila
+  opacnym smerem). Nocni +0,5-0,6 LSB/h ve trech nocich (13/14, 14/15, 16/17) je z velke casti nocni chladnuti, ne starnuti
+  (den 11-16: ekvivalent kodu -0,6 LSB/h, F-0293, teplota nezaznamenana). Stari se z nocnich behu odhadovat nema (#303: cele
+  dny), tempco jen rizenym testem (#311 bod 3).
+- **Ustalena chyba faze (#313 bod 4):** prumerne TIE -5,8 ns = D·tau^2 pri prumernem driftu 19 ppt/h a tau 1000 s (5,3 ns).
+  Pomale putovani TIE (vyhlazene +-45 min, sm. odchylka 8,3 ns) koreluje s mistni rychlosti driftu kodu (r -0,83, sklon -0,66,
+  teorie -1); po jejim odecteni zbude 4,6 ns. Smycka nekmita, chova se podle navrhu.
+- **Model nejistoty HOLD (F-0292) proti obema nocim:** firmware hlasil drift kodu (LS <= 2 h) 3-83 ppt/h podle teploty
+  a prochazku 22-64 ppt/sqrt(h). Simulovany vstup do HOLD v kazdem vzorku (skutecna chyba = |kod(t0+h) - kod(t0)| x K,
+  model u = sqrt(u0^2 + (1,4 rw)^2 h + (drift h)^2)): noc 16/17 nad 1x u ve 14 / 8 / 0 / 2 / 0 % startu
+  (h = 0,5 / 1 / 2 / 3 / 4), nad 2x u jen 2 % (0,5 h; starty 04:37-04:48 pred poklesem kodu v 05 h a 07:08); noc 13/14 nad 1x
+  20-35 %, nad 2x 0-7 % startu: udalost 14. 11. (starty 06:34-07:14, az 5x pri 0,5 h), skok kodu ve 03 h (+1,7 LSB za hodinu;
+  starty 02:19-02:39) a starty 23:43-00:03 po klidnem useku (drift modelu 5 ppt/h), po 3-4 h az 2,7x. Jako standardni nejistota
+  (k = 1) model obe noci zhruba drzi; tezsi chvost delaji zmeny rychlosti driftu (teplota, vnejsi udalost), ktere model
+  zamerne nezahrnuje (`meas_present.h:197`) -> teplotni clen az s tempco z #311. Kod beze zmeny.
+- Vedlejsi: `status` `DAC OCXO: readback 24963` celou noc (hodnota z obnovy po startu) pri kodu serva 24964 -> 24970,
+  `readback nesedi 0` -> potvrzuje STATUS #388.
