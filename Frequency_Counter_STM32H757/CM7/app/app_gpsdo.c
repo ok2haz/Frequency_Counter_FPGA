@@ -10230,8 +10230,9 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 return true;
             }
             if (in_rect(x, y, EV_RST_RECT)) {              /* novy start parovani = vynulovana statistika */
+                /* F-0304: bez tap_flash -- obrys jde mimo dirty-rect a tlacitko se po akci neprekresluje (zustal by v jednom ze
+                 * tri bufferu); odezvou je vynulovana statistika v okne */
                 fpga_freq_ev_pair_req(EV_PAIR[s_ev_mode]);
-                tap_flash(EV_RST_RECT);
                 return true;
             }
             if (in_rect(x, y, EV_ACT_RECT)) {
@@ -10255,8 +10256,7 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
             }
         }
         if (s_view == 56 && in_rect(x, y, CT_NUL_RECT)) {
-            fpga_freq_v3_total_reset();
-            tap_flash(CT_NUL_RECT);
+            fpga_freq_v3_total_reset();                    /* F-0304: bez tap_flash (viz VYNUL. v okne UDALOSTI) */
             return true;
         }
         /* System Health footer -> "GRAFY" (Diagnostika + Nastaveni jsou
