@@ -27,7 +27,9 @@ static ac_result_t check(sensor_id_t id, float nom, float tol_frac)
     return ac_verdict(s->last, nom, tol_frac);
 }
 
-void autocal_run(void)
+/* v0.45.26: verdikty do PREDANE struktury, bez zapisu do g_autocal -- okno AUTOKALIBRACE (UiTask) je pocita zive 2x/s
+ * a nesmi prepisovat stav, ktery cte UART `autocal` (F-0126: getter, ktery zapisuje, je past). autocal_run = totez do g_autocal. */
+void autocal_eval(autocal_t *o)
 {
     /* VREFBUF ~2,5 V ±4 %. F-0298: VREF+ mimo VREF_OK_MIN..MAX_MV (= presne pasmo PASS) oznaci SensorsTask za NEPLATNOU
      * (#385: teplota jadra a VBAT by staly na spatne referenci) a `check()` by z toho udelal "--" -- souhrn i barva tlacitka
@@ -35,29 +37,34 @@ void autocal_run(void)
      * v `last`) se hodnoti jako WARN / FAIL. "--" zustava jen pro nezmereno a pro chybu cteni ADC s hodnotou v mezich. */
     {
         const sensor_stat_t *v = &g_sensors[SENS_VDDA];
-        g_autocal.vref = (v->samples && !v->valid &&
-                          (v->last < (float)VREF_OK_MIN_MV || v->last > (float)VREF_OK_MAX_MV))
-                         ? ac_verdict(v->last, 2500.0f, 0.04f) : check(SENS_VDDA, 2500.0f, 0.04f);
+        o->vref = (v->samples && !v->valid &&
+                   (v->last < (float)VREF_OK_MIN_MV || v->last > (float)VREF_OK_MAX_MV))
+                  ? ac_verdict(v->last, 2500.0f, 0.04f) : check(SENS_VDDA, 2500.0f, 0.04f);
     }
     /* 🔴 2026-10-02: AIN2 je fyzicky +3V3, ne 12V (overeno netlistem
      * FPGA_Module_2_1, viz calib.c pro plne zduvodneni). Pole `rail12`
      * zustava jako historicky nazev. */
-    g_autocal.rail12 = check(SENS_ADS2, 3300.0f, 0.05f);  /* +3V3 ±5 % */
-    g_autocal.rail5  = check(SENS_ADS3, 5000.0f, 0.05f);   /* 5V ±5 % */
+    o->rail12 = check(SENS_ADS2, 3300.0f, 0.05f);  /* +3V3 ±5 % */
+    o->rail5  = check(SENS_ADS3, 5000.0f, 0.05f);   /* 5V ±5 % */
     /* VBAT = napeti BATERIE (pin + korekce, STATUS #322): OK od 2,70 V, vyhrada 2,40-2,70 V, kriticke pod 2,40 V; ne symetricka tolerance. */
     {
         const sensor_stat_t *b = &g_sensors[SENS_VBAT];
         /* STATUS #386: baterie chybi (pod VBAT_MISSING_MV) = vyhrada, ne kriticka vybita baterie. */
-        g_autocal.vbat = (!b->samples || !b->valid) ? AC_NA
-                        : vbat_missing(b) ? AC_WARN
-                        : (b->last >= 2700.0f) ? AC_PASS
-                        : (b->last >= 2400.0f) ? AC_WARN : AC_FAIL;
+        o->vbat = (!b->samples || !b->valid) ? AC_NA
+                 : vbat_missing(b) ? AC_WARN
+                 : (b->last >= 2700.0f) ? AC_PASS
+                 : (b->last >= 2400.0f) ? AC_WARN : AC_FAIL;
     }
     /* Staged (mění koeficienty / vyžadují externí referenci nebo reinit) — zatím NA. */
-    g_autocal.adc_selfcal = AC_NA;   /* HW self-cal ADC3 — koordinovaný reinit v SensorsTasku */
-    g_autocal.timebase    = AC_NA;   /* offset ref vůči GPS — ⬅ reálné měření (#2) */
-    g_autocal.rf          = AC_NA;   /* AD8307 slope/intercept — HW na teto desce neni (RF_LEVEL_HW_PRESENT) */
-    g_autocal.ran = 1;
+    o->adc_selfcal = AC_NA;   /* HW self-cal ADC3 — koordinovaný reinit v SensorsTasku */
+    o->timebase    = AC_NA;   /* offset ref vůči GPS — ⬅ reálné měření (#2) */
+    o->rf          = AC_NA;   /* AD8307 slope/intercept — HW na teto desce neni (RF_LEVEL_HW_PRESENT) */
+    o->ran = 1;
+}
+
+void autocal_run(void)
+{
+    autocal_eval(&g_autocal);
 }
 
 static const char *rs(ac_result_t r)

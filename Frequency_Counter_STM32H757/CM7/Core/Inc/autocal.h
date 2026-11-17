@@ -33,6 +33,8 @@ extern autocal_t g_autocal;
 
 /** Provede verifikační kroky z g_sensors; staged kroky nastaví na AC_NA. */
 void        autocal_run(void);
+/** v0.45.26: totéž do předané struktury, g_autocal se nemění (okno AUTOKALIBRACE počítá živě). */
+void        autocal_eval(autocal_t *o);
 /** Víceřádkový report (UART `autocal`). */
 void        autocal_format_full(char *buf, int n);
 /** Jednořádkový souhrn (status řádek okna Kalibrace). */

@@ -451,6 +451,10 @@ bool fpga_freq_tdc_cal_start(void);
  *  100 MHz rozlozenou rovnomerne (fpga_v3_calpin_cover); histogram pred zapisem tabulky overi fpga_v3_calpin_check.
  *  @return false = prenos, emulace, v2 nebo FPGA bez CAPS bit24 (pri `pin`). */
 bool fpga_freq_tdc_cal_start_ex(uint8_t mask, bool pin);
+/** v0.45.26: neblokujici zadost o kalibraci TDC obou kanalu (okno AUTOKALIBRACE, UiTask); provede ji FpgaTask v dalsim pollu
+ *  (fpga_freq_tdc_cal_start). fpga_freq_tdc_cal_rc: 127 = ceka, 1 = spusteno, 0 = nepodarilo se (emulator, prenos). */
+void fpga_freq_tdc_cal_req(void);
+int  fpga_freq_tdc_cal_rc(void);
 /** v0.45.5: mez odchylky osmin histogramu z pinu proti tabulce z ring oscilatoru [promile], 100..900 (100 = vychozi).
  *  Plati pro kazdou dalsi kalibraci z pinu, dokud se nevrati 100 (`tdc cal ... mez <N>` ji po kalibraci vraci). */
 void fpga_freq_calpin_lim(int16_t permil);

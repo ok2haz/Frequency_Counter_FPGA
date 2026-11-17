@@ -1891,11 +1891,23 @@ static bool poll_v3(fpga_meas_t *out)
 static bool v3_cfg(uint8_t id, uint8_t v1, uint8_t v2);
 static bool v3_page(uint8_t kind, uint16_t page, uint32_t *items, uint16_t *n);
 
+/* v0.45.26: zadost okna AUTOKALIBRACE (UiTask) o kalibraci TDC obou kanalu. SET_CONFIG patri FpgaTasku: v3_cfg ceka na SPI
+ * zamek az 200 ms a UiTask by po tu dobu nekreslil. Vyridi se v fpga_freq_poll, az je znamy protokol (pred detekci by sel
+ * ramec v2 i do FPGA v3). Vysledek: 127 = ceka, 1 = spusteno, 0 = nepodarilo se (emulator, prenos). */
+static volatile uint8_t s_tdc_req = 0u;
+static volatile int8_t  s_tdc_req_rc = 127;
+void fpga_freq_tdc_cal_req(void) { s_tdc_req_rc = 127; s_tdc_req = 1u; }
+int  fpga_freq_tdc_cal_rc(void)  { return s_tdc_req_rc; }
+
 bool fpga_freq_poll(fpga_meas_t *out)
 {
     static uint8_t tx[FR_LEN], rx[FR_LEN];
 
     if (!g_init_ok) return false;   /* selftest neprosel -> neposilat nic (kontrakt 7.1) */
+    if (s_tdc_req && (s_proto != 0u || s_sim_on)) {   /* v0.45.26: okno AUTOKALIBRACE (emulator vrati 0 = nelze) */
+        s_tdc_req = 0u;
+        s_tdc_req_rc = fpga_freq_tdc_cal_start() ? 1 : 0;
+    }
     /* protokol v3 (krok 4c): verzi FPGA zjisti prvni transakce 1024 B; v3 ma vlastni vetev, v2 pokracuje nize beze zmeny */
     if (s_sim_on && s_sim_v3) return poll_v3(out);
     if (!s_sim_on && s_proto == 0u) {

@@ -3054,6 +3054,7 @@ static void app_gpsdo_render_dualch(void);       /* Dvojkanal A + B + RF bargraf
 static void app_gpsdo_render_devmult(void);      /* Odchylka x N — ADRET 4110 styl (s_view=47) */
 static void app_gpsdo_render_events(void);       /* UDALOSTI: interval A-B, sirka pulzu, kalibrace zpozdeni (s_view=55) */
 static void app_gpsdo_render_contin(void);       /* SPOJITE MERENI: totalizace a prijem bez mrtve doby (s_view=56) */
+static void app_gpsdo_render_autocal(void);      /* AUTOKALIBRACE: samokontrola + kalibrace TDC + zpozdeni/nula (s_view=57) */
 static void app_gpsdo_render_adret(void);        /* ADRET: faze normalu (s_view=54) */
 static void app_gpsdo_render_commdiag(void);     /* Blokove schema (s_view=21) — dlazdice v NASTROJE */
 /* ── Rozcestniky 3. iterace 2026-08-29 (viz CLAUDE.md) ─────────────────────────
@@ -3127,7 +3128,7 @@ static void btnreg_observer(const prim_rect_t *r)
 }
 
 /* ── PAMET FOKUSU PER OKNO (zadani UI §7 „menu si pamatuje posledni volbu") ── */
-#define S_VIEW_MAX 57   /* 0..56; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR, 53 = NASTAVENI GPS, 54 = ADRET FAZE, 55 = UDALOSTI, 56 = SPOJITE */
+#define S_VIEW_MAX 58   /* 0..57; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR, 53 = NASTAVENI GPS, 54 = ADRET FAZE, 55 = UDALOSTI, 56 = SPOJITE, 57 = AUTOKALIBRACE */
 static int8_t s_focus_of[S_VIEW_MAX];
 static int8_t s_focus;                        /* fokus AKTUALNIHO okna */
 /* Okno, ve kterem uz je znacka fokusu vykreslena (0xFF = zadne). Prvni otoceni
@@ -3249,9 +3250,10 @@ static const menu_list_t MENU_LIST = {
 };
 /* Podrozcestnik MERENI (s_view=44) — 3×4 mrizka, stejna geometrie jako drivejsi
  * top Menu (w=248, x=14/276/538, h=76, y=68/154/240/326). */
-#define MEAS_N 14
+#define MEAS_N 15
 /* MERENI (s_view=44). 3 sloupce x 5 radku (v0.45.23: 62 px, bylo 4 x 76 px), poradi PO SLOUPCICH:
- *   sl.1 = zakladni odecty a jednorazove deje, sl.2 = spojite mereni, analyza a zaznam, sl.3 = specialni funkce. */
+ *   sl.1 = zakladni odecty a jednorazove deje, sl.2 = spojite mereni, analyza a zaznam, sl.3 = specialni funkce
+ *   (v0.45.26: posledni = AUTOKALIBRACE, mrizka 3 x 5 je tim plna). */
 static const menu_item_t MEAS_ITEMS[MEAS_N] = {
     /* „Funkce" nahradila „Citac": vyber funkce podle zadani §4 IMPLIKUJE
      * navrat na hlavni obrazovku, takze zvlastni polozka „Citac" byla nadbytecna. */
@@ -3271,6 +3273,7 @@ static const menu_item_t MEAS_ITEMS[MEAS_N] = {
     { "HOLDOVER",     app_gpsdo_render_holdover },   /* s_view=16 */
     { "GPSDO TIE",    app_gpsdo_render_ti       },   /* s_view=45 (TIE + stav smycky) */
     { "ODCHYLKA XN",  app_gpsdo_render_devmult  },   /* s_view=47 */
+    { "AUTOKALIBRACE", app_gpsdo_render_autocal },   /* s_view=57 (samokontrola, kalibrace TDC, zpozdeni B-A / nula A-B) */
 };
 static const menu_list_t MEAS_LIST = {
     /* 5 radku po 62 px (> 60 px dotykove minimum) + 4 mezery po 8 px = 342 px: 68..410, footer zacina na 417 */
@@ -4612,6 +4615,132 @@ static void app_gpsdo_render_contin(void)
         else          snprintf(b, sizeof b, "VYPNUT %.26s", ls.fail);
     }
     if (first || dchg(c_log, sizeof c_log, b)) { kv_row_live(352, "log SDRAM:", b, UI_COLOR_INK_2, first); drew = 1; }
+    if (drew) present_now();
+}
+
+/* ── AUTOKALIBRACE (s_view=57, v0.45.26): co pristroj overi a zkalibruje sam, na jednom miste ───────────────────────────────
+ * Zadani uzivatele 2026-11-17 („extra okno, kde autokalibraci udelam z menu"). Dosud byl AUTO-CAL jen tlacitko v Nastaveni >
+ * KALIBRACE s jednoradkovym souhrnem a kalibrace TDC jen UART `tdc cal`.
+ *  - samokontrola VREF+, +3V3, +5V, VBAT (autocal_eval): zive 2x/s, hodnota + verdikt; g_autocal se tu nemeni (F-0126);
+ *  - SPUSTIT: AUTO-CAL (souhrn pro okno KALIBRACE i UART `autocal`) + kalibrace TDC obou kanalu z ring oscilatoru
+ *    (fpga_freq_tdc_cal_req -> FpgaTask, totez co UART `tdc cal`; mereni stoji ~1 s);
+ *  - zpozdeni B-A a nula A-B NEJSOU automaticke (signal na A, resp. tentyz signal na A i B): okno ukazuje ulozene hodnoty
+ *    a tlacitka otevrou okno UDALOSTI v prislusnem rezimu (ZPET se vrati sem).
+ * Radky kv_row_live: hodnota <= 34 znaku (F-0301); prvni radek az na y 116, aby mazaci box nezasahl hlavicku karty. */
+static const prim_rect_t AK_RUN_RECT  = {  18, 417, 200, 61 };
+static const prim_rect_t AK_SKEW_RECT = { 228, 417, 200, 61 };
+static const prim_rect_t AK_NULL_RECT = { 438, 417, 202, 61 };
+static uint8_t  s_ak_req;            /* 1 = SPUSTIT ceka na vysledek kalibrace TDC */
+static uint8_t  s_ak_res;            /* posledni SPUSTIT: 0 zadny, 1 hotovo, 2 selhala, 3 bez odezvy, 4 nelze spustit */
+static uint32_t s_ak_t0, s_ak_runs0, s_ak_fails0;
+
+static const char *ak_verdict(ac_result_t r)
+{
+    return (r == AC_PASS) ? "OK" : (r == AC_WARN) ? "WARN" : (r == AC_FAIL) ? "FAIL" : "--";
+}
+/* index barvy radku: 0 OK, 1 WARN, 2 chyba, 3 nezmereno / neutralni (cast klice dchg -> zmena barvy prekresli radek) */
+static uint8_t ak_ci(ac_result_t r)
+{
+    return (r == AC_PASS) ? 0u : (r == AC_WARN) ? 1u : (r == AC_FAIL) ? 2u : 3u;
+}
+/* napeti senzoru [mV] -> "2.515 V  OK" (bez %f) */
+static void ak_volt(char *b, size_t n, const sensor_stat_t *s, ac_result_t r)
+{
+    if (!s->samples) { snprintf(b, n, "--"); return; }
+    char v[16];
+    fmt_fixed(v, sizeof v, s->last / 1000.0f, 3);
+    snprintf(b, n, "%s V  %s", v, ak_verdict(r));
+}
+
+static void app_gpsdo_render_autocal(void)
+{
+    int first = window_first(57);
+    static char c_row[8][48];
+    if (first) {
+        view_set(57);
+        window_chrome("AUTOKALIBRACE", WIN_TITLE_Y);
+        ui_card_t cd = {.rect = DG_CARD_FULL_B, .header_label = "Co pristroj overi a zkalibruje sam"};
+        ui_card_render_chrome(&cd);
+        for (int i = 0; i < 8; i++) c_row[i][0] = '\0';
+        ui_button_t b1 = {.rect = AK_RUN_RECT,  .variant = UI_BUTTON_NORMAL, .label = "SPUSTIT"};
+        ui_button_t b2 = {.rect = AK_SKEW_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPOZDENI >"};
+        ui_button_t b3 = {.rect = AK_NULL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NULA A-B >"};
+        ui_button_render(&b1);
+        ui_button_render(&b2);
+        ui_button_render(&b3);
+    }
+    static const char *const LBL[8] = { "VREF+ (2,5 V):", "+3V3:", "+5V:", "VBAT (baterie RTC):",
+                                         "TDC kalibrace A / B:", "rezerva retezu A / B:", "zpozdeni B-A:", "nula intervalu A-B:" };
+    char v[8][44];
+    uint8_t ci[8];
+
+    /* samokontrola (vlastni kopie, g_autocal beze zmeny) */
+    autocal_t ac;
+    autocal_eval(&ac);
+    ak_volt(v[0], sizeof v[0], &g_sensors[SENS_VDDA], ac.vref);   ci[0] = ak_ci(ac.vref);
+    ak_volt(v[1], sizeof v[1], &g_sensors[SENS_ADS2], ac.rail12); ci[1] = ak_ci(ac.rail12);
+    ak_volt(v[2], sizeof v[2], &g_sensors[SENS_ADS3], ac.rail5);  ci[2] = ak_ci(ac.rail5);
+    if (vbat_missing(&g_sensors[SENS_VBAT])) snprintf(v[3], sizeof v[3], "chybi  %s", ak_verdict(ac.vbat));
+    else ak_volt(v[3], sizeof v[3], &g_sensors[SENS_VBAT], ac.vbat);
+    ci[3] = ak_ci(ac.vbat);
+
+    /* TDC: stav z posledniho ramce (bity v2 i pro protokol v3) + prubeh posledniho SPUSTIT. Hotovo = pribyl beh STM
+     * kalibrace (FW >= 0x0427), nebo po 3 s FPGA nekalibruje a ma obe tabulky; bez odezvy po 15 s. */
+    fpga_meas_t fr;
+    const int have = fpga_freq_get_frame(&fr) && fpga_freq_link_ok();
+    const uint8_t st = have ? fr.tdc_status : 0u;
+    const uint8_t both = (uint8_t)(FPGA_TDC_CAL_A | FPGA_TDC_CAL_B);
+    fpga_tdccal_info_t ti;
+    fpga_freq_tdccal_info(&ti);
+    const uint32_t now = HAL_GetTick(), el = now - s_ak_t0;
+    const int rc = fpga_freq_tdc_cal_rc();
+    if (s_ak_req) {
+        if (rc == 0)                               { s_ak_req = 0u; s_ak_res = 4u; }
+        else if (rc == 1 && ti.fails != s_ak_fails0) { s_ak_req = 0u; s_ak_res = 2u; }
+        else if (rc == 1 && (ti.runs != s_ak_runs0 ||
+                             (el > 3000u && !(st & FPGA_TDC_CAL_BUSY) && (st & both) == both))) { s_ak_req = 0u; s_ak_res = 1u; }
+        else if (el > 15000u)                      { s_ak_req = 0u; s_ak_res = 3u; }
+    }
+    if (s_ak_req)               { snprintf(v[4], sizeof v[4], "%s", (rc == 127) ? "ceka na FPGA" : "BEZI (mereni stoji ~1 s)"); ci[4] = 1u; }
+    else if (s_ak_res == 4u)    { snprintf(v[4], sizeof v[4], "nelze spustit (emulator?)"); ci[4] = 2u; }
+    else if (s_ak_res == 3u)    { snprintf(v[4], sizeof v[4], "bez odezvy FPGA"); ci[4] = 2u; }
+    else if (s_ak_res == 2u)    { snprintf(v[4], sizeof v[4], "SELHALA (chyba %u)", (unsigned)ti.last_err); ci[4] = 2u; }
+    else if (!have)             { snprintf(v[4], sizeof v[4], "bez spojeni s FPGA"); ci[4] = 3u; }
+    else if (st & FPGA_TDC_CAL_BUSY) { snprintf(v[4], sizeof v[4], "BEZI"); ci[4] = 1u; }
+    else {
+        snprintf(v[4], sizeof v[4], "%s / %s%s%s", (st & FPGA_TDC_CAL_A) ? "OK" : "NE", (st & FPGA_TDC_CAL_B) ? "OK" : "NE",
+                 (st & FPGA_TDC_CAL_FAIL) ? "  SELHALA" : "", (s_ak_res == 1u) ? "  hotovo" : "");
+        ci[4] = ((st & both) == both && !(st & FPGA_TDC_CAL_FAIL)) ? 0u : 2u;
+    }
+    {
+        fpga_tdc_rez_t rz;
+        if (fpga_tdc_rez_get(&rz)) {
+            if (ti.last_tick) snprintf(v[5], sizeof v[5], "%d / %d tapu, pred %lu s", (int)rz.rez_tap[0], (int)rz.rez_tap[1],
+                                       (unsigned long)((now - ti.last_tick) / 1000u));
+            else              snprintf(v[5], sizeof v[5], "%d / %d tapu", (int)rz.rez_tap[0], (int)rz.rez_tap[1]);
+            const uint8_t lv = (rz.lvl[0] > rz.lvl[1]) ? rz.lvl[0] : rz.lvl[1];
+            ci[5] = (lv == FPGA_TDC_REZ_OK) ? 0u : (lv == FPGA_TDC_REZ_POZOR) ? 1u : 2u;
+        } else { snprintf(v[5], sizeof v[5], "--"); ci[5] = 3u; }
+    }
+    {
+        double ps, sd; uint32_t n; char t[28];
+        if (fpga_freq_pw_skew(&ps, &sd, &n)) { ev_time_str(t, sizeof t, ps); snprintf(v[6], sizeof v[6], "%s (%lu vz.)", t, (unsigned long)n); ci[6] = 0u; }
+        else { snprintf(v[6], sizeof v[6], "nezmereno (ZPOZDENI >)"); ci[6] = 3u; }
+        if (fpga_freq_ti_offset(&ps)) { ev_time_str(t, sizeof t, ps); snprintf(v[7], sizeof v[7], "%s", t); ci[7] = 0u; }
+        else { snprintf(v[7], sizeof v[7], "nenastavena (NULA A-B >)"); ci[7] = 3u; }
+    }
+
+    int drew = 0;
+    for (int i = 0; i < 8; i++) {
+        char key[48];
+        snprintf(key, sizeof key, "%c%.43s", (char)('0' + ci[i]), v[i]);   /* %.43s: radek v[] ma 44 B (prekladac to sam nevi) */
+        if (first || dchg(c_row[i], sizeof c_row[i], key)) {
+            const prim_color_t col = (ci[i] == 0u) ? UI_COLOR_OK : (ci[i] == 1u) ? UI_COLOR_WARN
+                                   : (ci[i] == 2u) ? UI_COLOR_BAD : UI_COLOR_INK_3;
+            kv_row_live((int16_t)(116 + 34 * i), LBL[i], v[i], col, first);
+            drew = 1;
+        }
+    }
     if (drew) present_now();
 }
 
@@ -8629,6 +8758,7 @@ static void render_view(uint8_t v)
     case 54: app_gpsdo_render_adret();     break;
     case 55: app_gpsdo_render_events();    break;
     case 56: app_gpsdo_render_contin();    break;
+    case 57: app_gpsdo_render_autocal();   break;
     /* Modal potvrzeni restartu se po obnove ZAMERNE NEOBNOVUJE: potvrzeni
      * destruktivni akce se nema samo vynorit po udalosti, kterou uzivatel
      * nevyvolal. Vraci se tam, kam vede i tlacitko NE (`CONFIRM_NO`), takze
@@ -9145,6 +9275,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 54) app_gpsdo_render_adret();     /* ADRET: faze normalu (zive, 1 vzorek/s) */
     else if (s_view == 55) app_gpsdo_render_events();    /* UDALOSTI: interval A-B / sirka pulzu / zpozdeni (zive) */
     else if (s_view == 56) app_gpsdo_render_contin();    /* SPOJITE: totalizace + prijem bez mrtve doby (zive) */
+    else if (s_view == 57) app_gpsdo_render_autocal();   /* AUTOKALIBRACE: samokontrola zive, prubeh kalibrace TDC */
     else if (s_view == 52) gen_tick();                   /* Generator: stav zapisu do Si5356 */
     /* ⚠️ Varovny pruh AZ NA KONCI ticku, aby lezel NAD tim, co prave
      * prekreslila okna vyse — pri plnem re-renderu by ho jinak chrome smazal. */
@@ -10258,6 +10389,31 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
         if (s_view == 56 && in_rect(x, y, CT_NUL_RECT)) {
             fpga_freq_v3_total_reset();                    /* F-0304: bez tap_flash (viz VYNUL. v okne UDALOSTI) */
             return true;
+        }
+        /* AUTOKALIBRACE (s_view=57): SPUSTIT = AUTO-CAL + kalibrace TDC (pozadavek pro FpgaTask); ZPOZDENI > a NULA A-B >
+         * otevrou okno UDALOSTI v rezimu kalibrace zpozdeni / intervalu A-B (ZPET se vrati sem, nav_push). Bez tap_flash
+         * (F-0304): odezvou je radek "TDC kalibrace" (ceka / BEZI / hotovo). */
+        if (s_view == 57) {
+            if (in_rect(x, y, AK_RUN_RECT)) {
+                fpga_tdccal_info_t ti;
+                fpga_freq_tdccal_info(&ti);
+                autocal_run();                             /* souhrn i pro okno KALIBRACE a UART `autocal` */
+                s_ak_runs0 = ti.runs; s_ak_fails0 = ti.fails; s_ak_t0 = HAL_GetTick();
+                s_ak_req = 1u; s_ak_res = 0u;
+                fpga_freq_tdc_cal_req();
+                app_gpsdo_render_autocal();
+                return true;
+            }
+            if (in_rect(x, y, AK_SKEW_RECT)) {
+                nav_push(57); s_ev_mode = 2u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_SKEW);
+                app_gpsdo_render_events();
+                return true;
+            }
+            if (in_rect(x, y, AK_NULL_RECT)) {
+                nav_push(57); s_ev_mode = 0u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_AB);
+                app_gpsdo_render_events();
+                return true;
+            }
         }
         /* System Health footer -> "GRAFY" (Diagnostika + Nastaveni jsou
          * dlazdice v Menu, 2026-08-29). */
