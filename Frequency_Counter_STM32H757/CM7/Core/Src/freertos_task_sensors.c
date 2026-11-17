@@ -277,6 +277,7 @@ static int ad5693_readback(uint16_t *code)
     if (HAL_I2C_Mem_Read(&hi2c1, AD5693_ADDR8, AD5693_CMD_NOP, I2C_MEMADD_SIZE_8BIT,
                          b, 2, AD5693_I2C_TMO_MS) != HAL_OK) return 0;
     *code = (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+    g_dac.rb_ms = HAL_GetTick() | 1u;   /* 0 = zadny readback */
     return 1;
 }
 
@@ -553,6 +554,28 @@ static void ad5693_service(void)
     }
 
     ad5693_restore();
+
+    /* STATUS #388: readback i za behu serva. Do v0.45.21 se cetl jen pri rucnim `dac` a obnove po startu, takze `status`
+     * celou noc ukazoval `kod 24970 | readback 24963` (hodnota z obnovy) a vypadalo to jako nesoulad zapisu DAC. Tady jsme
+     * pod i2c1MutexHandle a DacTask zapisuje jen pod nim -> DAC musi drzet presne posledni zapsany kod `g_dac.code`
+     * (jeden ze dvou kodu ditheru); jiny kod = skutecny nesoulad -> `rb_mismatch`. Jedna transakce za minutu. */
+    {
+        static uint32_t s_rb_servo_ms;
+        const uint32_t now = HAL_GetTick();
+        if (ad5693_servo_ready() && g_dac.code_valid &&
+            (s_rb_servo_ms == 0u || (uint32_t)(now - s_rb_servo_ms) >= AD5693_RB_SERVO_MS)) {
+            s_rb_servo_ms = now | 1u;
+            uint16_t rb;
+            if (ad5693_readback(&rb)) {
+                g_dac.code_rb = rb;
+                g_dac.rb_ok   = 1u;
+                g_dac.rb_servo++;
+                if (rb != g_dac.code) g_dac.rb_mismatch++;
+            } else {
+                g_dac.rb_ok = 0u;      /* jako jinde: readback je diagnostika, do `errors` se nepocita */
+            }
+        }
+    }
     if (!s_dith_alive) (void)ad5693_servo(AD5693_I2C_TMO_MS);   /* zaloha 2 Hz, kdyz DacTask neni */
 }
 

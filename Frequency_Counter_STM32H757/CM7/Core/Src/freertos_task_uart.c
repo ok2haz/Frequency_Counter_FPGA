@@ -1084,13 +1084,17 @@ static void dac_print_status(void)
         return;
     }
     uint16_t c = g_dac.code, rb = g_dac.code_rb;
-    printf("DAC OCXO: AD5693R 0x%02X, ctrl %s | kod %s%u = %lu mV | readback %s%u\n",
+    const uint32_t rb_ms = g_dac.rb_ms;
+    /* STATUS #388: readback se od v0.45.22 cte i za behu serva (1x/min, `kontrol za behu`); jeho stari rika, jak cerstvy je.
+     * Kod serva se mezitim meni ditherem, takze `kod` a `readback` se smi lisit o 1 LSB, aniz by slo o nesoulad. */
+    printf("DAC OCXO: AD5693R 0x%02X, ctrl %s | kod %s%u = %lu mV | readback %s%u (pred %lu s)\n",
            (unsigned)AD5693_ADDR7, g_dac.ctrl_ok ? "OK" : "*** NEZAPSAN ***",
            g_dac.code_valid ? "" : "? ", (unsigned)c, (unsigned long)ad5693_code_to_mv(c),
-           g_dac.rb_ok ? "" : "selhal, posl. ", (unsigned)rb);
-    printf("DAC OCXO: zapisu %lu, chyb I2C %lu, readback nesedi %lu | pin VC (AIN0) %s%ld mV\n",
+           g_dac.rb_ok ? "" : "selhal, posl. ", (unsigned)rb,
+           rb_ms ? (unsigned long)((HAL_GetTick() - rb_ms) / 1000u) : 0ul);
+    printf("DAC OCXO: zapisu %lu, chyb I2C %lu, readback nesedi %lu (kontrol za behu %lu) | pin VC (AIN0) %s%ld mV\n",
            (unsigned long)g_dac.writes, (unsigned long)g_dac.errors,
-           (unsigned long)g_dac.rb_mismatch,
+           (unsigned long)g_dac.rb_mismatch, (unsigned long)g_dac.rb_servo,
            g_sensors[SENS_ADS0].valid ? "" : "neplatne, posl. ",
            (long)g_sensors[SENS_ADS0].last);
     printf("DAC OCXO: dither %u Hz (%s) | kroky bez mutexu %lu, vynechano po chybe %lu\n",

@@ -67,6 +67,7 @@
 
 #define AD5693_FS_MV          5000u                /* 2 x VREF (2500 mV) */
 #define AD5693_REPROBE_MS     10000u               /* sonda, dokud cip chybi */
+#define AD5693_RB_SERVO_MS    60000u               /* STATUS #388: kontrolni readback za behu serva */
 /* Nejvyssi kod, ktery se po startu obnovi z flash (ladici rozsah OCXO 0..4 V,
  * STATUS #277; z PDF OCXO neoveren). Poskozeny/cizi blob tak nemuze vyhnat Vc
  * k hornimu dorazu. Rucni `dac` zapis touhle mezi dnes omezen neni. */
@@ -103,6 +104,8 @@ typedef struct {
     uint32_t errors;          /* selhane I2C transakce s pritomnym cipem */
     uint32_t rb_mismatch;     /* readback != zapsany kod */
     uint32_t probe_ms;        /* HAL_GetTick() posledni sondy */
+    uint32_t rb_ms;           /* HAL_GetTick() posledniho uspesneho readbacku (0 = zadny) */
+    uint32_t rb_servo;        /* STATUS #388: kontrolni readbacky za behu serva (1x / AD5693_RB_SERVO_MS) */
     uint8_t  restore;         /* AD5693_RESTORE_* — obnova kodu z flash po startu */
     uint8_t  restore_done;    /* 1 = obnova vyrizena (uspech, ponechano, mimo rozsah) */
     uint16_t restore_code;    /* kod, o ktery se obnova pokousela (0 = zadny) */
