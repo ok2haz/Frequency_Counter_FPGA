@@ -230,3 +230,5 @@ indexu nejbližší hrany (`kn >= -P`), hlídá to mutace „dosah podle k“.
 VREF+/+3V3/+5V/VBAT živě (`autocal_eval`, `g_autocal` beze změny), SPUSTIT = AUTO-CAL + kalibrace TDC obou kanálů
 (`fpga_freq_tdc_cal_req`, SET_CONFIG posílá FpgaTask), stav TDC a rezerva řetězu, uložené zpoždění B–A a nula A–B s tlačítky do okna
 UDÁLOSTI. Build 0 varování, `.text` 802312 → 804392, `audit.py` 97/0/2. ⬜ neověřeno na HW.
+
+**Rozšíření téhož dne (v0.45.27):** na dotaz uživatele „je v autokalibraci i průvodce?“ (myšleno kalibrace TDC a nuly času) přidán **průvodce kalibrací** (s_view=58, `app_gpsdo_render_calwiz`) a tlačítko PRŮVODCE > v okně AUTOKALIBRACE (nahradilo ZPOŽDĚNÍ > a NULA A-B >). Build 0 varování, `.text` 804392 → 807992, `audit.py` 97/0/2. ⬜ neověřeno na HW.
