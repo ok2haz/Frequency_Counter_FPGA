@@ -52,4 +52,8 @@ bool flightrec_report(void);
 /** Je ve flash nejaky dump? (pro `status` — at nemusi cist celou historii.) */
 bool flightrec_have(void);
 
+/** 1 = letovy zapisovac ma pripravenou flash (predem smazany sektor).
+ *  0 = `flightrec_init()` selhal -> pri poruche se NIC nezapise (audit F-0098). */
+int flightrec_ready(void);
+
 #endif /* INC_FLIGHTREC_H_ */

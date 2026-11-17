@@ -38,7 +38,23 @@ Thumbs.db
 .DS_Store
 *.swp
 *~
+desktop.ini
+# macOS na disku ExFAT: AppleDouble soubory „._jméno" (rozšířené atributy), vznikají ke každému souboru
+._*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# KiCad zámky otevřeného projektu (zdrojáky .kicad_sch/.kicad_pcb SE verzují)
+*.lck
+
+# Ruční zálohy s datem (CM7/.cproject.bak-2026-08-29) — lokální, git má historii
+*.bak-*
 
 # Claude Code — lokální per-uživatel nastavení (permissiony), NEsdílet mezi spolupracovníky
-# (sdílená pravidla patří do .claude/settings.json, ne .local)
-.claude/settings.local.json
+# (sdílená pravidla patří do .claude/settings.json, ne .local); platí v libovolné hloubce
+**/.claude/settings.local.json
+
+# Nocni zaznamy SPI (tools/spi_night.py), velke CSV z mereni
+**/noc_logs/

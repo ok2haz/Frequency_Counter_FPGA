@@ -1,0 +1,298 @@
+From e2ea7c71aeebfd899e75b5de931db43497b41b34 Mon Sep 17 00:00:00 2001
+From: Michal Grygarek <michal.grygarek@accenture.com>
+Date: Sun, 25 Oct 2026 09:17:35 +0100
+Subject: [PATCH] B(fpga): dlouhe casovace na 1ms zakladne (B1, top_v3)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⚠️ ZMENA CHOVANI, mimo optimalizacni radu (trida B, zadani kap. 5 B1).
+Nabeh (boot_cnt), timeout kalibrace (cal_tmo), prodleva opakovani
+(rt_dly) a drzeni koherence (coh_hold) pocitaji tiky okna sondy pwend
+(1 ms; pwc presunuto pred nabeh), v SIM_TOP tik 100 taktu. N = ceil(
+puvodni doba / P): nabeh 168 tiku (167..168 ms, drive 167,77), timeout
+5369 (5368..5369 ms), opakovani 11 (10..11 ms, drive 10,49), koherence
+168. SIM_TOP: nabeh 20 tiku (1900..2000 taktu), ostatni doby jako drive.
+Sirky 24/29/20/24 -> 8/13/4/8 b (yosys: -65 FF, -64 ALU, -59 LUT,
+ridici sady -14; hlavni instance zmerila jako variantu tmr -47 CLS).
+
+Test dob sim/tb_tmr.sv (run_ps1_doplnek.txt, tmr): nabeh 1964 a 1924
+taktu (meze 1900..2003), opakovani 1048595 (meze 1048500..1048603),
+koherence a timeout po 3 ticich. topv3, topv3cal, holdinv, topv3ovf,
+topv3pw PASS (stopa se proti base/ lisi: zamer).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sim/run_ps1_doplnek.txt |  4 ++
+ sim/tb_tmr.sv           | 95 +++++++++++++++++++++++++++++++++++++++++
+ src/top_v3.v            | 84 ++++++++++++++++++++++--------------
+ 3 files changed, 152 insertions(+), 31 deletions(-)
+ create mode 100644 sim/tb_tmr.sv
+
+diff --git a/sim/run_ps1_doplnek.txt b/sim/run_ps1_doplnek.txt
+index b812828..baba760 100644
+--- a/sim/run_ps1_doplnek.txt
++++ b/sim/run_ps1_doplnek.txt
+@@ -11,3 +11,7 @@
+ #            na kterych stoji kroky "kruh v 16 SDPB" a "soucty v ALU54D"; s modely gowin_models_ext.v i s oficialnim
+ #            prim_sim.v z Gowin IDE (misto extra: <Gowin>/IDE/simlib/gw1n/prim_sim.v) musi projit. ~1 s
+     @{ name = "primchk"; top = "tb_prim_chk"; rtl = @(); tb = "tb_prim_chk.sv"; extra = @("gowin_models_ext.v") }
++#   tmr      ⚠️ jen s patchem tridy B (B1 / B1p): doby nabehu, opakovani kalibrace, timeoutu a drzeni koherence na spolecne
++#            casove zakladne (tb_tmr.sv; meze z parametru dut.TMR_P / N_*), ~3 min
++    @{ name = "tmr"; top = "tb_tmr"; rtl = @("top_v3.v", "v3_core.v", "app_v3.v", "spi_slave_phy_v3.v", "spi_app.v", "tdc.v"); tb = "tb_tmr.sv"; extra = @("gowin_models.v", "gowin_models_ext.v");
++       defs = @("-DSIM_TOP", "-DSIM_LUT_PS=800", "-DSIM_IDX", "-DSIM_TAP_MEAN=39", "-DSIM_TAP_SPREAD=15", "-DSIM_BREAK_IDX=268") }
+diff --git a/sim/tb_tmr.sv b/sim/tb_tmr.sv
+new file mode 100644
+index 0000000..bffb4c8
+--- /dev/null
++++ b/sim/tb_tmr.sv
+@@ -0,0 +1,95 @@
++// ============================================================
++// tb_tmr.sv -- 2026-10-25, ⚠️ jen s patchem tridy B1 / B1p (dlouhe casovace top_v3 na spolecne casove zakladne tmr_t):
++// mereni dob v SIM_TOP proti mezim z parametru dut.TMR_P (takty na tik) a dut.N_* (pocet tiku). Casovac zacina v nahodne
++// fazi zakladny, takze doba lezi v (N - 1) * P .. N * P taktu (+ registrovane porovnani).
++//   1) nabeh: od ok_s[1] = 1 do boot_done (po startu a po vynucene ztrate hodin v jine fazi zakladny),
++//   2) opakovani kalibrace: od rt_run do rt_go (vynuceny cal_fail_a),
++//   3) koherence: coh_hold nastaveny na 3 -> coh_hz po 3 ticich; zmena reference -> coh_hold = N_COH,
++//   4) timeout kalibrace: vynuceny use_ro_a, cal_tmo nastaveny na N_CAL - 3 -> cal_abort po 3 ticich; bez use_ro -> 0.
++// Spusteni: run_ps1_doplnek.txt (tmr), ~3 min.
++// ============================================================
++`timescale 1ps/1fs
++`include "tb_clk.vh"
++module tb_tmr;
++    reg clk10 = 0, clk100 = 0;
++    always #50000 clk10 = ~clk10;
++    initial begin #2300; forever #(`TB_THALF_PS) clk100 = ~clk100; end
++    reg ch_a = 0, ch_b = 0;
++    initial begin #12345; forever begin ch_a = 1; #(50000); ch_a = 0; #(50000); end end
++    initial begin #23456; forever begin ch_b = 1; #(151515); ch_b = 0; #(151515); end end
++    wire miso, led, fok, refc;
++    wire [1:0] ps_ck, ps_ckn, ps_csn, ps_rstn; wire [1:0] ps_rwds; wire [15:0] ps_dq;
++    top_v3 dut (.clk_ref_10m(clk10), .clk_p0_100m(clk100), .ch_a(ch_a), .ch_b(ch_b), .led_tx(led), .fpga_ok(fok),
++                .ref_ctrl(refc), .ext_ref_sens(1'b0), .gps_1pps(1'b0), .spi_sck(1'b0), .spi_cs_n(1'b1), .spi_mosi(1'b0), .spi_miso(miso),
++                .O_psram_ck(ps_ck), .O_psram_ck_n(ps_ckn), .O_psram_cs_n(ps_csn), .O_psram_reset_n(ps_rstn),
++                .IO_psram_rwds(ps_rwds), .IO_psram_dq(ps_dq));
++    integer errors = 0, nchk = 0;
++    task chk(input cond, input [8*72-1:0] what);
++        begin nchk = nchk + 1; if (!cond) begin errors = errors + 1; $display("  CHYBA: %0s (t = %0t)", what, $time); end end endtask
++    integer P, NB, NR, NC, NH;
++    initial begin P = dut.TMR_P; NB = dut.N_BOOT; NR = dut.N_RT; NC = dut.N_CAL; NH = dut.N_COH; end
++    // citac taktu a udalosti
++    integer cyc = 0, c_ok = -1, d_boot0 = -1, d_boot1 = -1, nboot = 0, c_rt = -1, d_rt = -1, nt = 0;
++    reg ok_q = 0, bd_q = 0, rr_q = 0;
++    always @(posedge clk100) begin
++        cyc = cyc + 1;
++        if (dut.ok_s[1] && !ok_q) c_ok = cyc;
++        if (dut.boot_done && !bd_q && c_ok >= 0) begin
++            if (nboot == 0) d_boot0 = cyc - c_ok; else d_boot1 = cyc - c_ok;
++            nboot = nboot + 1;
++        end
++        if (dut.rt_run && !rr_q) c_rt = cyc;
++        if (dut.rt_go && c_rt >= 0 && d_rt < 0) d_rt = cyc - c_rt;
++        if (dut.tmr_t) nt = nt + 1;
++        ok_q = dut.ok_s[1]; bd_q = dut.boot_done; rr_q = dut.rt_run;
++    end
++    integer n0, k;
++    initial begin
++        // 1) nabeh po startu
++        wait (nboot == 1);
++        $display("nabeh po startu: %0d taktu (meze %0d .. %0d, P = %0d, N = %0d)", d_boot0, (NB - 1) * P, NB * P + 3, P, NB);
++        chk(d_boot0 >= (NB - 1) * P && d_boot0 <= NB * P + 3, "nabeh po startu v mezich (N - 1) P .. N P");
++        // nabeh po ztrate hodin (jina faze zakladny)
++        #(64'd1_234_567);
++        force dut.clk_ok = 1'b0; #(64'd3_000_000); release dut.clk_ok;
++        wait (nboot == 2);
++        $display("nabeh po ztrate hodin: %0d taktu", d_boot1);
++        chk(d_boot1 >= (NB - 1) * P && d_boot1 <= NB * P + 3, "nabeh po ztrate hodin v mezich");
++        // pockat na kalibraci obou kanalu
++        wait (dut.cal_valid_a && dut.cal_valid_b && !dut.cal_busy_a && !dut.cal_busy_b);
++        #(64'd100_000_000);
++        // 3) koherence: coh_hold = 3 -> coh_hz po 3 ticich; pak zmena reference -> N_COH
++        @(posedge clk100); #1;
++        dut.coh_hold = 3; n0 = nt;
++        wait (dut.coh_hz);
++        $display("koherence: coh_hz po %0d ticich (ceka se 3)", nt - n0);
++        chk(nt - n0 == 3, "koherence: coh_hz po 3 ticich");
++        force dut.ref_act = ~dut.ref_act;
++        repeat (4) @(posedge clk100);
++        chk(dut.coh_hold == NH || dut.coh_hold == NH - 1, "koherence: zmena reference nastavi coh_hold = N_COH");
++        release dut.ref_act;
++        // 4) timeout kalibrace
++        @(posedge clk100); #1;
++        force dut.use_ro_a = 1'b1;
++        repeat (3) @(posedge clk100); #1;
++        dut.cal_tmo = NC - 3; n0 = nt;
++        wait (dut.cal_abort);
++        $display("timeout kalibrace: cal_abort po %0d ticich od N_CAL - 3 (ceka se 3)", nt - n0);
++        chk(nt - n0 == 3, "timeout kalibrace po 3 ticich");
++        release dut.use_ro_a;
++        repeat (3) @(posedge clk100);
++        chk(dut.cal_tmo == 0, "timeout: bez use_ro cal_tmo = 0");
++        // 2) opakovani kalibrace: vynuceny cal_fail_a
++        wait (!dut.cal_busy_a && !dut.cal_busy_b);
++        @(posedge clk100); #1;
++        force dut.cal_fail_a = 1'b1;
++        wait (d_rt >= 0);
++        release dut.cal_fail_a;
++        $display("opakovani kalibrace: rt_run -> rt_go %0d taktu (meze %0d .. %0d, N = %0d)", d_rt, (NR - 1) * P, NR * P + 3, NR);
++        chk(d_rt >= (NR - 1) * P && d_rt <= NR * P + 3, "opakovani kalibrace v mezich");
++        $display("tiku zakladny %0d, kontrol %0d", nt, nchk);
++        if (errors == 0) $display("PASS: tb_tmr"); else $display("FAIL: tb_tmr (%0d chyb)", errors);
++        $finish;
++    end
++    initial begin #(64'd60_000_000_000); $display("FAIL: tb_tmr timeout"); $finish; end
++endmodule
+diff --git a/src/top_v3.v b/src/top_v3.v
+index add72c2..c7e2a1d 100644
+--- a/src/top_v3.v
++++ b/src/top_v3.v
+@@ -114,8 +114,40 @@ module top_v3 (
+     reg [1:0]  ok_s = 2'b00;
+     always @(posedge clk_p0_100m) ok_s <= {ok_s[0], clk_ok};
+ 
++    // ---- ⚠️ B1 (ZMENA CHOVANI, mimo optimalizacni radu, 2026-10-25): dlouhe casovace na spolecne casove zakladne tmr_t ----
++    // Nabeh (boot_cnt), timeout kalibrace (cal_tmo), prodleva opakovani (rt_dly) a drzeni koherence (coh_hold) pocitaji tiky
++    // spolecne zakladny misto taktu. HW: tmr_t = pwend (okno sondy 1 ms = 100 000 taktu), SIM_TOP: 100 taktu (simulace tak
++    // zachova doby). Casovac zacina v nahodne fazi zakladny -> doba (N - 1) * P .. N * P taktu, N = ceil(puvodni doba / P):
++    // nabeh 2^24 taktu (167,77 ms) -> 168 tiku (167..168 ms), timeout 2^29 (5,369 s) -> 5369 tiku, opakovani 2^20 (10,49 ms)
++    // -> 11 tiku (10..11 ms), koherence 2^24 - 1 -> 168 tiku. SIM_TOP: nabeh 2000 taktu -> 20 tiku (1900..2000 taktu).
++    // Sirky: boot 24 -> 8 b, cal_tmo 29 -> 13, rt_dly 20 -> 4, coh_hold 24 -> 8 (-64 FF, -64 ALU; hlavni instance zmerila jako
++    // variantu tmr -64 reg, -47 CLS). Test dob: sim/tb_tmr.sv.
++    reg [16:0] pwc = 17'd0;
++    reg        pwend = 1'b0;
++    always @(posedge clk_p0_100m) begin
++        pwend <= (pwc == 17'd99998);
++        pwc   <= pwend ? 17'd0 : pwc + 17'd1;
++    end
++`ifdef SIM_TOP
++    localparam integer TMR_P  = 100;
++    localparam integer N_BOOT = 20;                              // 2000 taktu
++    reg  [6:0] tmr_c = 7'd0;
++    reg        tmr_t = 1'b0;
++    always @(posedge clk_p0_100m) begin
++        tmr_t <= (tmr_c == 7'd98);
++        tmr_c <= tmr_t ? 7'd0 : tmr_c + 7'd1;
++    end
++`else
++    localparam integer TMR_P  = 100000;
++    localparam integer N_BOOT = (16777216 + TMR_P - 1) / TMR_P;  // 2^24 taktu
++    wire       tmr_t = pwend;
++`endif
++    localparam integer N_CAL = (536870912 + TMR_P - 1) / TMR_P;  // timeout kalibrace 2^29 taktu
++    localparam integer N_RT  = (1048576 + TMR_P - 1) / TMR_P;    // prodleva opakovani 2^20 taktu
++    localparam integer N_COH = (16777215 + TMR_P - 1) / TMR_P;   // drzeni koherence 2^24 - 1 taktu
++
+     // ---- nabeh (z top.v) ----
+-    reg [23:0] boot_cnt  = 24'd0;
++    reg [$clog2(N_BOOT)-1:0] boot_cnt = {$clog2(N_BOOT){1'b0}};   // B1: tiky tmr_t
+     reg        boot_done = 1'b0;
+     reg        cal_boot  = 1'b0;
+     reg        boot_tc   = 1'b0;   // boot_cnt == konec (registrovane porovnani s konec - 1, rozlozeni 2026-10-23)
+@@ -123,15 +155,11 @@ module top_v3 (
+         cal_boot <= 1'b0;
+         boot_tc  <= 1'b0;
+         if (!ok_s[1]) begin
+-            boot_cnt  <= 24'd0;
++            boot_cnt  <= {$clog2(N_BOOT){1'b0}};
+             boot_done <= 1'b0;
+         end else if (!boot_done) begin
+-            boot_cnt <= boot_cnt + 24'd1;
+-`ifdef SIM_TOP
+-            boot_tc  <= (boot_cnt == 24'd1999);
+-`else
+-            boot_tc  <= (boot_cnt == 24'hFFFFFE);
+-`endif
++            if (tmr_t) boot_cnt <= boot_cnt + 1'b1;
++            boot_tc  <= tmr_t & (boot_cnt == N_BOOT - 1);           // N_BOOT-ty tik
+             if (boot_tc) begin boot_done <= 1'b1; cal_boot <= 1'b1; end
+         end
+     end
+@@ -155,18 +183,18 @@ module top_v3 (
+     wire use_ro_a, use_ro_b, ro_sig;
+     ring_osc u_ro (.en(use_ro_a | use_ro_b), .out(ro_sig));
+ 
+-    reg [28:0] cal_tmo   = 29'd0;
++    reg [$clog2(N_CAL)-1:0] cal_tmo = {$clog2(N_CAL){1'b0}};      // B1: tiky tmr_t
+     reg        cal_abort = 1'b0;
+-    reg        tmo_h = 1'b0, tmo_l = 1'b0;
++    reg        tmo_q = 1'b0;                                     // N_CAL-ty tik (registrovane, jako drive tmo_h & tmo_l)
+     always @(posedge clk_p0_100m) begin
+         cal_abort <= 1'b0;
+-        tmo_h <= &cal_tmo[28:15];
+-        tmo_l <= &cal_tmo[14:0];
++        tmo_q     <= 1'b0;
+         if (use_ro_a | use_ro_b) begin
+-            cal_tmo <= cal_tmo + 29'd1;
+-            if (tmo_h & tmo_l) cal_abort <= 1'b1;
++            if (tmr_t) cal_tmo <= cal_tmo + 1'b1;
++            tmo_q <= tmr_t & (cal_tmo == N_CAL - 1);
++            if (tmo_q) cal_abort <= 1'b1;
+         end else begin
+-            cal_tmo <= 29'd0;
++            cal_tmo <= {$clog2(N_CAL){1'b0}};
+         end
+     end
+ 
+@@ -216,13 +244,7 @@ module top_v3 (
+     always @(posedge clk_p0_100m) if (seg_tick) begin pr_a_s <= pa2; pr_b_s <= pb2; end
+     wire        div_a, div_b;
+     wire [15:0] prb_a, prb_b;
+-    // spolecne okno sondy 1 ms (100 000 taktu) pro oba kanaly
+-    reg [16:0] pwc = 17'd0;
+-    reg        pwend = 1'b0;
+-    always @(posedge clk_p0_100m) begin
+-        pwend <= (pwc == 17'd99998);
+-        pwc   <= pwend ? 17'd0 : pwc + 17'd1;
+-    end
++    // spolecne okno sondy 1 ms (100 000 taktu) pro oba kanaly (pwc / pwend: B1 presunuto pred nabeh, je i casovou zakladnou)
+     pin_cnt3 u_pca (.pin(ch_a), .clk(clk_p0_100m), .wend(pwend), .sel(pr_a), .sig_out(div_a), .probe(prb_a));
+     pin_cnt3 u_pcb (.pin(ch_b), .clk(clk_p0_100m), .wend(pwend), .sel(pr_b), .sig_out(div_b), .probe(prb_b));
+     wire        sig_a = div_a;
+@@ -267,19 +289,19 @@ module top_v3 (
+     // opakovani po selhani (jako v2 FW 0x0422): po ~8 ms znovu, nejvys 15x za sebou, jen selhany kanal
+     wire cfail = cal_fail_a | cal_fail_b;
+     reg        cfail_q = 1'b0, rt_run = 1'b0, rt_go = 1'b0;
+-    reg [19:0] rt_dly  = 20'd0;
+-    reg        rt_tc   = 1'b0;   // rt_dly == 2^20 - 1 (registrovane porovnani, rozlozeni 2026-10-23)
++    reg [$clog2(N_RT)-1:0] rt_dly = {$clog2(N_RT){1'b0}};        // B1: tiky tmr_t, nuluje se na konci (drive pretekl)
++    reg        rt_tc   = 1'b0;   // N_RT-ty tik (registrovane porovnani)
+     reg [3:0]  rt_n    = 4'd0;
+     reg [1:0]  rt_tot  = 2'd0;
+     always @(posedge clk_p0_100m) begin
+         cfail_q <= cfail;
+         rt_go   <= 1'b0;
+         if (cfail & ~cfail_q & (rt_n != 4'hF)) rt_run <= 1'b1;
+-        rt_tc   <= rt_run & (rt_dly == 20'hFFFFE);
++        rt_tc   <= rt_run & tmr_t & (rt_dly == N_RT - 1);
+         if (rt_run) begin
+-            rt_dly <= rt_dly + 20'd1;
++            if (tmr_t) rt_dly <= rt_dly + 1'b1;
+             if (rt_tc) begin
+-                rt_run <= 1'b0; rt_go <= 1'b1; rt_n <= rt_n + 4'd1;
++                rt_run <= 1'b0; rt_go <= 1'b1; rt_n <= rt_n + 4'd1; rt_dly <= {$clog2(N_RT){1'b0}};
+                 if (rt_tot != 2'd3) rt_tot <= rt_tot + 2'd1;
+             end
+         end
+@@ -487,15 +509,15 @@ module top_v3 (
+     wire [7:0] coh_gray;
+     wire       coh_ok, coh_seen, coh_path, coh_valid;
+     reg  [1:0]  rx_s = 2'b00;
+-    reg  [23:0] coh_hold = 24'hFFFFFF;
++    reg  [$clog2(N_COH+1)-1:0] coh_hold = N_COH;                   // B1: tiky tmr_t
+     always @(posedge clk_p0_100m) begin
+         rx_s <= {rx_s[0], ref_act};
+-        if (rx_s[1] ^ rx_s[0])     coh_hold <= 24'hFFFFFF;
+-        else if (coh_hold != 24'd0) coh_hold <= coh_hold - 24'd1;
++        if (rx_s[1] ^ rx_s[0])               coh_hold <= N_COH;
++        else if (tmr_t && coh_hold != 0)     coh_hold <= coh_hold - 1'b1;
+     end
+     reg coh_hz = 1'b0, coh_en = 1'b0;
+     always @(posedge clk_p0_100m) begin
+-        coh_hz <= (coh_hold == 24'd0);
++        coh_hz <= (coh_hold == 0);
+         coh_en <= ok_s[1] & boot_done & ~rx_s[1] & coh_hz;
+     end
+     coh_mon u_coh (.clk(clk_p0_100m), .tgl10(tgl10), .en(coh_en),
+-- 
+2.54.0 (Apple Git-157)
+

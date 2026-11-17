@@ -1,0 +1,7 @@
+[2026-10-18 16:55:31] PREFLIGHT: uptime 9255 s, IPC 29, smycka OFF (zamceno 0, 48 s)
+[2026-10-18 16:55:31] VAROVANI: smycka neni LOCK (OFF) - pocitej s rozbehem, zaklad meri az od zamceni
+[2026-10-18 16:55:31] HRADLO: nastaveno 0.25000 s, posledni namerene 250000000 ns
+[2026-10-18 16:55:31] START: docs\audit\data\2026-10-18_A-ext_gpsdo-OFF.csv, perioda 0.1 s, max 60 min
+[2026-10-18 16:55:31] stav smycky: OFF (why 7)
+[2026-10-18 17:18:14] NEODPOVIDA (1x)
+[2026-10-18 17:55:31] KONEC: radku OK 29679, NA 11, resetu pristroje 0

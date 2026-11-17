@@ -18,7 +18,12 @@
 #include "w25q_map.h"
 #include "freertos_shared.h"   /* g_sensors, g_rtc_text, g_spi_ok, qspiMutexHandle */
 #include "fpga_freq.h"
+#include "gpsdo.h"       /* g_gpsdo_drive/_code_q16 - kod DAC do zaznamu (STATUS #311) */
+#include "ad5693.h"      /* g_dac */
 #include "gps.h"
+#include "calib.h"      /* g_calib.vbat_corr_mv: log drzi SUROVE napeti na pinu VBAT, korekce na baterii se pricita pri cteni (STATUS #322) */
+#include "si5356.h"   /* SI5356_LOS_CLKIN/PLL_LOL — priznak neplatne reference */
+#include "errlog.h"    /* udalosti: chyba zapisu, zmena nastaveni */
 #include "cmsis_os2.h"
 #include "stm32h7xx_hal.h"
 #include <stdio.h>
@@ -42,6 +47,81 @@ static uint32_t s_count;               /* pocet platnych zaznamu (strop = capaci
 static uint32_t s_errors;
 static bool     s_wrapped;
 static uint32_t s_next_ms;             /* HAL_GetTick kdy vzorkovat priste */
+/* Kolikrat se plan musel posunout od teda, protoze tik nebezel vic nez periodu
+ * (audit F-0102). Nenulove = log ma diru; tise dohnane duplikaty by byly horsi. */
+static uint32_t s_skipped;
+static uint16_t s_period_s = DATALOG_PERIOD_S;   /* runtime perioda vzorkovani */
+static uint8_t  s_store_pref = DATALOG_STORE_AUTO;
+static uint8_t  s_inited;              /* 1 = `datalog_init` uz probehl (viz set_store) */
+static uint8_t  s_cfg_quiet;           /* 1 = obnova ulozeneho nastaveni, ne zasah uzivatele */
+
+void datalog_cfg_quiet(bool on) { s_cfg_quiet = on ? 1u : 0u; }
+
+uint16_t datalog_period_s(void) { return s_period_s ? s_period_s : DATALOG_PERIOD_S; }
+
+void datalog_set_period_s(uint16_t sec)
+{
+    if (sec < 1u) sec = 1u;
+    if (sec > 3600u) sec = 3600u;
+    if (sec == s_period_s) return;
+    uint16_t old_p = s_period_s;
+    s_period_s = sec;
+    /* Pri obnove z syscfg se NEloguje — neni to zasah uzivatele (F-0093). */
+    if (!s_cfg_quiet) (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGPER, sec, old_p, "logT");
+    /* Prepocitat AZ TED, aby zmena platila od pristiho vzorku a ne az za starou
+     * periodou (pri 600 s by uzivatel cekal 10 minut, nez se to projevi). */
+    s_next_ms = HAL_GetTick() + (uint32_t)sec * 1000u;
+}
+
+uint8_t datalog_get_store(void) { return s_store_pref; }
+
+/* Prepne uloziste za behu. ⚠️ Musi znovu najit hlavu, protoze kazde medium ma
+ * vlastni `seq` i pocet zaznamu — bez re-initu by se zapisovalo na pozici
+ * platnou pro to druhe. Historie na opustenem mediu ZUSTAVA (jen ji `dump`
+ * neuvidi), coz je zamer: prepnuti nesmi nic smazat. */
+void datalog_set_store(uint8_t store)
+{
+    if (store > DATALOG_STORE_SD) store = DATALOG_STORE_AUTO;
+    if (store == s_store_pref) return;
+    uint8_t old_st = s_store_pref;
+    s_store_pref = store;
+    /* Pri obnove z syscfg se NEloguje — neni to zasah uzivatele (F-0093). */
+    if (!s_cfg_quiet) (void)errlog_put(ERRLOG_K_CFG, ERRLOG_CFG_LOGSTORE, store, old_st, "logKam");
+
+    /* 🔴 RE-INIT JEN KDYZ UZ INIT PROBEHL. `syscfg_load` (UiTask) tuhle funkci
+     * vola pri STUDENEM startu — tehdy je autoritativni flash blob — a to je
+     * DRIV, nez defaultTask stihne `datalog_init()`. Bez teto podminky by init
+     * bezel ve DVOU uloha naraz nad sdilenymi staticky (`s_be`, `s_head`,
+     * `s_seq`), coz je zavod.
+     * ⚠️ Presne timhle jsem 2026-09-07 porusil invariant, ktery je zapsany
+     * v `freertos.c` u volani `datalog_init()`: „Na poradi vuci syscfg_load
+     * NEZALEZI". Ted zase plati — pri startu se jen zapamatuje volba a
+     * defaultTask si ji pri svem `datalog_init()` prevezme.
+     * ⚠️ Chyba se projevila JEN po power-cyklu, protoze po flashi (warm reset)
+     * ma prednost BKP a flash blob se neaplikuje. */
+    if (s_inited) datalog_init();
+}
+
+const char *datalog_store_name(uint8_t store)
+{
+    switch (store) {
+    case DATALOG_STORE_FLASH: return "FLASH";
+    case DATALOG_STORE_SD:    return "SD";
+    default:                  return "AUTO";
+    }
+}
+
+int datalog_adev_stage(void)
+{
+    /* tau stage s = 10^s s. Exaktne sedi jen mocnina deseti. */
+    uint32_t p = datalog_period_s();
+    int stage = 0;
+    while (p >= 10u) {
+        if (p % 10u) return -1;
+        p /= 10u; stage++;
+    }
+    return (p == 1u) ? stage : -1;
+}
 
 /* ── Serializace zaznamu (LE, bez zavislosti na paddingu struktury) ────────── */
 
@@ -55,6 +135,10 @@ static uint16_t crc16(const uint8_t *d, uint32_t n)
     }
     return c;
 }
+
+/* ⚠️ Sdilena i mimo datalog (`errlog` pouziva TENTYZ zaznamovy vzor vcetne CRC) —
+ * ctvrta kopie tehoz polynomu v projektu by se driv nebo pozdeji rozesla (SKILL 5). */
+uint16_t datalog_crc16(const uint8_t *d, uint32_t n) { return crc16(d, n); }
 
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put_u32(uint8_t *p, uint32_t v)
@@ -72,7 +156,7 @@ static uint64_t get_u64(const uint8_t *p) { return (uint64_t)get_u32(p) | ((uint
 
 /* Rozvrzeni 32B zaznamu: 0 seq, 4 t_unix, 8 freq, 16 t_ocxo, 18 t_board,
  * 20 vc_mv, 22 rf_mv, 24 flags, 25 sats, 26 hdop10, 27 vbat (8 mV krok,
- * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 rezerva.
+ * 0 = nezaznamenano), 28 CRC16 (bajty 0..27), 30 dac_code (u16, MIMO CRC, 0 = nezaznamenano).
  * ⚠️ Bajt 27 byl do 2026-08-17 `spare` (vzdy 0) a je UVNITR CRC. Diky tomu, ze
  * je 0 vyhrazena jako "nezaznamenano", se stare zaznamy ctou dal spravne a
  * format zustava 32 B — zadna migrace ani verze zaznamu netreba. */
@@ -96,7 +180,13 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     memset(b, 0, DATALOG_REC_SIZE);
     put_u32(b + 0, r->seq);
     put_u32(b + 4, r->t_unix);
-    put_u64(b + 8, r->freq_x100000);
+    {   /* F-0180: presny kmitocet jako double (format viz DATALOG_FREQ_EXP_MASK).
+         * Bez presne hodnoty (0) se zapise x1e5 ve STAREM formatu — nic se nepredstira. */
+        uint64_t fq = 0u;
+        if (r->freq_hz > 1e-6 && r->freq_hz < 1e10) memcpy(&fq, &r->freq_hz, sizeof fq);
+        else if (r->freq_x100000 < (1ull << 52))    fq = r->freq_x100000;   /* jen x1e5 -> stary format */
+        put_u64(b + 8, (fq & ~DATALOG_FREQ_AVG_BIT)
+                       | (r->freq_avg ? DATALOG_FREQ_AVG_BIT : 0u)); }
     put_u16(b + 16, (uint16_t)r->t_ocxo_c100);
     put_u16(b + 18, (uint16_t)r->t_board_c100);
     put_u16(b + 20, (uint16_t)r->ocxo_vc_mv);
@@ -106,6 +196,7 @@ static void pack_rec(uint8_t *b, const datalog_rec_t *r)
     b[26] = r->hdop10;
     b[27] = vbat_encode(r->vbat_mv);
     put_u16(b + 28, crc16(b, 28));
+    put_u16(b + 30, r->dac_code);      /* mimo CRC (viz datalog.h) */
 }
 
 static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
@@ -115,7 +206,20 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     if (crc16(b, 28) != get_u16(b + 28)) return false;         /* poskozeny zaznam */
     r->seq           = seq;
     r->t_unix        = get_u32(b + 4);
-    r->freq_x100000  = get_u64(b + 8);
+    {   uint64_t fq = get_u64(b + 8);
+        r->freq_avg     = (fq & DATALOG_FREQ_AVG_BIT) ? 1u : 0u;
+        fq &= ~DATALOG_FREQ_AVG_BIT;
+        if (fq & DATALOG_FREQ_EXP_MASK) {         /* novy zaznam: double [Hz] */
+            memcpy(&r->freq_hz, &fq, sizeof fq);
+            r->freq_exact   = 1u;
+            r->freq_x100000 = (r->freq_hz > 0.0 && r->freq_hz < 1e10)
+                              ? (uint64_t)(r->freq_hz * 1e5 + 0.5) : 0u;
+        } else {                                  /* stary zaznam: x1e5 */
+            r->freq_x100000 = fq;
+            r->freq_hz      = (double)fq / 1e5;
+            r->freq_exact   = 0u;
+        }
+    }
     r->t_ocxo_c100   = (int16_t)get_u16(b + 16);
     r->t_board_c100  = (int16_t)get_u16(b + 18);
     r->ocxo_vc_mv    = (int16_t)get_u16(b + 20);
@@ -124,6 +228,8 @@ static bool unpack_rec(const uint8_t *b, datalog_rec_t *r)
     r->sats          = b[25];
     r->hdop10        = b[26];
     r->vbat_mv       = vbat_decode(b[27]);   /* stare zaznamy: 0 -> DATALOG_INVALID16 */
+    {   uint16_t d = get_u16(b + 30);        /* stare zaznamy: 0; smazany/poskozeny 0xFFFF -> nezaznamenano */
+        r->dac_code = (d == 0xFFFFu) ? (uint16_t)DATALOG_DAC_NONE : d; }
     return true;
 }
 
@@ -295,19 +401,44 @@ static void find_head(void)
 
 void datalog_init(void)
 {
-    s_be = NULL; s_ready = false;
-
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return;
-    /* SD ma prednost (vetsi, vyjimatelna); dokud neni osazena, probe() = false. */
-    if (datalog_backend_sd.probe && datalog_backend_sd.probe())      s_be = &datalog_backend_sd;
-    else if (datalog_backend_w25q.probe())                           s_be = &datalog_backend_w25q;
+    /* 🔴 PORADI: NEJDRIV `s_ready`, teprve pak `s_be` (audit F-0090).
+     * Komentar tu drive tvrdil, ze „nulovat az pod mutexem" chrani soubezneho
+     * ctenare — NECHRANI: ctenari (`datalog_get_status`, `_read_back`,
+     * `_read_bulk`, `_format_status`) QSPI mutex NEBEROU vubec, testuji jen
+     * `s_ready` a pak dereferencuji `s_be`. Pri opacnem poradi je mezi temi
+     * dvema prikazy okno, ve kterem plati `s_ready == 1 && s_be == NULL`,
+     * tedy dereference NULL -> HardFault. Okno je uzke (dve instrukce), ale
+     * dosazitelne: re-init pousti UartTask (`qspi_req_service` -> prepnuti
+     * uloziste) a `datalog_get_status` vola prave okno Datalog z UiTasku
+     * v kazdem tiku — obe ulohy tedy bezi soucasne kvuli temuz stisku.
+     * `__DMB()` je i barierou pro prekladac („memory" clobber), takze se ty
+     * dva zapisy nesmi prohodit ani pri optimalizaci. */
+    s_ready = false;
+    __DMB();
+    s_be = NULL;
+    /* Volba ulozistě. AUTO = puvodni chovani (SD ma prednost — je vetsi a
+     * vyjimatelna); FLASH/SD jsou vynucene. ⚠️ Pri vynucenem SD bez karty se
+     * ZAMERNE nespadne na flash: kdo si rekl o SD, nema dostat log potichu
+     * jinam, nez ceka — tise presmerovany log je horsi nez zadny. */
+    if (s_store_pref == DATALOG_STORE_FLASH) {
+        if (datalog_backend_w25q.probe()) s_be = &datalog_backend_w25q;
+    } else if (s_store_pref == DATALOG_STORE_SD) {
+        if (datalog_backend_sd.probe && datalog_backend_sd.probe()) s_be = &datalog_backend_sd;
+    } else {
+        if (datalog_backend_sd.probe && datalog_backend_sd.probe()) s_be = &datalog_backend_sd;
+        else if (datalog_backend_w25q.probe())                      s_be = &datalog_backend_w25q;
+    }
     /* Kapacita 0 by v write_rec/read_back znamenala deleni nulou -> backend s
      * nesmyslnou kapacitou radeji odmitnout (napr. nedokoncena SD implementace). */
     if (s_be != NULL && s_be->capacity < DATALOG_REC_SIZE) s_be = NULL;
-    if (s_be != NULL) { find_head(); s_ready = true; }
+    /* Opacne poradi nez pri nulovani vyse: `s_be` (a hlava) MUSI byt hotove
+     * driv, nez `s_ready` pusti ctenare dovnitr. */
+    if (s_be != NULL) { find_head(); __DMB(); s_ready = true; }
     osMutexRelease(qspiMutexHandle);
 
-    s_next_ms = HAL_GetTick() + DATALOG_PERIOD_S * 1000u;
+    s_inited = 1;
+    s_next_ms = HAL_GetTick() + (uint32_t)datalog_period_s() * 1000u;
     printf("datalog: %s %s (%lu zazn., seq %lu)\n",
            s_ready ? s_be->name : "--", s_ready ? "ready" : "NEDOSTUPNE",
            (unsigned long)s_count, (unsigned long)s_seq);
@@ -324,6 +455,15 @@ static int16_t sens_c100(sensor_id_t id)
     return (int16_t)(v < 0 ? v - 0.5f : v + 0.5f);
 }
 
+/* Zaznam drzi SUROVE napeti na pinu VBAT; pri CTENI se pricte AKTUALNI korekce na baterii (dioda D3 + chyba ADC, calib.h), takze
+ * zmena kalibrace opravi i stare zaznamy. Nezaznamenano (INVALID16) zustava. Vola VSECHNY cteci cesty (read_back i bulk). */
+static void vbat_pin_to_batt(datalog_rec_t *r)
+{
+    if (r->vbat_mv == DATALOG_INVALID16) return;
+    int32_t v = (int32_t)r->vbat_mv + (int32_t)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f));
+    r->vbat_mv = (int16_t)(v > 32000 ? 32000 : (v < 0 ? 0 : v));
+}
+
 static int16_t sens_mv(sensor_id_t id)
 {
     const sensor_stat_t *s = &g_sensors[id];
@@ -331,6 +471,21 @@ static int16_t sens_mv(sensor_id_t id)
     float v = s->last;
     if (v > 32000.0f || v < -32000.0f) return DATALOG_INVALID16;
     return (int16_t)(v + 0.5f);
+}
+
+/* Kod DAC pro zaznam (STATUS #311). Ve smycce GPSDO (FLL/LOCK/HOLD) je to zaokrouhleny POVEL `g_gpsdo_code_q16`: skutecny
+ * zapsany kod dithruje mezi k a k+1 s periodou 0,5 s, a vzorek po 10 s by s tim aliasoval (cas vzorku je nasobek periody),
+ * povel je deterministicky. Mimo smycku (vypnuta, WAIT, rucni `dac`) je to posledni kod zapsany do cipu. Emulace (`fpgasim`)
+ * ridi jen VIRTUALNI DAC, takze se nezaznamenava nic (L-0160). 0 = nezaznamenano. */
+static uint16_t dac_code_now(void)
+{
+    if (fpga_sim_active()) return DATALOG_DAC_NONE;
+    if (g_gpsdo_drive) {
+        uint32_t c = ((uint32_t)g_gpsdo_code_q16 + 0x8000u) >> 16;
+        return (c > 0xFFFEu) ? (uint16_t)0xFFFEu : (uint16_t)c;
+    }
+    if (g_dac.present && g_dac.code_valid) return g_dac.code;
+    return DATALOG_DAC_NONE;
 }
 
 static void sample(datalog_rec_t *r)
@@ -342,8 +497,23 @@ static void sample(datalog_rec_t *r)
     if (fpga_freq_get_last(&m)) {
         /* fpga_freq_select() ma vnitrni stav a smi ji volat JEN FpgaTask ->
          * tady jen precteme, ktera odbocka ma platna data (bez hystereze). */
-        use16 = (m.error_flags & FPGA_ERR_MEAS) && !(m.status2 & FPGA_ST2_DIV16_ERR);
+        /* FW >= 0x041E: freq16 je DRUHY KANAL, ne odbocka /16 -> zadny prechod na nej (FPGA_CAP_CHAN). */
+        use16 = !(m.caps & FPGA_CAP_CHAN) && (m.error_flags & FPGA_ERR_MEAS) && !(m.status2 & FPGA_ST2_DIV16_ERR);
         r->freq_x100000 = use16 ? m.freq16_x100000 : m.frequency_x100000;
+        /* F-0180: presne jen z overene dvojice /4; jinak 0 -> ulozi se x1e5. */
+        if (!use16) r->freq_hz = fpga_freq_hires_hz(m.frequency_x100000,
+                                                    m.edge_count, m.gate_ps);
+    }
+    /* 🔴 F-0172: kmitocet za periodu = PRUMER vsech mereni od minuleho zaznamu
+     * (`fpga_acc_take`), ne posledni jednotlive mereni 0,25 s. Kdyz v periode
+     * zadne nove mereni nebylo (ztrata signalu), zustava okamzity vzorek vyse
+     * a zaznam se oznaci `freq_avg = 0` — rekonstrukce ho pak nepouzije. */
+    {   double hz = 0.0;
+        if (fpga_acc_take(FPGA_ACC_DATALOG, &hz, NULL) != 0u && hz > 0.0) {
+            r->freq_x100000 = (uint64_t)(hz * 1e5 + 0.5);
+            r->freq_hz      = hz;               /* F-0180: na flash v plne presnosti */
+            r->freq_avg     = 1u;
+        }
     }
 
     r->t_unix       = g_rtc_synced ? datalog_text_to_unix((const char *)g_rtc_text) : 0u;
@@ -354,6 +524,11 @@ static void sample(datalog_rec_t *r)
      * Do logu jde SYROVE mV — kalibrace se muze zmenit, syrova hodnota ne. */
     r->rf_mv     = sens_mv(SENS_ADS1);
     r->vbat_mv      = sens_mv(SENS_VBAT);     /* zalozni CR2032 — trend stárnutí */
+    if (r->vbat_mv != DATALOG_INVALID16) {   /* SENS_VBAT = baterie (pin + korekce); do logu SUROVY pin, kalibrace se muze zmenit (jako rf_mv) */
+        int32_t pin = (int32_t)r->vbat_mv - (int32_t)(g_calib.vbat_corr_mv + (g_calib.vbat_corr_mv >= 0.0f ? 0.5f : -0.5f));
+        r->vbat_mv = (int16_t)(pin < 0 ? 0 : pin);
+    }
+    r->dac_code     = dac_code_now();         /* STATUS #311: drift OCXO z kodu DAC */
 
     gps_data_t g;
     gps_get(&g);
@@ -365,6 +540,11 @@ static void sample(datalog_rec_t *r)
     if (use16)                                  f |= DATALOG_F_DIV16;
     if (!g.valid && g.fixes > 0)                f |= DATALOG_F_HOLDOVER;
     if (fpga_sim_active())                      f |= DATALOG_F_SIM;   /* emulovany kmitocet */
+    /* 🔑 Reference vypadla behem tohohle vzorku -> mereni NEPLATI. Cte se ze
+     * STICKY registru 247, takze se chyti i glitch kratsi nez perioda logu.
+     * ⚠️ `LOS_XTAL` (bit2) se neuvazuje — krystal XA/XB neni osazen (trvale 1). */
+    if (g_si5356_sticky & (SI5356_LOS_CLKIN | SI5356_PLL_LOL))
+                                                f |= DATALOG_F_REF_LOSS;
     r->flags  = f;
     r->sats   = g.num_sat;
     r->hdop10 = (g.hdop > 0.0f && g.hdop < 25.0f) ? (uint8_t)(g.hdop * 10.0f + 0.5f) : 255u;
@@ -391,9 +571,30 @@ static bool write_rec(const datalog_rec_t *r)
 
 void datalog_tick(void)
 {
-    if (!s_ready || !s_enabled) return;
+    /* F-0172: vypnuty log svuj akumulator mereni prubezne VYPRAZDNUJE — jinak by
+     * prvni zaznam po zapnuti zprumeroval celou dobu vypnuti. */
+    if (!s_ready || !s_enabled) { (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL, NULL); return; }
     if ((int32_t)(HAL_GetTick() - s_next_ms) < 0) return;
-    s_next_ms += DATALOG_PERIOD_S * 1000u;
+    /* >> PLAN SE PRI VELKEM ZPOZDENI RESETUJE, NEDOHANI SE (audit F-0102).
+     * `s_next_ms += perioda` je spravne pro male zpozdeni — drzi to kadenci bez
+     * driftu. Kdyz ale tik nebezel dlouho (blokujici operace z UartTasku: `membench`,
+     * `sd_export`, erase QSPI), zustane `s_next_ms` daleko v minulosti a nasledujici
+     * tiky by zapsaly nekolik zaznamu HNED ZA SEBOU — a to se STEJNYM obsahem
+     * i `t_unix`, protoze `sample()` cte ZIVE globaly, ne historii. Vznikly by tedy
+     * duplikaty predstirajici mereni v case, kdy se nemerilo, a Allan rekonstruovany
+     * z logu by je vzal jako plnohodnotne vzorky s tau0 = 10 s.
+     * Proto: kdyz uz jsme vic nez jednu periodu pozadu, plan se posune od TEDA. */
+    {
+        const uint32_t per = (uint32_t)datalog_period_s() * 1000u;
+        s_next_ms += per;
+        if ((int32_t)(HAL_GetTick() - s_next_ms) >= 0) {
+            s_next_ms = HAL_GetTick() + per;   /* zameskane vzorky se NEDOHANI */
+            s_skipped++;
+            /* F-0172: prumer by pokryl vic nez jednu periodu -> zahodit; zaznam
+             * pak nese okamzity vzorek s `freq_avg = 0` a rekonstrukce ho vynecha. */
+            (void)fpga_acc_take(FPGA_ACC_DATALOG, NULL, NULL);
+        }
+    }
 
     datalog_rec_t r;
     sample(&r);
@@ -401,23 +602,37 @@ void datalog_tick(void)
 
     /* Kratky timeout: pri obsazene flash (calib_save / syscfg / UART qspitest)
      * vzorek zahodime a jedeme dal — defaultTask nesmi zdrzet watchdog. */
-    if (osMutexAcquire(qspiMutexHandle, DL_LOCK_TICK_MS) != osOK) { s_errors++; return; }
+    if (osMutexAcquire(qspiMutexHandle, DL_LOCK_TICK_MS) != osOK) {
+        s_errors++;
+        (void)errlog_put(ERRLOG_K_STORAGE, 1u, s_errors, 0u, "busy");
+        return;
+    }
     bool ok = write_rec(&r);
     osMutexRelease(qspiMutexHandle);
-    if (!ok) s_errors++;
+    if (!ok) {
+        s_errors++;
+        (void)errlog_put(ERRLOG_K_STORAGE, 2u, s_errors, s_seq, "zapis");
+    }
 }
 
 void datalog_set_enabled(bool en) { s_enabled = en; }
 bool datalog_enabled(void)         { return s_enabled; }
 
+/* ⚠️ Ctenari nize NEBEROU QSPI mutex (vola je UiTask 2x/s, UartTask i defaultTask
+ * a mutex drzi i minuty trvajici `datalog_erase_all`). Proto si `s_be` prectou
+ * JEDNOU do lokalu a testuji ho vedle `s_ready` — re-init z jine ulohy uprostred
+ * funkce pak nemuze zpusobit dereferenci NULL (audit F-0090). Zastaraly ukazatel
+ * je bezpecny: oba backendy jsou objekty se statickou dobou zivota. */
 void datalog_get_status(datalog_status_t *out)
 {
     if (out == NULL) return;
-    out->backend      = s_ready ? s_be->name : "--";
-    out->ready        = s_ready;
+    const datalog_backend_t *be = s_be;
+    bool rdy = s_ready && (be != NULL);
+    out->backend      = rdy ? be->name : "--";
+    out->ready        = rdy;
     out->enabled      = s_enabled;
     out->records      = s_count;
-    out->capacity_rec = s_ready ? s_be->capacity / DATALOG_REC_SIZE : 0u;
+    out->capacity_rec = rdy ? be->capacity / DATALOG_REC_SIZE : 0u;
     out->last_seq     = s_seq;
     out->write_errors = s_errors;
     out->wrapped      = s_wrapped;
@@ -425,26 +640,93 @@ void datalog_get_status(datalog_status_t *out)
 
 bool datalog_read_back(uint32_t from_newest, datalog_rec_t *out)
 {
-    if (!s_ready || out == NULL || from_newest >= s_count) return false;
+    const datalog_backend_t *be = s_be;
+    if (!s_ready || be == NULL || out == NULL || from_newest >= s_count) return false;
     /* s_head ukazuje ZA posledni zapsany -> zpet o (from_newest+1) zaznamu. */
     uint32_t back = (from_newest + 1u) * DATALOG_REC_SIZE;
-    uint32_t off  = (s_head + s_be->capacity - (back % s_be->capacity)) % s_be->capacity;
+    uint32_t off  = (s_head + be->capacity - (back % be->capacity)) % be->capacity;
 
     uint8_t b[DATALOG_REC_SIZE];
     if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return false;
-    bool ok = s_be->read(off, b, DATALOG_REC_SIZE);
+    bool ok = be->read(off, b, DATALOG_REC_SIZE);
     osMutexRelease(qspiMutexHandle);
-    return ok && unpack_rec(b, out);
+    if (!(ok && unpack_rec(b, out))) return false;
+    vbat_pin_to_batt(out);
+    return true;
+}
+
+/* ── Bulk cteni (STATUS #142) ─────────────────────────────────────────────────
+ * `datalog_read_back` plati na KAZDY 32B zaznam vlastni mutex i vlastni QSPI
+ * prikaz (instrukce + 4B adresa + 8 dummy). Zmereno: ~173 us/zaznam, zatimco
+ * samotnych 32 B je pri 4,6 MB/s jen ~7 us -> **rezie je 25x vetsi nez prenos**,
+ * takze pruchod desitkami tisic zaznamu (okna GRAFY / KVALITA GPS / ANALYZA,
+ * `datalog csv`, rekonstrukce Allanovy pyramidy) trval jednotky az desitky sekund.
+ *
+ * 🔑 Zaznamy davky lezi v ringu SOUVISLE: `from_newest+1` je o 32 B NIZ nez
+ * `from_newest`, takze n zaznamu = jeden blok `n*32 B`. Staci ho precist najednou
+ * (pripadne ve dvou kusech, kdyz prelezl pres konec ringu) a rozbalit pozpatku.
+ *
+ * ⚠️ Scratch je `static` — 2 kB na stack malych tasku nepatri (viz CLAUDE.md).
+ * Proto je funkce chranena TIMTEZ mutexem jako cely prenos: dva soubezni ctenari
+ * by si scratch prepsali. */
+static uint8_t s_bulk[DATALOG_BULK_MAX * DATALOG_REC_SIZE];
+
+uint32_t datalog_read_bulk(uint32_t from_newest, datalog_rec_t *out,
+                           uint32_t max_n, uint32_t *consumed)
+{
+    if (consumed) *consumed = 0;
+    const datalog_backend_t *be = s_be;
+    if (!s_ready || be == NULL || out == NULL || max_n == 0u || from_newest >= s_count) return 0;
+
+    uint32_t n = max_n;
+    if (n > s_count - from_newest) n = s_count - from_newest;   /* nekoukat za nejstarsi */
+    if (n > DATALOG_BULK_MAX)      n = DATALOG_BULK_MAX;
+    if (n == 0u) return 0;
+
+    const uint32_t cap = be->capacity;
+    const uint32_t len = n * DATALOG_REC_SIZE;
+    /* Zacatek bloku = pozice NEJSTARSIHO zaznamu davky (`from_newest + n - 1`),
+     * tedy o (from_newest + n) zaznamu zpet od hlavy. */
+    const uint32_t back  = (from_newest + n) * DATALOG_REC_SIZE;
+    const uint32_t start = (s_head + cap - (back % cap)) % cap;
+
+    if (osMutexAcquire(qspiMutexHandle, DL_LOCK_READ_MS) != osOK) return 0;
+    bool ok;
+    if (start + len <= cap) {
+        ok = be->read(start, s_bulk, len);                      /* jeden kus */
+    } else {                                                    /* preteklo pres konec ringu */
+        uint32_t first = cap - start;
+        ok = be->read(start, s_bulk, first)
+          && be->read(0u, s_bulk + first, len - first);
+    }
+    osMutexRelease(qspiMutexHandle);
+    if (!ok) return 0;
+
+    /* V bufferu je nejstarsi zaznam PRVNI, volajici ceka nejnovejsi prvni. */
+    uint32_t got = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *p = &s_bulk[(n - 1u - i) * DATALOG_REC_SIZE];
+        if (unpack_rec(p, &out[got])) { vbat_pin_to_batt(&out[got]); got++; }   /* poskozeny/prazdny -> preskoc (jako `continue`) */
+    }
+    if (consumed) *consumed = n;               /* pokryte POZICE, vc. preskocenych */
+    return got;
 }
 
 void datalog_format_status(char *buf, int buflen)
 {
     if (buf == NULL || buflen <= 0) return;
-    if (!s_ready) { snprintf(buf, (size_t)buflen, "DATALOG NEDOSTUPNE (uloziste)"); return; }
-    snprintf(buf, (size_t)buflen, "DATALOG %s %s %lu/%lu rec seq:%lu err:%lu%s",
-             s_be->name, s_enabled ? "ON" : "OFF",
-             (unsigned long)s_count, (unsigned long)(s_be->capacity / DATALOG_REC_SIZE),
-             (unsigned long)s_seq, (unsigned long)s_errors, s_wrapped ? " WRAP" : "");
+    const datalog_backend_t *be = s_be;
+    if (!s_ready || be == NULL) { snprintf(buf, (size_t)buflen, "DATALOG NEDOSTUPNE (uloziste)"); return; }
+    /* `skip:` = kolikrat se plan posunul od teda, protoze tik nebezel vic nez
+     * periodu (audit F-0102). Nenulove znamena DIRU v logu — a je to zamer:
+     * tise dohnane duplikaty se stejnym `t_unix` by byly horsi, protoze Allan
+     * rekonstruovany z logu by je vzal jako plnohodnotne vzorky. Tise prehlednuty
+     * posun by ale byl taky spatne (L-0017), proto je tady. */
+    snprintf(buf, (size_t)buflen, "DATALOG %s %s %lu/%lu rec seq:%lu err:%lu skip:%lu%s",
+             be->name, s_enabled ? "ON" : "OFF",
+             (unsigned long)s_count, (unsigned long)(be->capacity / DATALOG_REC_SIZE),
+             (unsigned long)s_seq, (unsigned long)s_errors, (unsigned long)s_skipped,
+             s_wrapped ? " WRAP" : "");
 }
 
 bool datalog_erase_all(void)
@@ -490,7 +772,7 @@ bool datalog_selftest(void)
         .t_ocxo_c100 = -1234, .t_board_c100 = 4567,
         .ocxo_vc_mv = 2500, .rf_mv = -455,
         .flags = DATALOG_F_GPS_VALID | DATALOG_F_DIV16, .sats = 9, .hdop10 = 12,
-        .vbat_mv = 2920,
+        .vbat_mv = 2920, .dac_code = 24899,
     };
     uint8_t b[DATALOG_REC_SIZE];
     datalog_rec_t r;
@@ -500,6 +782,7 @@ bool datalog_selftest(void)
     if (r.t_ocxo_c100 != a.t_ocxo_c100 || r.t_board_c100 != a.t_board_c100) return false;
     if (r.ocxo_vc_mv != a.ocxo_vc_mv || r.rf_mv != a.rf_mv) return false;
     if (r.flags != a.flags || r.sats != a.sats || r.hdop10 != a.hdop10) return false;
+    if (r.dac_code != a.dac_code) return false;        /* STATUS #311 */
     /* VBAT je kvantovany na 8 mV, takze round-trip NENI presny — 2920 sedne
      * na 2920 (2920-2000=920, 920/8=115 -> 2000+115*8), ale obecne se testuje
      * jen to, ze se hodnota vejde do kroku. */
@@ -516,12 +799,63 @@ bool datalog_selftest(void)
         if (!unpack_rec(old, &o)) return false;
         if (o.vbat_mv != DATALOG_INVALID16) return false;
     }
+    /* F-0172: priznak prumeru jde tam i zpet v bitu 63 a NEMENI kmitocet;
+     * stary zaznam (bit 63 = 0) se cte jako okamzity vzorek. */
+    {   datalog_rec_t v = a; v.freq_avg = 1u;
+        uint8_t vb[DATALOG_REC_SIZE]; datalog_rec_t vr;
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || vr.freq_avg != 1u
+            || vr.freq_x100000 != a.freq_x100000) return false;
+        if (r.freq_avg != 0u) return false;     /* `a` byl bez priznaku */
+    }
+    /* F-0180: presny kmitocet jde tam i zpet BIT PRO BIT (double), `freq_x100000`
+     * se z nej dopocita, priznak prumeru v bitu 63 se nemicha s exponentem. */
+    {   datalog_rec_t v = a; v.freq_hz = 10000000.012345678; v.freq_avg = 1u;
+        uint8_t vb[DATALOG_REC_SIZE]; datalog_rec_t vr;
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || !vr.freq_exact || vr.freq_avg != 1u) return false;
+        if (memcmp(&vr.freq_hz, &v.freq_hz, sizeof v.freq_hz) != 0) return false;
+        if (vr.freq_x100000 != 1000000001235ull) return false;
+        v.freq_hz = 10.0000000000123;           /* nizky kmitocet: nHz by tu nestacily */
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || memcmp(&vr.freq_hz, &v.freq_hz, sizeof v.freq_hz) != 0) return false;
+        v.freq_hz = 0.0;                        /* jen x1e5 -> stary format, nepresny */
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || vr.freq_exact || vr.freq_x100000 != a.freq_x100000) return false;
+        v.freq_x100000 = 0u;                    /* bez kmitoctu vubec -> 0 */
+        pack_rec(vb, &v);
+        if (!unpack_rec(vb, &vr) || vr.freq_exact || vr.freq_x100000 != 0u || vr.freq_hz != 0.0) return false;
+    }
+    /* Stary zaznam (x1e5, exponent 0) se cte jako drive a oznaci se jako nepresny. */
+    {   uint8_t old[DATALOG_REC_SIZE]; datalog_rec_t o;
+        pack_rec(old, &a);
+        put_u64(old + 8, a.freq_x100000 | DATALOG_FREQ_AVG_BIT);
+        put_u16(old + 28, crc16(old, 28));
+        if (!unpack_rec(old, &o) || o.freq_exact || o.freq_avg != 1u
+            || o.freq_x100000 != a.freq_x100000 || o.freq_hz != (double)a.freq_x100000 / 1e5) return false;
+    }
     /* Neplatne cteni senzoru se ulozi jako "nezaznamenano". */
     {   datalog_rec_t n = a; n.vbat_mv = DATALOG_INVALID16;
         uint8_t nb[DATALOG_REC_SIZE]; datalog_rec_t nr;
         pack_rec(nb, &n);
         if (nb[27] != DATALOG_VBAT_NONE) return false;
         if (!unpack_rec(nb, &nr) || nr.vbat_mv != DATALOG_INVALID16) return false;
+    }
+
+    /* STATUS #311: `dac_code` lezi v bajtech 30..31 MIMO CRC. Stary zaznam (nuly) a smazany/poskozeny (0xFFFF) = "nezaznamenano";
+     * poskozeni tohoto pole zaznam NEzneplatni (CRC ho nekryje) - je to zamer, ne chyba (viz datalog.h). */
+    {   uint8_t db[DATALOG_REC_SIZE]; datalog_rec_t dr;
+        pack_rec(db, &a);
+        if (db[30] != (uint8_t)(24899u & 0xFFu) || db[31] != (uint8_t)(24899u >> 8)) return false;
+        db[30] = 0u; db[31] = 0u;                                   /* zaznam z doby pred polem */
+        if (!unpack_rec(db, &dr) || dr.dac_code != DATALOG_DAC_NONE) return false;
+        db[30] = 0xFFu; db[31] = 0xFFu;
+        if (!unpack_rec(db, &dr) || dr.dac_code != DATALOG_DAC_NONE) return false;
+        db[30] = 0x34u; db[31] = 0x12u;
+        if (!unpack_rec(db, &dr) || dr.dac_code != 0x1234u) return false;
+        datalog_rec_t z = a; z.dac_code = DATALOG_DAC_NONE;
+        pack_rec(db, &z);
+        if (db[30] != 0u || db[31] != 0u) return false;
     }
 
     /* 2) poskozeny bajt musi CRC odhalit */

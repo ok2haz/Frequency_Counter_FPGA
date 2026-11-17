@@ -1,0 +1,30 @@
+﻿===== > tdc
+tdc
+TDC A: kodu 155/512 (nejvyssi 254), nejvetsi bin 20991 = 200 ps (2.0 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 173/512 (nejvyssi 265), nejvetsi bin 16877 = 160 ps (1.6 % periody), za koncem retezu 0, max tap 264
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 254 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 264 vs nejvyssi kod 265 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 14 tapu, B 3 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+===== > tdc cal
+tdc cal
+TDC: kalibrace spustena (~0,5-1 s, mereni stoji)...
+TDC A: kodu 157/512 (nejvyssi 254), nejvetsi bin 28282 = 269 ps (2.6 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 166/512 (nejvyssi 262), nejvetsi bin 15239 = 145 ps (1.4 % periody), za koncem retezu 0, max tap 264
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 254 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 264 vs nejvyssi kod 262 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 14 tapu, B 6 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+===== > tdc
+tdc
+TDC A: kodu 157/512 (nejvyssi 254), nejvetsi bin 28282 = 269 ps (2.6 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 166/512 (nejvyssi 262), nejvetsi bin 15239 = 145 ps (1.4 % periody), za koncem retezu 0, max tap 264
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 254 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 264 vs nejvyssi kod 262 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)

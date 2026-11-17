@@ -120,7 +120,18 @@ bool w25q_init(void)
     if (HAL_QSPI_Init(&hqspi) != HAL_OK) return false;
 
     /* SW reset (66h+99h) -> zname vychozi (napr. po warm resetu STM zustal chip
-     * v jinem modu). Po resetu tRST ~30 us -> 1 ms delay bohate staci. */
+     * v jinem modu). Po resetu tRST ~30 us -> 1 ms delay bohate staci.
+     *
+     * ⚠️ Navratova hodnota se ZAMERNE ignoruje (audit F-0024, 2026-09-10) — neni
+     * to opomenuti. Dva duvody:
+     *  1. `cmd_only` selze jen na strane HOSTA (`HAL_QSPI_Command` timeout);
+     *     QSPI nema ACK, takze o odpovedi cipu nevypovida nic. Kdyz je vadna
+     *     periferie hosta, selze stejne i `w25q_read_jedec()` hned pod tim.
+     *  2. Vysledek resetu se overuje NASLEDKEM, ne navratovou hodnotou: kdyz se
+     *     cip neresetoval do zname 1-line SPI podoby, JEDEC ID nevyjde a init
+     *     vraci false. Ta kontrola je prisnejsi nez test navratu `cmd_only`.
+     * Pridat sem `if (!cmd_only(...)) return false;` by tedy zadny novy stav
+     * neodhalilo — jen by duplikovalo branu, ktera uz o radek niz je. */
     cmd_only(CMD_RSTEN);
     cmd_only(CMD_RST);
     HAL_Delay(1);
@@ -134,9 +145,29 @@ bool w25q_init(void)
     return true;
 }
 
+/* 🔴 Mez proti KAPACITE CIPU (audit F-0023, 2026-09-10).
+ *
+ * PROC to musi byt: adresa mimo rozsah se u W25Q NEZAHLASI — cip vyssi adresni
+ * bity ignoruje, takze pristup se zabali zpatky do sve kapacity a sahne na JINE
+ * misto. Nejhorsi je `w25q_erase_sector`: chybny offset by tise smazal 4 kB
+ * CIZI oblasti. Rozvrzeni je pritom huste (`w25q_map.h`: CONFIG 0x000000,
+ * CALIB 0x010000, SETUP 0x020000, DATA od 0x030000 s kruhovym datalogem), takze
+ * chyba v modularni aritmetice by nesmazala "nic", ale kalibraci nebo nastaveni
+ * — a projevila by se az po restartu jako "pristroj zapomnel konfiguraci".
+ *
+ * ⚠️ Vyraz je zamerne BEZ SOUCTU `addr + len`: ten by pri velkych hodnotach
+ * pretekl a kontrola by prosla prave tam, kde ma chytat.
+ * ⚠️ `len == 0` projde (0 <= zbytek) — prazdny prenos neni chyba rozsahu;
+ * `w25q_read` si ho odmita zvlast, `w25q_write` na nem jen neudela nic. */
+static bool range_ok(uint32_t addr, uint32_t len)
+{
+    return (addr < W25Q_SIZE_BYTES) && (len <= W25Q_SIZE_BYTES - addr);
+}
+
 bool w25q_read(uint32_t addr, uint8_t *buf, uint32_t len)
 {
     if (!s_ready || buf == NULL || len == 0) return false;
+    if (!range_ok(addr, len)) return false;
     QSPI_CommandTypeDef c = {0};
     c.InstructionMode = QSPI_INSTRUCTION_1_LINE;
     c.AddressMode     = QSPI_ADDRESS_1_LINE;
@@ -170,6 +201,7 @@ static bool page_program(uint32_t addr, const uint8_t *buf, uint32_t n)
 bool w25q_write(uint32_t addr, const uint8_t *buf, uint32_t len)
 {
     if (!s_ready || buf == NULL) return false;
+    if (!range_ok(addr, len)) return false;   /* viz `range_ok` — F-0023 */
     while (len) {
         uint32_t off   = addr % W25Q_PAGE_SIZE;
         uint32_t chunk = W25Q_PAGE_SIZE - off;      /* do konce aktualni stranky */
@@ -183,6 +215,9 @@ bool w25q_write(uint32_t addr, const uint8_t *buf, uint32_t len)
 bool w25q_erase_sector(uint32_t addr)
 {
     if (!s_ready) return false;
+    /* Staci porovnat adresu: nize se zarovnava DOLU na sektor a kapacita je jeho
+     * nasobkem, takze zarovnany sektor uz se do cipu vejde cely (F-0023). */
+    if (!range_ok(addr, 1u)) return false;
     if (!cmd_only(CMD_WREN)) return false;
     QSPI_CommandTypeDef c = {0};
     c.InstructionMode = QSPI_INSTRUCTION_1_LINE;

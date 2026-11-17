@@ -1,0 +1,5 @@
+wall,faze,blok,start_min_plan,delka_min,skip_min,smycka,dither_hz,gnss,survey,ack,overeni
+2026-10-19T21:50:38,2,NS,0,150,15,OFF,-,gps,off,TMODE2 0/0 - | GNSS 0/0 - | NAV5 5/0 ACK | TP5 111/0 ACK | MSG 111/0 ACK,OK
+2026-10-20T00:20:45,2,NA,150,150,15,OFF,-,gps,off,TMODE2 0/0 - | GNSS 0/0 - | NAV5 6/0 ACK | TP5 261/0 ACK | MSG 261/0 ACK,OK
+2026-10-20T02:50:47,2,NS,300,150,15,OFF,-,gps,off,TMODE2 0/0 - | GNSS 0/0 - | NAV5 7/0 ACK | TP5 411/0 ACK | MSG 411/0 ACK,OK
+2026-10-20T05:20:46,2,NA,450,150,15,OFF,-,gps,off,TMODE2 0/0 - | GNSS 0/0 - | NAV5 8/0 ACK | TP5 561/0 ACK | MSG 561/0 ACK,OK

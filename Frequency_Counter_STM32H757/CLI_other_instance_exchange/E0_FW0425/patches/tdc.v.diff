@@ -1,0 +1,74 @@
+--- /mnt/project/tdc.v	1979-12-31 00:00:00.000000000 +0000
++++ tdc.v	2026-10-20 15:11:23.793882590 +0000
+@@ -246,6 +246,7 @@
+ //   (cumulativni poradi R pred F), viz tabulka nize -- tedy casy z obou sad jsou na jedne ose.
+ // ------------------------------------------------------------
+ module tdc_chan #(
++    parameter EXT_TR = 0,             // optimalizace 5 (2026-10-20): 1 = tr1/tr2 z top (sdilene obema kanaly, -68 FF)
+     parameter CAL_LOG2 = 20,        // kalibrace z 2^CAL_LOG2 udalosti (1M: ~1/4 casu, chyba bunky ~1 ps)
+     parameter TAPS     = 256,       // vzorkovanych tapu (nasobek 32)
+     parameter STRIDE   = 2,         // ALU na vzorek
+@@ -257,6 +258,8 @@
+     input  wire        sig_raw,     // asynchronni vstup kanalu
+     input  wire        ro,          // asynchronni kalibracni zdroj (z ring_osc)
+     input  wire [47:0] tick_ps,     // volnobezny cas [T_clk/16384], +16384 za takt
++    input  wire [33:0] tr1_ext,     // optimalizace 5: tick_hi - 1 / - 2 sdilene v top (EXT_TR = 1); jinak nezapojeno (0)
++    input  wire [33:0] tr2_ext,
+     input  wire        want,        // okno: pristi hrana ma dostat presny cas
+     input  wire        want_seg,    // FW 0x0411: i VNITRNI hrany (segmenty okna) maji dostat presny cas
+     input  wire        cal_req,     // 1-taktovy pulz: spust kalibraci
+@@ -284,7 +287,8 @@
+     // (nastavi ho STM pozadavkem), adresa = {sada, kod} (u DUAL=0 jen kod)
+     input  wire [9:0]  dump_k,
+     output wire [23:0] dump_q,
+-    output wire [$clog2(TAPS)-1:0] code_o   // FW 0x0418: kod posledni presne casovane hrany (platny v ts_valid)
++    output wire [$clog2(TAPS)-1:0] code_o,  // FW 0x0418: kod posledni presne casovane hrany (platny v ts_valid)
++    output reg         bub_o        // FW 0x0425: bublina = nejvyssi prosly tap (po 8) lezi > 8 tapu ZA kodem (platne v ts_valid)
+ );
+     localparam CW = $clog2(TAPS);             // sirka kodu
+     localparam AW = CW + DUAL;                // sirka adresy tabulek ({sada, kod})
+@@ -294,6 +298,7 @@
+     initial begin
+         ts_valid = 1'b0; ts_ps = 48'd0; cal_valid = 1'b0; cal_fail = 1'b0;
+         d_ovf = 32'd0; d_peak = 32'd0; d_nz = 16'd0; d_last = 16'd0; d_maxtap = 16'd0;
++        bub_o = 1'b0;
+     end
+ 
+     // ---------------- stav kalibrace (ONE-HOT, kazda cesta <= 1-2 LUT) -----
+@@ -326,7 +331,16 @@
+ 
+     wire trig_ok  = ec & arm_r & idle_r;                  // 1 LUT
+     assign trig_ack = trig_ok & ~s_col;
+-    wire ld       = idle_r & ~(ec & arm_r);               // 1 LUT; CE kompaktni kopie qd
++    // FW 0x0425 (oprava N1, audit 2026-10-20): `qd` se smi nacist i v POSLEDNIM zmrazenem taktu (fz == 4). Driv bylo
++    // ld = idle_r & ~(ec & arm_r), tedy 0 po cele zmrazeni (fz 1..4). Prvni takt, kdy smi prijit nove spusteni (idle_r = 1),
++    // patri ke vzorku z PREDCHOZIHO taktu, ktery se do qd mel nahrat jeste pri idle_r = 0 -> hrana se vzorkem presne 5 taktu za
++    // vzorkem predchozi spustene hrany se spustila, ale dekodovala ZMRAZENY vzorek predchozi hrany (chyba az jednotky ns; jen
++    // pri spousteni hrana za hranou, tj. segmenty regrese pri ~17..25 MHz). Nacteni qd v taktu fz == 4 je bezpecne: code_r si
++    // vysledek zachyti na TEZE hrane (neblokujici prirazeni), multicycle 5 qd -> code_r zustava (qd se meni nejdriv po 5 taktech).
++    // ldok je REGISTR, takze `ld` ma dal 4 vstupy (ldok, dR, dRp, arm_r) = 1 LUT jako dosud.
++    reg  ldok = 1'b1;                                     // 1 = v tomto taktu smi qd nacitat (klid nebo fz == 4)
++    always @(posedge clk) ldok <= ~trig_ok & (idle_r | (fz == 3'd3) | (fz == 3'd4));
++    wire ld       = ldok & ~(ec & arm_r);                 // 1 LUT; CE kompaktni kopie qd
+ 
+     always @(posedge clk) begin
+         if (trig_ok) begin
+@@ -374,6 +388,9 @@
+         dv1 <= fz4;                           // dekoder dokoncen na konci fz==4
+         dv2 <= dv1;
+         if (fz4) begin code_r <= pk; hicode_r <= hk; src_c <= src_l; end   // qd zmrazene >= 5 taktu (MCP 5)
++        // FW 0x0425: bublina (vic hran v retezu / zakmit vstupu): nejvyssi prosly tap (zaokrouhleny dolu na 8) je o vic nez 8 tapu
++        // za prvni nulou. Normalne hk <= code - 1. Prepocte se v taktu dv1 (code_r/hicode_r se drzi >= 5 taktu, tedy i v ts_valid).
++        if (dv1) bub_o <= ({1'b0, hicode_r} > ({1'b0, code_r} + 10'd8));
+     end
+     wire [AW-1:0] caddr;
+     generate
+@@ -456,7 +473,7 @@
+         tr2   <= tr1;
+         // ts_ps se DRZI do dalsi platne znacky (>= 5 taktu): okno/regrese z nej odecitaji ve 2 taktech (multicycle v SDC)
+         if (tv_z) ts_ps <= {(DUAL != 0) ? ((lut_q3[15:14] == 2'd0) ? tr0 : ((lut_q3[15:14] == 2'd1) ? tr1 : tr2))
+-                                       : (lut_q3[15] ? tr2 : tr1), lut_q3[13:0]};
++                                       : (lut_q3[15] ? ((EXT_TR != 0) ? tr2_ext : tr2) : ((EXT_TR != 0) ? tr1_ext : tr1)), lut_q3[13:0]};
+         tv_y     <= dv2 & cal_valid & ~cal_busy;
+         tv_z     <= tv_y;
+         ts_valid <= tv_z;

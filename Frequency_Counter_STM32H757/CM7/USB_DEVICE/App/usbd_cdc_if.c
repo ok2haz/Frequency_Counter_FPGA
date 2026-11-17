@@ -228,7 +228,9 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
     break;
 
     case CDC_SET_CONTROL_LINE_STATE:
-
+      /* Bezdatovy pozadavek (wLength = 0): `pbuf` ukazuje na USBD_SetupReqTypedef, wValue (bajty 2..3) nese stav linek,
+       * bit0 = DTR = host ma port otevreny. Konzole podle toho vysila (usb_console.c, STATUS #298). */
+      usb_console_set_dtr((uint8_t)(pbuf[2] & 1U));
     break;
 
     case CDC_SEND_BREAK:
@@ -328,7 +330,54 @@ static int8_t CDC_TransmitCplt_FS(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
 }
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+/* TX watchdog podpora pro usb_console.c (pridano 2026-10-04).
+ * Zmereno na HW: RX konzole jel (prikaz `fpgasim on` pres CDC se provedl a projevil
+ * v /api/state), ale TX byl mrtvy — `ping` prijato, `pong` se po 5 s neodeslalo,
+ * dev_state == CONFIGURED. Pricina: zaseknuty `TxState = 1` (IN transfer, ktery se
+ * po USB resetu / prvnim armu nikdy nedokoncil), kvuli kteremu `CDC_Transmit_FS`
+ * vracel navzdy USBD_BUSY. Prezivalo to i reset (zasek vznikal hned po bootu).
+ * Tyto dva helpery nechavaji pumpu zasek detekovat a nouzove zlomit. */
+uint8_t CDC_TxState(void)
+{
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return 2U;  /* 2 = neni linka */
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+  if (hcdc == NULL) return 2U;
+  return hcdc->TxState ? 1U : 0U;   /* 1 = vysila (busy), 0 = volno */
+}
 
+void CDC_ForceTxIdle(void)
+{
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return;
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+  if (hcdc != NULL) hcdc->TxState = 0U;   /* zahodi zaseknuty IN transfer -> dalsi CDC_Transmit_FS se znovu nahodi */
+}
+
+/* 🔴 Zruseni rozpracovaneho IN prenosu NA HW (STATUS #298, 2026-10-15). `CDC_ForceTxIdle` sam nestaci: prenos zustane
+ * armovany (EPENA = 1) a jeho data v TX FIFO endpointu. Dalsi `CDC_Transmit_FS` pak naprogramuje DIEPTSIZ znovu, nova data
+ * se zapisou ZA stara a jadro vysila z hlavy FIFO — konzole zustane o jeden prenos pozadu (zmereno: IN FIFO plne, EPENA = 0,
+ * ring prazdny). Tady: zakaz doplnovani FIFO z IRQ, SNAK + EPDIS (HAL_PCD_EP_Abort ceka na EPENA = 0), vyprazdneni FIFO
+ * endpointu, vynulovani priznaku preruseni a TxState. USB IRQ je po dobu zakazano (jinak by EPDISD/TXFE obsluha zapisovala
+ * zbytek puvodniho prenosu); volat jen z kontextu ulohy, cekani trva az jednotky ms. */
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;   /* usbd_conf.c */
+void CDC_AbortTx(void)
+{
+  PCD_HandleTypeDef *hpcd = &hpcd_USB_OTG_FS;
+  USB_OTG_GlobalTypeDef *USBx = hpcd->Instance;
+  const uint32_t USBx_BASE = (uint32_t)USBx;
+  const uint32_t epn = (uint32_t)(CDC_IN_EP & 0xFU);
+  PCD_EPTypeDef *ep = &hpcd->IN_ep[epn];
+
+  HAL_NVIC_DisableIRQ(OTG_FS_IRQn);
+  USBx_DEVICE->DIEPEMPMSK &= ~(1UL << epn);          /* TXFE obsluha uz FIFO nedoplni */
+  ep->xfer_len   = 0U;
+  ep->xfer_count = 0U;
+  (void)HAL_PCD_EP_Abort(hpcd, CDC_IN_EP);           /* SNAK + EPDIS, ceka na EPENA = 0 (omezene) */
+  (void)HAL_PCD_EP_Flush(hpcd, CDC_IN_EP);           /* TX FIFO tohoto endpointu */
+  USBx_INEP(epn)->DIEPINT = 0xFFFFFFFFU;             /* zbytek priznaku (EPDISD, XFRC, INEPNE ...); TXFE je jen status */
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+  if (hcdc != NULL) hcdc->TxState = 0U;
+  HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
+}
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
 /**

@@ -1,0 +1,4 @@
+(1) nekoherentni hodiny (rozdil 1e-5, 15 ms): chybnych epoch 0 -> pomaly rozdil kmitoctu poplach NEdava (skluzy vidi kazda cesta jindy); vypnuti v ext. rezimu je semanticke + prechod Si5356
+    koherentni: 0
+(2) Gray: 1 bit na krok a zpetny prevod 0..255: OK
+(3) prirazeni bublin a znacek pri CS k oknu (2000 nahodnych behu): OK

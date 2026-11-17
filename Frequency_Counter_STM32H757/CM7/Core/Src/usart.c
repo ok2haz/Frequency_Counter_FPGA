@@ -23,6 +23,27 @@
 /* USER CODE BEGIN 0 */
 #include "cmsis_os2.h"     /* osMessageQueuePut do GpsRxQueue */
 #include "bootled.h"
+/* ⚠️ 2026-09-12 presunuto sem: do te doby stal tenhle include MIMO `USER CODE`
+ * (hned za `#include "usart.h"`) a regenerace CubeMX ho smazala. */
+#include "errlog.h"
+
+/* ⚠️ USART1 NENI konzole (ta jde po USB CDC) — je to GPS NMEA vstup. Kazde ORE
+ * tedy znamena ZTRACENY BAJT vety, tj. zahozeny fix/cas/druzici. Do 2026-09-07
+ * se tu chyby jen tise smazaly, takze se to nedalo nijak poznat; citace nize
+ * rozlisi tri ruzne veci: sum na lince (FE/NE), nestihajici obsluhu (ORE) a
+ * nestihajici parser (drop fronty v RxCplt). */
+volatile uint32_t g_uart1_ore, g_uart1_fe, g_uart1_ne, g_uart1_pe, g_gps_rx_drop;
+
+/* 🔴 F-0153 (2026-09-25): selhani RE-ARMU prijmu. Do teto zmeny se navratova
+ * hodnota `HAL_UART_Receive_IT()` v OBOU callbacich zahazovala — a byla to
+ * jedina porucha v tomhle souboru bez pocitadla, pritom jako JEDINA znamena
+ * KONEC prijmu natrvalo (ostatni se zotavi samy). USART1 je GPS NMEA vstup,
+ * takze projev je "GPS prestala fungovat" bez jedine stopy.
+ * ⚠️ Pocitadlo poruchu NESPRAVI (RX zustane mrtvy) — prevadi ji z tiche na
+ * viditelnou (L-0017). Skutecne zotaveni = re-init USART1, coz je vetsi zasah
+ * a samostatne rozhodnuti. */
+volatile uint32_t g_uart1_rearm_fail;
+
 
 uint8_t RxByte;
 /* USER CODE END 0 */
@@ -172,12 +193,40 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
  * Proto se tu zamerne nerouti podle USE_USB_CDC_CONSOLE. */
 extern osMessageQueueId_t GpsRxQueueHandle;
 
+/* Re-arm prijmu se spocitanym selhanim (F-0153). Jediny zdroj pravdy pro obe
+ * obsluhy — kdyby si to kazda delala sama, rozejdou se (L-0012, L-0018).
+ * ⚠️ Bezi z ISR: `errlog_put` zapisuje jen do RAM ringu (krátká sekce pod
+ * `__disable_irq`, cas se dopocita az v `tick`), vylitim do flash se zabyva
+ * defaultTask (L-0071). Overeno ctenim `errlog_put`, ne predpokladem.
+ * 🔴 Druh je `ERRLOG_K_UARTFATAL`, NE `ERRLOG_K_UART` (audit F-0155 + F-0156).
+ * Puvodne to slo pod `ERRLOG_K_UART` se `sub = 0xFE` a melo to DVE vady naraz:
+ *  (a) `errlog_fmt_detail` zna jen `sub == 0xFF`, takze se zaznam vypisoval
+ *      jako FALESNE `ORE=<pocet>` — tvrdil chybu, ktera se nestala;
+ *  (b) prodleva `errlog_put` je per DRUH (60 s) a `HAL_UART_ErrorCallback`
+ *      loguje chybu linky o par instrukci driv, takze si ji sam vycerpal
+ *      a tenhle zaznam se v hlavni ceste NEEMITOVAL NIKDY.
+ * Vlastni druh resi obe — a navic poctive odlisuje TRVALOU poruchu od
+ * prechodnych chyb linky, ze kterych se prijem zotavi sam. */
+static void uart1_rearm_rx(void)
+{
+    if (HAL_UART_Receive_IT(&huart1, &RxByte, 1) != HAL_OK) {
+        g_uart1_rearm_fail++;
+        (void)errlog_put(ERRLOG_K_UARTFATAL, 0u, g_uart1_rearm_fail, 0u, "REARM");
+    }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
-	osMessageQueuePut(GpsRxQueueHandle, &RxByte, 0, 0);
-    HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+	/* ⚠️ Timeout 0: kdyz je fronta plna (defaultTask nestiha drainovat), bajt
+	 * se ZAHODI. Do 2026-09-07 se navratova hodnota ignorovala, takze ztrata
+	 * NMEA dat byla neviditelna — stejna trida jako ORE vyse. */
+	if (osMessageQueuePut(GpsRxQueueHandle, &RxByte, 0, 0) != osOK) {
+		g_gps_rx_drop++;
+		(void)errlog_put(ERRLOG_K_UART, 0xFFu, g_gps_rx_drop, 0u, "GPSq");
+	}
+    uart1_rearm_rx();
   }
 }
 
@@ -188,6 +237,14 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
+    uint32_t ec = huart->ErrorCode;
+    if (ec & HAL_UART_ERROR_ORE) g_uart1_ore++;
+    if (ec & HAL_UART_ERROR_FE)  g_uart1_fe++;
+    if (ec & HAL_UART_ERROR_NE)  g_uart1_ne++;
+    if (ec & HAL_UART_ERROR_PE)  g_uart1_pe++;
+    /* ISR kontext -> `errlog_put` jen do RAM ringu, do flash to vyleje defaultTask. */
+    (void)errlog_put(ERRLOG_K_UART, (uint8_t)(ec & 0xFFu), g_uart1_ore,
+                     g_uart1_fe | (g_uart1_ne << 8) | (g_uart1_pe << 16), "GPS");
     __HAL_UART_CLEAR_OREFLAG(huart);
     __HAL_UART_CLEAR_FEFLAG(huart);
     __HAL_UART_CLEAR_NEFLAG(huart);
@@ -196,7 +253,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
      * HAL_UART_Receive_IT vrati HAL_BUSY -> RX uz nikdy nenabehne (mrtva konzole). */
     HAL_UART_AbortReceive(huart);
     huart->ErrorCode = HAL_UART_ERROR_NONE;
-    HAL_UART_Receive_IT(&huart1, &RxByte, 1);
+    uart1_rearm_rx();
   }
 }
 

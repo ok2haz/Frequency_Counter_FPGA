@@ -1,0 +1,7 @@
+[2026-10-19 01:41:36] PREFLIGHT: uptime 15976 s, IPC 29, smycka LOCK (zamceno 1, 3358 s)
+[2026-10-19 01:41:36] POZOR: LOCK jen 3358 s; pro zakladni mereni pockej aspon 1 h od zamceni (OCXO + smycka se usta)
+[2026-10-19 01:41:36] HRADLO: nastaveno 0.25000 s, posledni namerene 249999999 ns
+[2026-10-19 01:41:36] START: docs\audit\data\2026-10-18_2135_dlouhe_faze2_gps.csv, perioda 0.2 s, max 843 min
+[2026-10-19 01:41:36] stav smycky: OFF (why 7)
+[2026-10-19 06:24:56] NEODPOVIDA (1x)
+[2026-10-19 15:41:36] stav smycky: FLL (why 0)

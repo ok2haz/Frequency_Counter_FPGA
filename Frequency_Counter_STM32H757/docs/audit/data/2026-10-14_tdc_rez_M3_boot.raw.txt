@@ -1,0 +1,292 @@
+##### 2026-10-14T20:59:55
+===== > status
+atus
+RUNNING gpsdo-ui v0.15.0  uptime 28s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 40%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 10308, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6760 B
+  stack I2C4    free 1100 B
+  stack Ui      free 5512 B
+  stack Fpga    free 792 B
+VAROVANI: prio 2  ZTRATA REFERENCE  - mereni neplatne  (celkem 3)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena ? start po zapnuti napajeni
+
+REFERENCE: *** VYPADEK OD VYNULOVANI ***  LOS_CLKIN  PLL_LOL  -> mereni z te doby je podezrele; `si5356 clr` vynuluje
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 369 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.673 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 1614 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: TX watchdog zlomil zasek 64x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x14 REGR:bez dat (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: hrany ano (`ref` = detail)
+  FPGA HODINY 100M: ZOTAVENI (mereni stoji, rekalibrace), vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 0, hodiny 1, delka okna 0 | posledni rozdil 0
+  TDC: cal A:0 B:0 busy:0 fail:0 | retez kratky A:0 B:0 | okno 0 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 24.6 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozen
+===== > tdc
+y zaznam -> `flightrec`
+DATALOG W25Q ON 225733/696960 rec seq:225733 err:0 skip:0
+
+tdc
+===== > sensors
+TDC: CAL report nedorazil (stary FW? link? fpgasim?)
+
+sensors
+=== SENZORY: last/min/max/avg [unit] stav  chyby ===
+TMP117 0x48   24.71/24.67/24.71/24.70 C  OK   err=0 strk=0 last=- n=68
+TMP117 0x49   25.12/24.54/25.12/24.73 C  OK   err=0 strk=0 last=- n=51
+TMP117 0x4A   25.19/24.60/25.19/24.88 C  OK   err=0 strk=0 last=- n=51
+ADS AIN0(VC)  56.40/56.40/56.56/56.52 mV  OK   err=0 strk=0 last=- n=51
+ADS AIN1(VBUS) 11907.40/11852.08/11912.62/11894.77 mV  OK   err=0 strk=0 last=- n=320
+ADS AIN2(+3V3) 3339.29/3337.12/3341.04/3339.67 mV  OK   err=0 strk=0 last=- n=51
+ADS AIN3(5V)  4993.25/4966.75/4993.25/4987.84 mV  OK   err=0 strk=0 last=- n=51
+MCU jadro     33.78/29.66/33.78/32.31 C  OK   err=0 strk=0 last=- n=34
+VREF          2510.00/2502.00/2516.00/2511.32 mV  OK   err=0 strk=0 last=- n=34
+V
+##### 2026-10-14T21:00:15
+===== > status
+BAT          2968.00/2960.00/2972.00/2969.41 mV  OK   err=0 strk=0 last=- n=34
+
+status
+RUNNING gpsdo-ui v0.15.0  uptime 49s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 40%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 10472, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6760 B
+  stack I2C4    free 1100 B
+  stack Ui      free 5512 B
+  stack Fpga    free 792 B
+VAROVANI: prio 2  ZTRATA REFERENCE  - mereni neplatne  (celkem 3)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena ? start po zapnuti napajeni
+
+REFERENCE: *** VYPADEK OD VYNULOVANI ***  LOS_CLKIN  PLL_LOL  -> mereni z te doby je podezrele; `si5356 clr` vynuluje
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 591 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.673 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 2945 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: TX watchdog zlomil zasek 64x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x14 REGR:bez dat (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: hrany ano (`ref` = detail)
+  FPGA HODINY 100M: ZOTAVENI (mereni stoji, rekalibrace), vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 0, hodiny 1, delka okna 0 | posledni rozdil 0
+  TDC: cal A:0 B:0 busy:0 fail:0 | retez kratky A:0 B:0 | okno 0 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 24.6 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `fligh
+===== > tdc
+trec`
+DATALOG W25Q ON 225735/696960 rec seq:225735 err:0 skip:0
+
+tdc
+T
+===== > sensors
+DC: CAL report nedorazil (stary FW? link? fpgasim?)
+
+sensors
+=== SENZORY: last/min/max/avg [unit] stav  chyby ===
+TMP117 0x48   24.75/24.67/24.75/24.71 C  OK   err=0 strk=0 last=- n=109
+TMP117 0x49   26.08/24.54/26.08/25.06 C  OK   err=0 strk=0 last=- n=84
+TMP117 0x4A   25.58/24.60/25.58/25.08 C  OK   err=0 strk=0 last=- n=84
+ADS AIN0(VC)  56.40/56.40/56.56/56.49 mV  OK   err=0 strk=0 last=- n=84
+ADS AIN1(VBUS) 11911.26/11852.08/11913.83/11900.43 mV  OK   err=0 strk=0 last=- n=518
+ADS AIN2(+3V3) 3339.16/3337.12/3341.04/3339.49 mV  OK   err=0 strk=0 last=- n=84
+ADS AIN3(5V)  4994.50/4966.75/4994.50/4990.23 mV  OK   err=0 strk=0 last=- n=84
+MCU jadro     34.79/29.66/34.79/33.11 C  OK   err=0 strk=0 last=- n=55
+VREF          2511.00/2502.00/2517.00/2511.40 mV  OK   err=0 strk=0 last=- n=55
+##### 2026-10-14T21:00:40
+===== > status
+VBAT          2972.00/2960.00/2976.00/2969.96 mV  OK   err=0 strk=0 last=- n=55
+
+status
+RUNNING gpsdo-ui v0.15.0  uptime 77s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 42%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 10541, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6760 B
+  stack I2C4    free 1100 B
+  stack Ui      free 5512 B
+  stack Fpga    free 792 B
+VAROVANI: prio 2  ZTRATA REFERENCE  - mereni neplatne  (celkem 3)
+
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena ? start po zapnuti napajeni
+
+REFERENCE: *** VYPADEK OD VYNULOVANI ***  LOS_CLKIN  PLL_LOL  -> mereni z te doby je podezrele; `si5356 clr` vynuluje
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 900 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.673 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 4788 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: TX watchdog zlomil zasek 64x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x14 REGR:bez dat (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: hrany ano (`ref` = detail)
+  FPGA HODINY 100M: ZOTAVENI (mereni stoji, rekalibrace), vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 0, hodiny 1, delka okna 0 | posledni rozdil 0
+  TDC: cal A:0 B:0 busy:0 fail:0 | retez kratky A:0 B:0 | okno 0 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 24.6 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `f
+===== > tdc
+lightrec`
+DATALOG W25Q ON 225738/696960 rec seq:225738 err:0 skip:0
+
+tdc
+##### 2026-10-14T21:00:57 ref
+===== > ref
+TDC: CAL report nedorazil (stary FW? link? fpgasim?)
+
+ref
+===== > scpi SENS:ROSC:LOCK?
+REF: vybrana OCXO | externi vstup: hrany ano
+
+scpi SENS:ROSC:LOCK
+===== > scpi SENS:ROSC:SOUR?
+?
+0
+
+
+scpi SENS:ROSC:SOUR?
+##### 2026-10-14T21:01:11 status full
+===== > status full
+INT
+
+
+status full
+RUNNING gpsdo-ui v0.15.0  uptime 111s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 6960 B, min-ever 6960 B   CPU 40%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 10661, zahozeno 0
+  stack default free 1976 B
+  stack Uart    free 6256 B
+  stack I2C4    free 1100 B
+  stack Ui      free 5512 B
+  stack Fpga    free 792 B
+VAROVANI: prio 2  ZTRATA REFERENCE  - mereni neplatne  (celkem 3)
+
+UI kresleni: flip=1267 flash=0 stats=1167 trend=954 xfade=3 cislo=1256 enc=0
+
+UI: okno s_view=0 (zmen 2)
+UI: encoder delic=4 | fokus tlacitek max 9/24
+
+UI: navigace (ZPET) max 0/6
+
+ADEV rekonstrukce: preskocena ? start po zapnuti napajeni
+
+REFERENCE: *** VYPADEK OD VYNULOVANI ***  LOS_CLKIN  PLL_LOL  -> mereni z te doby je podezrele; `si5356 clr` vynuluje
+DAC OCXO: AD5693R 0x4C nenalezen (neosazen?) -> OCXO Vc nikdo neridi
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 0 / 1267 flipu = 0 na 1000  (v poradku)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 63.673 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 6992 x
+FONTY: preskocenych glyfu 0  (v poradku)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+          pokusy o zachranu: syscfg 1, errlog 0 (strop 5)
+STATISTIKA: sigma_y@1s = 6002026 e-15
+STATISTIKA: tau0 = -- (zadny realny vzorek)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+SDRAM refresh: SDRTR=371, ve zdrojaku 371
+SDRAM cteni: rpipe=1 HCLK | I/O kompenzace READY (CSI ok)
+KONZOLE: TX watchdog zlomil zasek 64x
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  ATTINY zapisu jasu: 0 ok, 0 preskoceno | ztlumeno: 0
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0423 CAPS:0x1EE2 CLK:0x14 REGR:bez dat (`regr` = detail)
+  FPGA BUILD: 2026-10-11 17:03:01 UTC git 008400b+
+  FPGA REFERENCE: OCXO | externi vstup: hrany ano (`ref` = detail)
+  FPGA HODINY 100M: ZOTAVENI (mereni stoji, rekalibrace), vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 0, hodiny 1, delka okna 0 | posledni rozdil 0
+  TDC: cal A:0 B:0 busy:0 fail:0 | retez kratky A:0 B:0 | okno 0 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 24.6 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: jeste nenacteno (ceka na dokonceni kalibrace)
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `flightrec`
+DAT

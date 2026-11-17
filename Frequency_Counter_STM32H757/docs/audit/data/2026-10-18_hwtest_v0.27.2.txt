@@ -1,0 +1,219 @@
+# UART vystup HW testu 2026-10-18, firmware v0.27.2, uptime ~12,5 h (COM10, jen cteni)
+
+===== > version
+version
+gpsdo-ui v0.27.2
+===== > selftest
+selftest
+fpga: CRC selftest crc16("123456789")=0x29B1 OK
+fpga: select hystereze + ticky okna + miscount + regrese + souvislost SEQ + rezerva TDC selftest OK
+gps: parser selftest OK
+ui: fmt_frac+hist_h+gate_same selftest OK (181 ms)
+app: fmt_locator selftest OK (JJ00AA00AA)
+SELFTEST: 16/16 PASS
+===== > status
+status
+RUNNING gpsdo-ui v0.27.2  uptime 45100s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 5744 B, min-ever 5744 B   CPU 14%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 65535+, zahozeno 5
+  stack default free 1952 B
+  stack Uart    free 5976 B
+  stack I2C4    free 1068 B
+  stack Ui      free 5512 B
+  stack Fpga    free 628 B
+VAROVANI: zadne
+UI: encoder delic=4 | fokus tlacitek max 11/24
+UI: navigace (ZPET) max 3/6
+ADEV rekonstrukce: preskocena - start po zapnuti napajeni
+REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)
+REFERENCE: auto re-init Si5356 zadny (zamceno od startu)
+DAC OCXO: AD5693R 0x4C, ctrl OK | kod 24930 = 1902 mV | readback 24919
+DAC OCXO: zapisu 2072616, chyb I2C 0, readback nesedi 0 | pin VC (AIN0) 1919 mV
+DAC OCXO: dither 100 Hz (DacTask 5 ms) | kroky bez mutexu 0, vynechano po chybe 0
+DAC OCXO: obnova po startu: kod z flash zapsan a overen | ulozeny kod 24931 = 1902 mV
+GPSDO: LOCK (ZAMCENO) | 44821 s | y +0.093 ppb | faze -2 ns | kod 24929.87 | K 3.40e-11 | tau 1000 s
+GPSDO: 1PPS prijato 45064, odmitnuto 26, diry 0, roztrzena cteni 0 | FLL okno 128 s | sawtooth -q (rozptyl ns2: bez 313 / +q 1290 / -q 40, rozhodnuti 704)
+GPSDO: tau min. 140 s (aktualne 1000 s) | sum 1PPS HDEV(10 s) 559 e-12 | HDEV faze e-12: 10:559 20:281 50:144 100:66 200:48 500:25 1000:13 2000:6
+GPSDO: (dolni mez: prebytek nad bilym sumem 1PPS muze byt OCXO i putovani casu GPS)
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 6 / 47177 flipu = 0 na 1000  (v poradku - jen nabeh)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 200.969 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 299208 x
+FONTY: preskocenych glyfu 1  <== NEKDE CHYBI TEXT (subsetovany font)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+KONZOLE: host pritomen (DTR 1), zahozeno nejstarsich 0 B
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0424 CAPS:0x3EE2 CLK:0x01 REGR:pouzita (`regr` = detail)
+  FPGA BUILD: 2026-10-16 16:00:06 UTC git bb5adfb+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 1, hodiny 0, delka okna 0 | posledni rozdil 0  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 249999 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 37.4 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: A 16 tapu (5.9 %) OK | B 14 tapu (5.2 %) POZOR | z 268 tapu, za koncem A 0 B 0 ud. (cal #1)  <== rezerva retezu klesa
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `flightrec`
+DATALOG W25Q ON 242867/696960 rec seq:242867 err:0 skip:0
+===== > stats
+stats
+=== STATS (CPU za 1s, DWT@480MHz) ===
+TASK             CPU PRI STACKFREE ST
+UartTask          0% 24   5976 B X
+IDLE             89%  0    428 B R
+UiTask            5% 16   5512 B B
+I2C4Task          3%  8   1068 B B
+defaultTask       0% 24   1952 B B
+FpgaTask          0% 24    628 B B
+DacTask           0% 32    808 B B
+Tmr Svc           0%  2    904 B B
+--- CPU load: 11% | tasku: 8
+Heap: 5744 B free, 5744 B min-ever
+Uptime: 45103 s
+
+# --- druha davka ---
+===== > status full
+status full
+RUNNING gpsdo-ui v0.27.2  uptime 45177s
+Reset: power-on
+  RSR=0x00FE0000
+Heap: free 5744 B, min-ever 5744 B   CPU 10%
+CM4: alive (IPC heartbeat), stall x0
+  ETH(CM4): init OK, PHY ID 0x0007C131 (LAN8742A)
+  SCPI(CM4): selftest PASS
+  HTTP(CM4): selftest PASS
+  NET: UP 100 Mbit full, IP 10.0.0.106
+  TX(CM4): odeslano 65535+, zahozeno 5
+  stack default free 1952 B
+  stack Uart    free 5976 B
+  stack I2C4    free 1068 B
+  stack Ui      free 5512 B
+  stack Fpga    free 628 B
+VAROVANI: zadne
+UI kresleni: flip=47177 flash=2 stats=34113 trend=39097 xfade=3 cislo=11821 enc=0
+UI: okno s_view=8 (zmen 21)
+UI: encoder delic=4 | fokus tlacitek max 11/24
+UI: navigace (ZPET) max 3/6
+ADEV rekonstrukce: preskocena - start po zapnuti napajeni
+REFERENCE: bez vypadku od vynulovani (sticky 247 = 0)
+REFERENCE: auto re-init Si5356 zadny (zamceno od startu)
+DAC OCXO: AD5693R 0x4C, ctrl OK | kod 24930 = 1902 mV | readback 24919
+DAC OCXO: zapisu 2076368, chyb I2C 0, readback nesedi 0 | pin VC (AIN0) 1919 mV
+DAC OCXO: dither 100 Hz (DacTask 5 ms) | kroky bez mutexu 0, vynechano po chybe 0
+DAC OCXO: obnova po startu: kod z flash zapsan a overen | ulozeny kod 24931 = 1902 mV
+GPSDO: LOCK (ZAMCENO) | 44898 s | y +0.058 ppb | faze +4 ns | kod 24929.60 | K 3.40e-11 | tau 1000 s
+GPSDO: 1PPS prijato 45142, odmitnuto 26, diry 0, roztrzena cteni 0 | FLL okno 128 s | sawtooth -q (rozptyl ns2: bez 416 / +q 1530 / -q 33, rozhodnuti 705)
+GPSDO: tau min. 140 s (aktualne 1000 s) | sum 1PPS HDEV(10 s) 561 e-12 | HDEV faze e-12: 10:561 20:282 50:144 100:66 200:48 500:25 1000:13 2000:6
+GPSDO: (dolni mez: prebytek nad bilym sumem 1PPS muze byt OCXO i putovani casu GPS)
+DISPLEJ: bring-up OK
+LTDC: podteceni FIFO 6 / 47177 flipu = 0 na 1000  (v poradku - jen nabeh)
+DMA2D: chyb 0, timeout 0 | flip timeout 0 | max cekani 200.969 ms (mez 500)  (v poradku)
+DMA2D: pomala vetev cekani (yield) 299362 x
+FONTY: preskocenych glyfu 1  <== NEKDE CHYBI TEXT (subsetovany font)
+FORMAT: omezenych desetin 0  (v poradku)
+ULOZISTE: syscfg OK | calib OK | sestavy OK | flightrec OK | errlog OK
+STATISTIKA: sigma_y@1s = 138932 e-15
+STATISTIKA: filtr izolovanych odlehlych (31 vzorku, 7 MAD) ZAP: vyrazeno 10 z 44260 posouzenych
+STATISTIKA: ADEV(1 s): filtrovana 138932 e-15, surova 139039 e-15
+STATISTIKA: ADEV(10 s): filtrovana 574822 e-15, surova 574752 e-15
+STATISTIKA: ADEV(100 s): filtrovana 387645 e-15, surova 385488 e-15
+STATISTIKA: ADEV(1000 s): filtrovana 44853 e-15, surova 44528 e-15
+STATISTIKA: tau0 = 1000 ms, kolisa 0 % (45174 vzorku, ztraceno 0)
+SEQ FPGA: diry 0 (zmeskano 0 mereni), resync 0
+NAPAJENI/HODINY: OK SYSCLK 480 MHz HCLK 240 MHz WRHIGHFREQ=3
+SDRAM refresh: SDRTR=371, ve zdrojaku 371
+SDRAM cteni: rpipe=1 HCLK | I/O kompenzace READY (CSI ok)
+KONZOLE: host pritomen (DTR 1), zahozeno nejstarsich 0 B
+WATCHDOG: PR=4 RLR=2000 -> 4002 ms | pipak ok
+GPIO HLIDAC: 0 oprav (hlida 10 pinu na GPIOA/B/C/G)
+I2C4: SCL=1 SDA=1 idle | TMP117 0x48 err 0 (v rade 0)
+  ATTINY zapisu jasu: 9 ok, 0 preskoceno | ztlumeno: 1
+  EXPERIMENT: recovery nesaha na ATTINY (bez HW resetu TP); jas funguje
+FPGA: link OK, CRC err 0
+  FPGA FW:0x0424 CAPS:0x3EE2 CLK:0x01 REGR:pouzita (`regr` = detail)
+  FPGA BUILD: 2026-10-16 16:00:06 UTC git bb5adfb+
+  FPGA REFERENCE: OCXO | externi vstup: bez hran (`ref` = detail)
+  FPGA HODINY 100M: OK, vypadku 0
+  FPGA SAMOKONTROLA: zamitnuto oken: citani 1, hodiny 0, delka okna 0 | posledni rozdil 0  <== FPGA MERI SPATNE (zkus nove nahrat / power-cyklus)
+  TDC: cal A:1 B:1 busy:0 fail:0 | retez kratky A:0 B:0 | okno 249999 us (`tdc` = detail)
+  TDC: teplot. rekal 0x (cal pri 37.4 C) | spike-reject 0 oken (obri bin)
+  TDC REZERVA: A 16 tapu (5.9 %) OK | B 14 tapu (5.2 %) POZOR | z 268 tapu, za koncem A 0 B 0 ud. (cal #1)  <== rezerva retezu klesa
+  CITANI HRAN: okno s hranou navic 0, s chybejici 0 (nezobrazeno, mimo statistiku)
+  flight recorder: je ulozeny zaznam -> `flightrec`
+DATALOG W25Q ON 242875/696960 rec seq:242875 err:0 skip:0
+===== > allan log
+allan log
+ALLAN z .measlog: epocha 902951811, brana 250 ms, 180715 zaznamu (180715 platnych, 45178 s), blok 4 zaznamu = tau0' 1000 ms, 45178 bloku, 0 mezer/segmentu 1
+  tau [s]     n(ADEV)      ADEV        MDEV        HDEV
+      1.000      45176   1.77E-10    1.77E-10    1.21E-10  
+      2.000      45174   2.65E-10    2.54E-10    1.06E-10  
+      3.000      45172   3.59E-10    3.30E-10    1.30E-10  
+      5.000      45168   4.85E-10    4.01E-10    2.43E-10  
+      7.000      45164   5.48E-10    4.56E-10    3.32E-10  
+     10.000      45158   6.25E-10    5.56E-10    4.34E-10  
+     20.000      45138   7.96E-10    6.50E-10    7.31E-10  
+     30.000      45118   7.54E-10    5.73E-10    7.23E-10  
+     50.000      45078   6.12E-10    4.67E-10    5.89E-10  
+     70.000      45038   5.47E-10    3.99E-10    5.59E-10  
+    100.000      44978   4.43E-10    3.00E-10    4.58E-10  
+    200.000      44778   2.44E-10    1.47E-10    2.57E-10  
+    300.000      44578   1.60E-10    8.59E-11    1.66E-10  
+    500.000      44178   1.00E-10    4.92E-11    1.04E-10  
+    700.000      43778   7.61E-11    3.33E-11    8.03E-11  
+   1000.000      43178   5.29E-11    2.07E-11    5.49E-11  
+  (overlapping s krokem tau0'; cleny jsou korelovane -> nejistota klesa pomaleji nez 1/sqrt(n); cf. `meas`/okno ALLAN = pyramida)
+===== > sensors
+sensors
+=== SENZORY: last/min/max/avg [unit] stav  chyby ===
+TMP117 0x48   30.05/29.58/32.61/30.40 C  OK   err=0 strk=0 last=- n=90363
+TMP117 0x49   47.74/46.82/48.13/47.54 C  OK   err=0 strk=0 last=- n=84382
+TMP117 0x4A   37.04/36.33/37.67/37.08 C  OK   err=0 strk=0 last=- n=84382
+ADS AIN0(VC)  1919.68/105.93/1919.84/1918.46 mV  OK   err=0 strk=0 last=- n=84382
+ADS AIN1(VBUS) 11980.72/11936.98/11984.58/11974.70 mV  OK   err=0 strk=0 last=- n=445833
+ADS AIN2(+3V3) 3327.15/3322.62/3327.77/3327.00 mV  OK   err=0 strk=0 last=- n=84382
+ADS AIN3(5V)  5032.50/5014.00/5033.75/5032.49 mV  OK   err=0 strk=0 last=- n=84382
+MCU jadro     44.93/42.60/46.63/45.21 C  OK   err=0 strk=0 last=- n=45182
+VREF          2516.00/2508.00/2522.00/2515.38 mV  OK   err=0 strk=0 last=- n=45182
+VBAT          2988.00/2972.00/3004.00/2988.81 mV  OK   err=0 strk=0 last=- n=45182
+===== > tdc
+tdc
+TDC A: kodu 164/512 (nejvyssi 252), nejvetsi bin 19312 = 184 ps (1.8 % periody), za koncem retezu 0, max tap 248
+TDC B: kodu 165/512 (nejvyssi 254), nejvetsi bin 15344 = 146 ps (1.4 % periody), za koncem retezu 0, max tap 248
+TDC: konfigurace 268 tapu, kazdy ALU (jemne) vzorky, nabezna hrana hodin
+TDC A: maxtap 248 vs nejvyssi kod 252 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC B: maxtap 248 vs nejvyssi kod 254 -> teplomer cisty (retez tam fyzicky konci; oprava = delsi/jiny P&R retezu)
+TDC: status 0x03 (cal A:1 B:1 fail:0 busy:0, retez kratky A:0 B:0)
+TDC: rezerva retezu A 16 tapu, B 14 tapu z 268 (OK >= 15, POZOR >= 8), za koncem A 0 B 0 ud.
+TDC: zdravy stav = nejvetsi bin < ~200 ps (~2 % periody). Obri bin (1,4 ns u A, 4,8 ns u B ve FW <= 0x040F)
+     = hrany, ktere spoustec videl o takt pozdeji a spadly za konec retezu (viz docs/audit/2026-10-07_tdc-vlastni-reference.md)
+===== > regr
+regr
+REGR: oken s blokem 1748, pouzito 1668, zamitnuto 80 | znacek A 312499, B 312499
+REGR: posledni f_regr 10000000.016357 Hz | f_2pt 10000000.011440 Hz
+REGR: f_regr - f_2pt: stred -0.002 ppb, sigma 0.489 ppb  (sigma = sum dvoubodoveho odhadu; vetsi nez ~0,5 ppb = TDC sum)
+REGR: mez konzistence 50 ppb, min. znacek 8; zamitnuto = |f_regr/f_2pt - 1| > mez
+===== > gpsdo
+gpsdo
+GPSDO: LOCK (ZAMCENO) | 44908 s | y +0.085 ppb | faze +5 ns | kod 24929.56 | K 3.40e-11 | tau 1000 s
+GPSDO: 1PPS prijato 45152, odmitnuto 26, diry 0, roztrzena cteni 0 | FLL okno 128 s | sawtooth -q (rozptyl ns2: bez 416 / +q 1530 / -q 33, rozhodnuti 705)
+GPSDO: tau min. 141 s (aktualne 1000 s) | sum 1PPS HDEV(10 s) 561 e-12 | HDEV faze e-12: 10:561 20:282 50:144 100:66 200:48 500:25 1000:14 2000:6
+GPSDO: (dolni mez: prebytek nad bilym sumem 1PPS muze byt OCXO i putovani casu GPS)
+===== > dac
+dac
+DAC OCXO: AD5693R 0x4C, ctrl OK | kod 24930 = 1902 mV | readback 24919
+DAC OCXO: zapisu 2077376, chyb I2C 0, readback nesedi 0 | pin VC (AIN0) 1919 mV
+DAC OCXO: dither 100 Hz (DacTask 5 ms) | kroky bez mutexu 0, vynechano po chybe 0
+DAC OCXO: obnova po startu: kod z flash zapsan a overen | ulozeny kod 24931 = 1902 mV

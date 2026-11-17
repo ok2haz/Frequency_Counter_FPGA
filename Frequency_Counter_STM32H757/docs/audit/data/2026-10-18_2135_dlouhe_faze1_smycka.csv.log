@@ -1,0 +1,15 @@
+[2026-10-18 21:41:33] PREFLIGHT: uptime 1573 s, IPC 29, smycka LOCK (zamceno 1, 301 s)
+[2026-10-18 21:41:33] POZOR: LOCK jen 301 s; pro zakladni mereni pockej aspon 1 h od zamceni (OCXO + smycka se usta)
+[2026-10-18 21:41:33] HRADLO: nastaveno 0.25000 s, posledni namerene 250000000 ns
+[2026-10-18 21:41:33] POZOR: uptime pod 30 min
+[2026-10-18 21:41:33] START: docs\audit\data\2026-10-18_2135_dlouhe_faze1_smycka.csv, perioda 0.2 s, max 243 min
+[2026-10-18 21:41:33] stav smycky: OFF (why 7)
+[2026-10-18 22:01:34] stav smycky: WAIT (why 2)
+[2026-10-18 22:01:35] stav smycky: FLL (why 0)
+[2026-10-18 23:01:33] stav smycky: OFF (why 7)
+[2026-10-18 23:21:34] stav smycky: WAIT (why 2)
+[2026-10-18 23:21:35] stav smycky: FLL (why 0)
+[2026-10-19 00:21:33] stav smycky: OFF (why 7)
+[2026-10-19 00:41:34] stav smycky: FLL (why 0)
+[2026-10-19 01:41:36] stav smycky: OFF (why 7)
+[2026-10-19 01:44:33] KONEC: radku OK 69660, NA 0, resetu pristroje 0

@@ -40,6 +40,10 @@ int  ipc_cm4_ready(void);
  *  zapisu CM7). @return 1 = konzistentni kopie, 0 = neready / CM7 zapisuje moc casto. */
 int  ipc_cm4_read(ipc_snapshot_t *out);
 
+/** v20: precte statistiku stability (body ADEV/MDEV/HDEV z firmwarove pyramidy)
+ *  seqlock protokolem. @return 1 = konzistentni kopie, 0 = neready / roztrzene. */
+int  ipc_cm4_read_stab(ipc_stab_t *out);
+
 /** Liveness CM7 z pohledu CM4 (snapshot `seq` roste). @return 1 = CM7 zije, 0 =
  *  zamrzly (seq nezmenen >2 s) -> CM4 NESMI servirovat stara data jako aktualni.
  *  `now_ms` = HAL_GetTick() (drzime ipc_cm4.c HAL-free). Viz NAVRH §11.4. */

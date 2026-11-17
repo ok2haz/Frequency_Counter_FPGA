@@ -26,3 +26,8 @@ void screenshot_emit_bmp(void);
  * který není hlídaný watchdogem. Kartu si namountuje sám, když je potřeba.
  * @return 0 = OK (jméno v `name_out`), <0 = chyba (viz `sd_export_state_str()`). */
 int screenshot_save_sd(char *name_out, unsigned name_sz);
+
+/* Jako výše, ale pod PŘESNÝM jménem `name` (8.3, např. "V07.BMP") — existující
+ * soubor se PŘEPÍŠE. Používá `screenshot all` (export všech oken, freertos_task_uart.c).
+ * @return 0 = OK, <0 = chyba (stejné kódy jako `screenshot_save_sd`). */
+int screenshot_save_sd_named(const char *name);

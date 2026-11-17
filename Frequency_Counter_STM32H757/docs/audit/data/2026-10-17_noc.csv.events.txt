@@ -1,0 +1,27 @@
+=== errlog PRED ZACATKEM (total 4998) ===
+21:13:48  up 216  k=11  brana  brana 10s -> 100s
+21:10:13  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+21:10:13  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:07:45  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+21:07:45  up 0  k=2  240000  HardFault 240000
+21:07:45  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+20:09:36  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+20:09:36  up 0  k=2  240000  HardFault 240000
+20:09:36  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+19:36:24  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+19:36:24  up 0  k=1  power-  duvod=power-, bring-up krok 0
+19:35:37  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+
+=== errlog PO KONCI (total 4998, pred: 4998) ===
+21:13:48  up 216  k=11  brana  brana 10s -> 100s
+21:10:13  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+21:10:13  up 0  k=1  power-  duvod=power-, bring-up krok 0
+21:07:45  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+21:07:45  up 0  k=2  240000  HardFault 240000
+21:07:45  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+20:09:36  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+20:09:36  up 0  k=2  240000  HardFault 240000
+20:09:36  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+19:36:24  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm
+19:36:24  up 0  k=1  power-  duvod=power-, bring-up krok 0
+19:35:37  up 0  k=13  tdc  rezerva TDC retezu A=16T OK, B=14T POZOR, za koncem 0 ppm

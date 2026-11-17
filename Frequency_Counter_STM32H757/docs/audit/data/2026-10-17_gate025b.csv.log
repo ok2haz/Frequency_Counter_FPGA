@@ -1,0 +1,6 @@
+[2026-10-17 11:12:16] PREFLIGHT: uptime 3638 s, IPC 25, smycka LOCK (zamceno 1, 3111 s)
+[2026-10-17 11:12:16] POZOR: LOCK jen 3111 s; pro zakladni mereni pockej aspon 1 h od zamceni (OCXO + smycka se usta)
+[2026-10-17 11:12:16] HRADLO: nastaveno 0.25000 s, posledni namerene 250000000 ns
+[2026-10-17 11:12:16] START: docs\audit\data\2026-10-17_gate025b.csv, perioda 0.1 s, max 180 min
+[2026-10-17 11:54:13] NEODPOVIDA (1x)
+[2026-10-17 14:12:17] KONEC: radku OK 96221, NA 2, resetu pristroje 0

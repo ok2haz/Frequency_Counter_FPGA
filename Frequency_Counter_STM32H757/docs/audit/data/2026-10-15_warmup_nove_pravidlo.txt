@@ -1,0 +1,3 @@
+M3b_studeny  por=True  stare pravidlo (300 s, 0,08): hotovo od 1092 s | nove (900 s, 0,3, dT>=10): hotovo od 904 s | radku po 900 s bez 'hotovo': 0
+M3c_teply    por=False  stare pravidlo (300 s, 0,08): hotovo od 304 s | nove (300 s, 0,3, dT>=10): hotovo od 304 s | radku po 900 s bez 'hotovo': 0
+mrtva pec (dT=1 C, sklon 0): stare pravidlo hotovo od 300 s | nove: nikdy

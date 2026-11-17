@@ -21,7 +21,7 @@ typedef enum { AC_NA = 0, AC_PASS, AC_WARN, AC_FAIL } ac_result_t;
 typedef struct {
     uint8_t     ran;         /* 1 = autocal_run() proběhl */
     ac_result_t vref;        /* VREF ~2,5 V */
-    ac_result_t rail12;      /* 12V větev */
+    ac_result_t rail12;      /* +3V3 větev (pole nazvano historicky "rail12", viz calib.c) */
     ac_result_t rail5;       /* 5V větev */
     ac_result_t vbat;        /* záložní baterie */
     ac_result_t adc_selfcal; /* ADC3 HW self-cal (staged) */
@@ -33,6 +33,8 @@ extern autocal_t g_autocal;
 
 /** Provede verifikační kroky z g_sensors; staged kroky nastaví na AC_NA. */
 void        autocal_run(void);
+/** v0.45.26: totéž do předané struktury, g_autocal se nemění (okno AUTOKALIBRACE počítá živě). */
+void        autocal_eval(autocal_t *o);
 /** Víceřádkový report (UART `autocal`). */
 void        autocal_format_full(char *buf, int n);
 /** Jednořádkový souhrn (status řádek okna Kalibrace). */

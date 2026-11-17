@@ -12,11 +12,26 @@
 #include "internal/fb_impl.h"
 #include "internal/alpha_blend.h"
 
+/* 🔴 Strop oblasti glow. Drive 800x480, tedy DVE masky po 375 kB = **750 kB
+ * SDRAM** — a to na dve volani v celem projektu: LED tecka na pilulce
+ * (`rect 6x6, blur 4` -> oblast **14x14 = 196 B**) a podtrzeni posledni
+ * duveryhodne cislice (`blur 6` -> **(sirka segmentu + 13) x 13**, tedy ~0,7-2 kB).
+ * Skutecna potreba je pod 2 kB; 375 kB byla cista rezerva.
+ *
+ * Zmenseno NESOUMERNE (audit 2026-09-05): sirka zustava 800, protoze podtrzeni
+ * muze jit pres celou sirku cisla (`FREQ_MAX_W` = 780), ale VYSKA staci 64 —
+ * to je stale ~5x nad nejhorsim znamym pripadem (13 radku).
+ *   800 x 64 = 51 kB / maska -> **102 kB celkem, uspora ~648 kB SDRAM**
+ * Vedlejsi zisk: `box_blur_h/v` projde mene dat.
+ *
+ * ⚠️ Prekroceni stropu je TICHE (funkce jen `return`) — proto se pocita do
+ * `g_prim_glow_skipped` a vypisuje ve `status`. Kdyby ten citac zacal rust,
+ * je strop maly a nekde mizi glow; NEZVYSUJ ho naslepo, nejdriv zjisti KDE. */
 #ifndef PRIM_GLOW_MAX_W
 #define PRIM_GLOW_MAX_W 800
 #endif
 #ifndef PRIM_GLOW_MAX_H
-#define PRIM_GLOW_MAX_H 480
+#define PRIM_GLOW_MAX_H 64
 #endif
 
 /* Two scratch planes for separable blur. Placed in .sdram on target via the
@@ -29,6 +44,12 @@
 
 static uint8_t g_mask_a[PRIM_GLOW_MAX_W * PRIM_GLOW_MAX_H] PRIM_GLOW_SECTION;
 static uint8_t g_mask_b[PRIM_GLOW_MAX_W * PRIM_GLOW_MAX_H] PRIM_GLOW_SECTION;
+
+/* 🔴 Kolikrat se glow NEVYKRESLIL, protoze oblast prekrocila strop masky.
+ * Bez tohohle citace je to TICHE SELHANI: funkce jen `return`, nic se nenakresli
+ * a nikde se to neobjevi (trida chyb ze SKILL.md §3). Citac vypisuje `status`.
+ * ⚠️ MUSI zustat 0 — kdyz roste, je strop maly a glow nekde mizi. */
+uint32_t g_prim_glow_skipped;
 
 static void box_blur_h(const uint8_t *src, uint8_t *dst, int w, int h, int rad)
 {
@@ -68,7 +89,8 @@ static void emit_glow(prim_rect_t region, int16_t blur_radius,
                       prim_color_t color, uint8_t intensity_pct)
 {
     int w = region.w, h = region.h;
-    if (w <= 0 || h <= 0 || w > PRIM_GLOW_MAX_W || h > PRIM_GLOW_MAX_H) return;
+    if (w <= 0 || h <= 0) return;
+    if (w > PRIM_GLOW_MAX_W || h > PRIM_GLOW_MAX_H) { g_prim_glow_skipped++; return; }
     if (blur_radius < 1) blur_radius = 1;
 
     box_blur_h(g_mask_a, g_mask_b, w, h, blur_radius);
@@ -93,7 +115,8 @@ void prim_glow_rect(prim_rect_t rect, int16_t blur_radius, prim_color_t color,
                           (int16_t)(rect.w + 2 * blur_radius),
                           (int16_t)(rect.h + 2 * blur_radius)};
     int w = region.w, h = region.h;
-    if (w <= 0 || h <= 0 || w > PRIM_GLOW_MAX_W || h > PRIM_GLOW_MAX_H) return;
+    if (w <= 0 || h <= 0) return;
+    if (w > PRIM_GLOW_MAX_W || h > PRIM_GLOW_MAX_H) { g_prim_glow_skipped++; return; }
 
     for (int i = 0; i < w * h; i++) g_mask_a[i] = 0;
     for (int16_t y = 0; y < rect.h; y++) {
@@ -116,7 +139,8 @@ void prim_glow_line(prim_point_t from, prim_point_t to, int16_t blur_radius,
     prim_rect_t region = {minx, miny, (int16_t)(maxx - minx + 1),
                           (int16_t)(maxy - miny + 1)};
     int w = region.w, h = region.h;
-    if (w <= 0 || h <= 0 || w > PRIM_GLOW_MAX_W || h > PRIM_GLOW_MAX_H) return;
+    if (w <= 0 || h <= 0) return;
+    if (w > PRIM_GLOW_MAX_W || h > PRIM_GLOW_MAX_H) { g_prim_glow_skipped++; return; }
 
     for (int i = 0; i < w * h; i++) g_mask_a[i] = 0;
     /* Rasterize the line into the mask (simple DDA, 1px). */

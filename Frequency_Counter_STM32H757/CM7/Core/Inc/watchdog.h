@@ -22,4 +22,19 @@ void watchdog_kick_fpga(void);
 /** defaultTask ~100 Hz: obnovi IWDG jen kdyz oba tasky zily. Jinak necha vyprsit. */
 void watchdog_supervise(void);
 
+/* ── Dosazeny stav IWDG (audit F-0104) ──────────────────────────────────────
+ * ⚠️ Cte se z REGISTRU po propagaci `PVU`/`RVU`, ne ze zamyslenych konstant.
+ * Kdyz se propagace nepovede, zustanou reset defaulty (`PR = 0`, `RLR = 0xFFF`)
+ * a watchdog hlida ~0,5 s misto 4 s — tise. Proto to `status` vypisuje. */
+unsigned int watchdog_timeout_ms(void);   /* odvozeny timeout z PR/RLR a LSI 32 kHz */
+unsigned int watchdog_cfg_pr(void);
+unsigned int watchdog_cfg_rlr(void);
+int          watchdog_cfg_ok(void);       /* 1 = PR i RLR sedi na zamyslene hodnoty */
+
+/** Kolikrat uz byl detekovan stall, ktery se ale ZOTAVIL (nezpusobil reset).
+ *  Bez tohoto pocitadla je takovy stav uplne neviditelny — zaznam v BKP se
+ *  pri zotaveni zneplatni, aby se nepripsal pristimu, nesouvisejicimu resetu
+ *  (audit F-0105). */
+unsigned int watchdog_stall_recovered(void);
+
 #endif /* WATCHDOG_H */

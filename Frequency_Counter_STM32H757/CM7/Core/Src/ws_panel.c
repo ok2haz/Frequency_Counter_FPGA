@@ -8,18 +8,28 @@
 #include "ws_panel.h"
 #include <stdio.h>
 
-/* Helper: zapis bytu do registru ATTINY */
-static bool ws_write_reg(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t value)
+/* Jadro zapisu do registru ATTINY. `log` rozhoduje o hlasce pri chybe: bring-up
+ * (probe/power_on) ji chce, runtime settery (backlight/portc) v hlidanem UiTasku
+ * NE — jinak by chyba zapisu vyvolala printf, ktery ma na te ceste stall pod
+ * `vTaskSuspendAll` a odporuje slibu v jejich komentari (audit F-0114). */
+static bool ws_write_reg_ex(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t value,
+                            bool log)
 {
     uint8_t buf[2] = { reg, value };
     HAL_StatusTypeDef st = HAL_I2C_Master_Transmit(hi2c, WS_PANEL_I2C_ADDR,
                                                    buf, 2, 100);
     if (st != HAL_OK) {
-        printf("ws_panel: write reg 0x%02X = 0x%02X FAILED (%d)\n",
-               reg, value, st);
+        if (log) printf("ws_panel: write reg 0x%02X = 0x%02X FAILED (%d)\n",
+                        reg, value, st);
         return false;
     }
     return true;
+}
+
+/* Helper pro bring-up: zapis s hlaskou pri chybe. */
+static bool ws_write_reg(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t value)
+{
+    return ws_write_reg_ex(hi2c, reg, value, true);
 }
 
 /* Helper: cteni jednoho bytu z registru ATTINY */
@@ -95,16 +105,18 @@ bool ws_panel_power_on(I2C_HandleTypeDef *hi2c)
 }
 
 /* Zapis PORTC za behu — pouziva ho recovery touche (viz freertos_task_ui.c).
- * Bez printf ze stejneho duvodu jako u backlightu: vola to hlidany UiTask. */
+ * `log = false`: vola to hlidany UiTask, takze zadny printf — chyba jde jen
+ * navratovou hodnotou (audit F-0114). */
 bool ws_panel_set_portc(I2C_HandleTypeDef *hi2c, uint8_t value)
 {
-    return ws_write_reg(hi2c, WS_REG_PORTC, value);
+    return ws_write_reg_ex(hi2c, WS_REG_PORTC, value, false);
 }
 
 bool ws_panel_set_backlight(I2C_HandleTypeDef *hi2c, uint8_t brightness)
 {
     /* REG_PWM = primy jas 0-255, BEZ inverze. Vola UiTask pri kazde zmene jasu
-     * (jas +/-, auto-dim) -> ZADNY printf zde (byl by noise z hlidaneho UiTasku;
+     * (jas +/-, auto-dim) -> `log = false`: ZADNY printf zde (byl by noise
+     * z hlidaneho UiTasku, navic pod `vTaskSuspendAll` stall na USART cheste;
      * chyba zapisu se projevi navratovou hodnotou). */
-    return ws_write_reg(hi2c, WS_REG_PWM, brightness);
+    return ws_write_reg_ex(hi2c, WS_REG_PWM, brightness, false);
 }

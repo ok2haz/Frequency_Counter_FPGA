@@ -1,0 +1,5 @@
+[2026-10-17 15:02:32] PREFLIGHT: uptime 938 s, IPC 26, smycka LOCK (zamceno 1, 692 s)
+[2026-10-17 15:02:32] POZOR: LOCK jen 692 s; pro zakladni mereni pockej aspon 1 h od zamceni (OCXO + smycka se usta)
+[2026-10-17 15:02:32] HRADLO: nastaveno 0.25000 s, posledni namerene 250000000 ns
+[2026-10-17 15:02:32] POZOR: uptime pod 30 min
+[2026-10-17 15:02:32] START: docs\audit\data\2026-10-17_90min.csv, perioda 0.1 s, max 90 min

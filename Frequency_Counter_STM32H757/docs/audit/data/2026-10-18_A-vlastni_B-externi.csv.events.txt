@@ -1,0 +1,27 @@
+=== errlog PRED ZACATKEM (total 5051) ===
+14:28:46  up 449  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:27:59  up 402  k=11  brana  brana 0,1s -> 0,1s
+14:21:18  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:21:17  up 0  k=1  power-  duvod=power-, bring-up krok 0
+14:20:30  up 1048  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:03:01  up 0  k=1  power-  duvod=power-, bring-up krok 0
+14:02:52  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:02:52  up 0  k=2  240000  HardFault 240000
+14:02:52  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+13:46:19  up 6721  k=11  kanal  kanal B -> A
+13:44:55  up 6637  k=11  kanal  kanal A -> B
+13:32:58  up 5921  k=13  tdc  rezerva TDC retezu A=16T OK, B=16T OK, za koncem 0 ppm
+
+=== errlog PO KONCI (total 5051, pred: 5051) ===
+14:28:46  up 449  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:27:59  up 402  k=11  brana  brana 0,1s -> 0,1s
+14:21:18  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:21:17  up 0  k=1  power-  duvod=power-, bring-up krok 0
+14:20:30  up 1048  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:03:01  up 0  k=1  power-  duvod=power-, bring-up krok 0
+14:02:52  up 0  k=6  signal  ztrata signalu, CRC chyb celkem=0
+14:02:52  up 0  k=2  240000  HardFault 240000
+14:02:52  up 0  k=1  SW res  duvod=SW res, bring-up krok 0
+13:46:19  up 6721  k=11  kanal  kanal B -> A
+13:44:55  up 6637  k=11  kanal  kanal A -> B
+13:32:58  up 5921  k=13  tdc  rezerva TDC retezu A=16T OK, B=16T OK, za koncem 0 ppm

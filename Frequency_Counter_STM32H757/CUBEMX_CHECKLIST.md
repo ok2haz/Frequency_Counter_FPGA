@@ -20,6 +20,18 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - I2C4 clock: **D3PCLK1** (PCLK4 = 120 MHz)
 - USART1 clock: **D2PCLK2** (PCLK2 = 120 MHz)
 - I-Cache **ON**, D-Cache **ON**
+- 🔴🔴 **PO REGENERACI ZKONTROLUJ, ŽE CM4 NEVOLÁ `PeriphCommonClock_Config()`** (audit F-0005,
+  2026-09-09). CubeMX tu funkci generuje **do obou** `main.c` a volání do `main()` vkládá hned
+  za `SystemClock_Config()`. Na CM7 to tak být má; **na CM4 to být nesmí** — `HAL_RCCEx_PeriphCLKConfig`
+  před přeprogramováním PLL vypíná (`__HAL_RCC_PLL2_DISABLE` / `PLL3_DISABLE`), takže by CM4
+  za běhu odstavil hodiny SDRAM (FMC z PLL2R) a LTDC (PLL3R) pod rukama CM7. Projev by vypadal
+  jako „SDRAM čte samé nuly“ / rozpad obrazu, a hledalo by se to v kreslicím kódu.
+  Dnes je funkce v `CM4/Core/Src/main.c` definovaná, ale **nevolaná** — a tak to má zůstat.
+  **Hlídá to `scripts/build.sh` sám** (`check_cm4_clock_owner`): po buildu ověří přes
+  `arm-none-eabi-nm`, že symbol `PeriphCommonClock_Config` **není v obrazu CM4** — dokud
+  ho nikdo nevolá, linker ho zahodí. Při nálezu build **selže** (exit 1). Doplňkově
+  `scripts/check_lessons.sh` (grep zdrojáku) nebo ručně
+  `grep -nE 'PeriphCommonClock_Config *\( *\) *;' CM4/Core/Src/main.c` → musí být prázdné.
 
 ## DSI Host  ⚠️
 - Number of lanes: **1**
@@ -49,12 +61,14 @@ Po případné regeneraci OVĚŘ tyto hodnoty v `MX_DSIHOST_DSI_Init`:
 - Piny: MOSI=**PB15**, SCK=**PI1**, MISO=**PI2**
 
 ## I2C4 (panel ATTINY 0x45, TMP117 0x48, FT5x06 0x38)
-- Speed: **100 kHz** (Timing 0x70303AEE) — funkční. 400 kHz jen přes CubeMX FM + ověřit scope!
+- Speed: Timing **0x70303AEE** — funkční, **NEPŘEPOČÍTÁVAT**. ⚠️ Skutečná rychlost je **~50 kHz**,
+  ne 100 kHz, jak tu stálo do 2026-09-09 (kernel `D3PCLK1` = 120 MHz; přepočet v CLAUDE.md, audit F-0004).
+  400 kHz jen přes CubeMX FM + ověřit scope!
 - 7-bit; piny SCL=**PH11**, SDA=**PH12**
 - **NEPOVOLOVAT I2C4 NVIC interrupt v IOC.** Dotek (FT5x06) i senzory se čtou **pollingem** pod `i2c4MutexHandle`. (Pozn.: dřívější IT infrastruktura pro touch byla odstraněna — IOC nech bez I2C4 NVIC, jinak vznikne mrtvý/duplicitní handler.)
 
 ## I2C1 (FPGA deska: TMP117 0x49/0x4A, ADS1115 0x48, Si5356 0x70) — MIMO IOC
-- **NENÍ v IOC.** `MX_I2C1_Init` je self-contained v `i2c.c` USER CODE 1 (GPIO+clock+timing tam), voláno z `main.c` USER CODE 2. Timing **0x70303AEE** (~100 kHz), piny SCL=**PB8**, SDA=**PB9** (AF4).
+- **NENÍ v IOC.** `MX_I2C1_Init` je self-contained v `i2c.c` USER CODE 1 (GPIO+clock+timing tam), voláno z `main.c` USER CODE 2. Timing **0x70303AEE** (**~50 kHz**, kernel `D2PCLK1` = 120 MHz), piny SCL=**PB8**, SDA=**PB9** (AF4).
 - ⚠️ **Rezervuj PB8/PB9 v IOC** (jako GPIO, Locked), ať je CubeMX nepřiřadí jinam při regeneraci → jinak tichý pin-konflikt. Mutex `i2c1MutexHandle`.
 
 ## USART1 (UART pro GPS; printf-konzole je na USB CDC, viz níže)
@@ -236,6 +250,148 @@ neplatné datum. V USER CODE bloku je proto implementace čtoucí **`g_rtc_text_
 defaultTasku (viz `CLAUDE.md` „RTC / Vlákno"). Proto se čte hotový řetězec, jako to dělá UI.
 - [ ] Když měníš v CubeMX konfiguraci SDMMC1, **srovnej hodnoty i v `sd_probe()`** (zrcadlí `Init` strukturu).
 
+## Encoder (TIM1 encoder mode PA8/PA9 + tlačítko PC13) — ✅ V IOC (stav 2026-09-19)
+
+🔴 **Tenhle nadpis do 2026-09-19 tvrdil „NENÍ V IOC" a byla to nepravda** (audit F-0122).
+`.ioc` má `TIM1.EncoderMode`, `TIM1.IC1Filter`, `TIM1.IC2Filter`, `PA8.Signal=S_TIM1_CH1`,
+`PA9.Signal=S_TIM1_CH2` i `PC13.Signal=GPIO_Input` (s `Locked=true`), `TIM1` je
+v `CortexM7.IPs` a `main()` volá `MX_TIM1_Init()`. Zároveň `encoder.c` timer přepisoval
+syrovými zápisy do registrů, takže **konfigurace z `.ioc` nikdy nenabyla účinku** — dvě
+pravdy o jedné periferii. (Existuje i commit `2f5c3db`, který `.ioc` hodnoty „opravoval"
+v domnění, že na nich záleží. Nezáleželo.)
+
+**Dnešní dělba vlastnictví:**
+
+| co | vlastník | kde se to mění |
+|---|---|---|
+| parametry TIM1 (encoder mód, `ICxF`, PSC, ARR) | **`.ioc` → `MX_TIM1_Init()`** | v CubeMX |
+| start čítače (`CEN`) | `encoder_init()` → `HAL_TIM_Encoder_Start` | `encoder.c` |
+| konfigurace PA8/PA9/PC13 **pod `gpio_cfg_lock()`** | `encoder_init()` | `encoder.c` |
+
+⚠️ **Filtr `ICxF = 15` (max) v `.ioc` nech být** — mechanický encoder bez něj počítá
+zákmity. Teď se hodnota z `.ioc` opravdu uplatní, takže její změna má důsledek.
+
+⚠️ **PA8/PA9 se konfigurují DVAKRÁT a je to záměr.** Generovaný
+`HAL_TIM_Encoder_MspInit()` je nastaví stejně, ale **bez `gpio_cfg_lock()`**, a `GPIOA`
+sdílí CM4 (ETH: PA1 REF_CLK, PA2 MDIO, PA7 CRS_DV). `HAL_GPIO_Init` dělá neatomický
+read-modify-write nad `MODER`/`AFR`, takže ztracený zápis tiše vrátí cizí pin — třída
+vady, která shodila displej (PG8) i síť (PG11). Opakované nastavení v `encoder_init()`
+je tedy jediná verze chráněná proti tomu závodu. **Nemazat jako duplikaci.**
+
+### ✅ Co říká SCHÉMA (`STM32H747BIT/CPU.kicad_sch`, list 2/7 „CPU")
+
+| signál ve schématu | pin MCU | poznámka |
+|---|---|---|
+| `ENCODER_CH1` | **PA8** (146) | → TIM1_CH1 |
+| `ENCODER_CH2` | **PA9** (147) | → TIM1_CH2 |
+| `ENCODER_CH3` | **PC13** | tlačítko |
+| konektor | **J2 „Encoder"**, `Conn_02x03` (2×3) | + 2× GND + Vcc |
+| napájení konektoru | **`JP1 „Volt_Set"`** = **+5 V / +3V3**, `C3 100n` | solder jumper |
+
+🔴 **OPRAVA dřívějšího tvrzení (2026-09-01):** dřív tu stálo, že hrozí konflikt
+**PA9 = `USB_OTG_FS_VBUS`**. **To je NEPRAVDA** a bylo to vyvrácené už v
+`ENCODER_J7_NAVRH.md` §1. USB je na téhle desce vyvedené **jen jako `PA11 = USB_OTG_FS_D-`
+a `PA12 = USB_OTG_FS_D+`; VBUS sense se nepoužívá.** PA9 je pro enkodér volný.
+
+Co z důvodů zbývá (a proč to do `.ioc` přesto patří):
+- `.ioc` je v tomhle projektu **evidence obsazení pinů**. Tři signály, které na desce
+  fyzicky existují a firmware je používá, v ní nejsou — v pinout view vypadají volně.
+- **PC13 opravdu sdílí funkci s `RTC_TAMP1` / `RTC_TS` / `WKUP`** a RTC je zapnuté;
+  zapnutí tamperu by pin sebralo. (Tenhle bod platí, na rozdíl od toho o PA9.)
+- **PA8 = `RCC_MCO1`** — kdyby se zapnul výstup hodin, totéž.
+
+### 🔴 HW nález ze schématu: NEJSOU tam externí pull-upy ani RC filtr
+Na listu 2/7 jsou u J2 jen `JP1 Volt_Set` a `C3 100n` (blokování napájení).
+**Žádný pull-up, žádný RC filtr na CH1/CH2/CH3.** Tím se uzavírá otevřený bod
+`ENCODER_J7_NAVRH.md` §1 („ověřit, jestli jsou A/B hardwarově odrušené") — **nejsou**.
+Důsledky:
+- **Interní pull-upy (~40 kΩ) v `encoder_init()` jsou JEDINÉ**, které tam jsou.
+  Nastavit je v `.ioc` je proto povinné, ne kosmetické.
+- **Není žádný HW debounce.** Nese to kvadraturní dekódování (zákmit na A při
+  stabilním B dá +1/−1 s nulovým součtem) + akumulátor zbytku `s_rem` v `encoder_poll`.
+  Filtr `IC1F=IC2F=15` při f_DTS = 240 MHz potlačí jen glitche < ~1,07 µs, tedy EMI,
+  **ne** zákmit kontaktu (0,1–5 ms). To je v pořádku, ale ať se to nepřehlédne.
+- ⚠️ **`JP1 Volt_Set` umí +5 V.** Holý mechanický enkodér (společný vývod na GND) Vcc
+  vůbec nepotřebuje — interní pull-up definuje úroveň 3,3 V. **Modul s vlastními
+  pull-upy nebo aktivním výstupem ale MUSÍ mít JP1 na +3V3**, jinak žene na PA8/PA9/PC13
+  5 V. U PC13 (backup doména) to ověř v datasheetu dřív, než jumper zavřeš na 5 V.
+
+⚠️ **Totéž platí pro `PB8`/`PB9` (I2C1) a `PH9` (beeper)** — ty jsou mimo `.ioc` **záměrně**
+(zlaté pravidlo „NEPOVOLOVAT v IOC: I2C1, TIM7"). Ale pozor na rozdíl: ten záměr se týká
+**generovaného init kódu**, ne **rezervace pinu**. To jsou dvě různé věci a CubeMX umí
+druhé bez prvního (pin jako `GPIO_Input` + label).
+
+### Postup (Cortex-M7 kontext!)
+1. **Timers → TIM1 → Combined Channels = `Encoder Mode`.** Přiřadit **Cortex-M7**
+   (dual-core; jinak spadne pod CM4). Tím se PA8 stane `TIM1_CH1` a PA9 `TIM1_CH2`.
+2. **TIM1 → Parameter Settings** — musí odpovídat `encoder.c`:
+   - Prescaler `0`, Counter Mode `Up`, Counter Period `65535`,
+     Internal Clock Division `No Division` (CKD=00), auto-reload preload `Disable`
+   - Encoder Mode **`TI1 and TI2`** (= SMS=011, obě hrany obou kanálů)
+   - Input Filter **IC1 = IC2 = `15`**, Polarity `Rising`, Prescaler `Div1`, mapping `Direct`
+3. **GPIO tab → PA8, PA9:** `GPIO Pull-up/Pull-down` = **`Pull-up`** (CubeMX dává default
+   „No pull-up and no pull-down"! Encoder spíná na zem, bez pull-upu nebude počítat),
+   Maximum output speed `Low`, User Label `ENC_A` / `ENC_B`.
+4. **PC13 → `GPIO_Input`**, GPIO tab: Pull-up, User Label `ENC_BTN`.
+5. **NVIC: všechny TIM1 vektory nechat VYPNUTÉ** (BRK/UP/TRG_COM/CC). Encoder se
+   **pollује** z UiTasku, přerušení nepotřebuje a zapnuté by jen braly čas.
+6. Volitelně zamknout piny (`Locked=true`, jako má `PA10`), ať je nejde omylem přetáhnout.
+
+### Po „Generate Code"
+- 🔴 **Vzniknou NOVÉ SOUBORY `CM7/Core/Src/tim.c` + `Inc/tim.h`** (dnes v projektu nejsou).
+  Tím padá do platnosti hlavní past tohohle projektu:
+  **`Close Project → Open Project` → ověřit → teprve pak Clean → Build.**
+  Clean před Close/Open je aktivně škodlivý (viz sekce „PO REGENERACI S NOVÝMI SOUBORY").
+- Ověř, že se model načetl: `grep -c tim.c CM7/Release/Core/Src/subdir.mk` musí být > 0
+  a `find CM7/Release -name subdir.mk | wc -l` se nesmí zmenšit.
+- `git diff H757_LED.ioc` bude **vypadat větší, než změna je** — CubeMX přečísluje
+  `Mcu.IPn` a `Mcu.PinN`. To je normální, ne poškození.
+
+### 🔴 `encoder_init()` v `encoder.c` ZŮSTÁVÁ — nemazat
+- `MX_TIM1_Init()` z CubeMX volá `HAL_TIM_Encoder_Init()`, ale **NEvolá
+  `HAL_TIM_Encoder_Start()`** ani nenastaví `CEN`. Bez `encoder_init()` by čítač stál.
+- `encoder_init()` běží z UiTasku, tedy **po** `MX_TIM1_Init()`. Od opravy F-0122 už
+  parametry timeru **nepřepisuje** — jen ho nastartuje a nastaví piny pod zámkem.
+- 🔴 **Ověřuje si, že generovaný init vůbec proběhl** (`htim1.Instance != TIM1` →
+  `return`, tedy encoder se nezapne). Je to vzor **L-0009**: kdyby regen vyhodil TIM1
+  z `.ioc`, nestartoval by se nenakonfigurovaný timer, ale nic — a UART `enc` by
+  neukázal žádný krok, což je detekovatelné.
+- ⚠️ Dřív tu stálo, že `.ioc` je „REZERVACE PINU a dokumentace, ne inicializace".
+  **Od 2026-09-19 to neplatí** — `.ioc` je inicializace a jediný vlastník parametrů.
+
+### Ověření po flashi (bez sondy)
+- UART **`enc`** → otočit o jednu západku: musí vypsat `kroku=1`. Když ne, je
+  `ENC_COUNTS_PER_DETENT` vedle — přepíná se za běhu `enc div 1|2|4` (STATUS #95).
+- Stisk musí dát `short_press`, dlouhý `long_press`.
+
+## 🔴 PŘI PŘÍŠTÍ REGENERACI DOPLNIT: timeout na `VOSRDY` (F-0003)
+
+`SystemClock_Config()` obsahuje **nekonečné** čekání bez úniku:
+
+```c
+while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}    /* main.c, za VOLTAGESCALING_CONFIG */
+```
+
+Když regulátor připravenost nikdy neohlásí (typicky závada napájení), přístroj se
+zastaví **natrvalo**: černý displej, žádný výstup, žádné blikání — a `watchdog_init()`
+se volá až mnohem později, takže ani reset. Z pohledu uživatele „deska je mrtvá".
+
+🔴 **Je to generovaný kód BEZ `USER CODE` bloku**, proto se to neopravilo hned (regen
+by úpravu smazal). Precedens pro ruční úpravu generovaného souboru v projektu existuje
+(`gpio.c` PB12 default High, `fmc.c` potvrzení PG8) — **tohle je to místo, kde se
+provede**, protože při regeneraci se ten kód beztak přepisuje a kontroluje.
+
+Připravená podoba (rozhodnuto 2026-09-20):
+- ohraničit **POČÍTADLEM**, ne `HAL_GetTick()` — timebase je v tom místě ještě na HSI
+  a vzápětí se mění, takže čas tu není spolehlivý;
+- při vypršení ohlásit `bootled_fail_n()`, tedy **jediný výstup, který v té fázi
+  funguje** (LED_1 + pípání na PH9, oboje přes DWT, bez přerušení);
+- ⚠️ mez **nesmí** být tak krátká, aby propadla dřív, než regulátor stihne ustálit —
+  proto počítadlo s velkou rezervou, ne těsný odhad.
+
+⚠️ Po doplnění to zapsat do `docs/audit/2026-09-09_hodiny-pwr.md` u **F-0003** a sem
+poznamenat, že je hotovo.
+
 ## 🔴 PO REGENERACI S NOVÝMI SOUBORY: Close Project → Open Project (F5 NESTAČÍ!)
 Když CubeMX přidá **nové zdrojové soubory** (nová periferie, middleware), zapíše je do `.project`
 jako `<link>` entry. Eclipse ale `.project` parsuje **jen při otevření projektu** — z něj staví
@@ -319,6 +475,11 @@ Debug+Release, oba nástroje assembler+compiler) — jinak to při příštím b
 - [x] Oprava: `CM7/Core/Inc` přidáno do `CM4/.cproject` (4× — Debug/Release × assembler/compiler),
       `Core/Src/subdir.mk` + `makefile` + `objects.list` dorovnány ručně pro okamžitou funkčnost.
 - [x] Po Close/Open (2026-08-23) `.cproject` změna vydržela a build z IDE proběhl čistě.
+- [x] ⚠️ **Ta `-I` cesta v `.cproject` sama o sobě NEBYLA regen-safe** — regenerace 2026-09-12
+      ji stejně smazala (viz oddíl „Co Generate Code SEBERE" níže). **2026-09-13 vyřešeno jinak:**
+      místo udržování `-I` v `.cproject` proti CubeMX se `#include "scpi.h"` v `main.c`/
+      `httpd_min.c`/`scpi_tcp.c`/`scpi.c`/`meas_math.c`/`ipc_scpi.c` přepsalo na relativní cestu
+      k fyzickému umístění headeru — ta se nestará, jestli `-I` v `.cproject` existuje.
 
 **✅ DOTAŽENO — druhé poučení, silnější než první:** i tak `.project` **chybělo úplně** — `scpi.c`/
 `meas_math.c`/`ipc_scpi.c` jsem napřed zapsal jen do ručního `Debug/SCPI/subdir.mk`, bez `<link>`
@@ -512,3 +673,84 @@ regenerací zkontroluj, že zůstaly nenastavené:
   přepíše na `GPIO_PULLUP`. Důvod je vážný: bez kabelu RX plave → falešné start bity → bouře
   USART1 IRQ (prio 5 = `configMAX_SYSCALL`) → ISR preemptuje tasky → *„program nenaběhne"*.
   **Po regeneraci ověř, že ten USER CODE blok pořád je** — ne že něco chybí v `.ioc`.
+
+---
+
+## 🔴 Co `Generate Code` SEBERE (ověřeno měřením 2026-09-12)
+
+Tenhle seznam nevznikl úvahou, ale tím, že regenerace 2026-09-12 **opravdu smazala
+pět věcí naráz** a firmware přestal jít slinkovat. Pravidlo za tím je jediné:
+**co leží mimo `USER CODE BEGIN/END`, to regen přepíše.** Komentáře nechrání nic.
+
+### Po každé regeneraci zkontroluj (30 sekund)
+
+```bash
+git diff --stat                       # co se vůbec hnulo
+grep -c "^__attribute__((naked))" CM4/Core/Src/stm32h7xx_it.c   # MUSÍ být 1 (viz níže)
+#   ⚠️ prostý `grep -c naked` dá 4 — počítá i komentáře. Ověřeno pozitivní
+#   kontrolou: kopie souboru bez toho řádku dá 0, ostrý soubor 1.
+grep RPIPE CM7/Core/Src/fmc.c         # MUSÍ být FMC_SDRAM_RPIPE_DELAY_1
+./scripts/build.sh Release BOTH       # 0 varování, 0 chyb (check_regen() hlida naked + CM7/.cproject)
+```
+
+### ⚠️ `CM7/.cproject`: `app`/`libui/include`/`libprim/include`/`libprim/src` (hlídané, NE odstraněné)
+
+Na rozdíl od `CM4/.cproject`/`CM7/Core/Inc` (viz L-0042) se tahle `-I` závislost
+**neodstraňovala** — `libui/src` a `libprim/src` uvnitř sebe includují **úhlově**
+(`#include <ui/button.h>`, `#include <prim/fb.h>`, 73 souborů/169 řádků — záměrný
+vzor „knihovna se includuje jako externí"), a úhlový include nemá fallback na
+„zkus nejdřív složku including souboru" jako uvozovkový. Přepsat 169 míst by
+bořilo architekturu za problém, který se od jednorázového incidentu 2026-08-29
+(mezera v Release configu, ne opakované mazání regenem) neopakoval. `check_regen()`
+proto tyhle 4 cesty jen **hlídá** — když zmizí, hlásí PŘED buildem, ne až jako
+záhadný `fatal error: ui/button.h: No such file`. Detaily → `docs/LESSONS.md` L-0044.
+
+### Co se 2026-09-12 ztratilo a proč
+
+| soubor | co zmizelo | stav dnes |
+|---|---|---|
+| `CM4/.cproject` | dvě include cesty `../../CM7/Core/Inc` | ✅ **VYŘEŠENO 2026-09-13 — ODSTRANĚNÍM ZÁVISLOSTI, ne opravou `.cproject`.** Regen tu cestu maže dál (nezměnitelné, je to XML mimo USER CODE), ale od 2026-09-13 na ní nic nezávisí: `scpi.h`/`meas_math.h`/`ipc_shared.h`/`version.h`/`meas_present.h` se v `scpi.c`/`meas_math.c`/`ipc_scpi.c`/`main.c`/`httpd_min.c`/`scpi_tcp.c` includují **relativní cestou k fyzickému umístění souboru** (`#include "../Inc/scpi.h"` v CM7/Core/Src, `#include "../../../CM7/Core/Inc/scpi.h"` v CM4 souborech) — stejný vzor, jaký `ipc_cm4.h` používal pro `ipc_shared.h` už dřív. GCC quote-include hledá nejdřív ve složce souboru se `#include` (podle jeho skutečné cesty, ne podle `-I` ani CWD), takže cesta platí bez ohledu na to, jestli `-I../../CM7/Core/Inc` v `.cproject` existuje. **Ověřeno kompilátorem se zámerně vyříznutou `-I` cestou** (přímo v `CM4/Release/*/subdir.mk`, tedy přesně artefaktu, který regen přepisuje) — plný `./scripts/build.sh Release CM4` proběhl 0 varování a dal bajt-přesně stejný `.elf` jako s tou cestou. `check_regen()` proto tuhle položku už nehlídá — nemá co hlásit. |
+| `CM7/Core/Src/fmc.c` | `fmc_sdram_init_sequence()` + `g_fmc_init_fail/runs` | ✅ přesunuto do `USER CODE 0` (+ `extern SDRAM_HandleTypeDef hsdram1;`) |
+| `CM7/Core/Src/usart.c` | `#include "errlog.h"` | ✅ přesunuto do `USER CODE 0` |
+| `CM4/.../stm32h7xx_it.c` | include `ipc_shared.h`, `cm4_fault_note()`, `cm4_fault_capture()` | ✅ přesunuto do `USER CODE Includes` / `USER CODE 0` |
+| `CM4/.../stm32h7xx_it.c` | volání `cm4_fault_note(3u/4u/5u/6u)` v handlerech | ✅ přesunuta **dovnitř** `USER CODE BEGIN <IRQ> 0` |
+| `CM4/.../stm32h7xx_it.c` | `__attribute__((naked)) HardFault_Handler` + asm trampolína | ✅ **VYŘEŠENO TRVALE 2026-09-13** — viz níže; první pokus (jen `.ioc` flag) nestačil, druhý (flag + `USER CODE`) ověřen reálným regenem |
+
+### ✅ `naked` handler regen-safe JDE — potřebuje DVĚ pojistky najednou (ne jednu)
+
+Tvrzení „regen-safe BÝT NEMŮŽE" (drželo se tu do 2026-09-13) bylo **vyvrácené vlastním
+CM7 vzorem** — jeho `naked HardFault_Handler` přežil minimálně tři regeny (2026-08-16,
+2026-08-29, 2026-09-01, 2026-09-12). Rozdíl proti CM4 nebyl v `naked`, ale v TOM, KDE ten
+kód leží. Postup, ověřený na CM4 2026-09-13 reálným "Generate Code" v IDE (`docs/LESSONS.md`
+L-0043):
+
+1. **`.ioc`**: u `HardFault_IRQn` odškrtnout **"Generate IRQ handler"** (v NVIC panelu,
+   záložka **"Code generation"**; ukládá se jako 6. pole `NVIC<n>.HardFault_IRQn=…`).
+   ⚠️ **Samo o sobě NESTAČÍ** — jen řekne CubeMX "nepiš přes tohle svůj stub", ale
+   regen dál skenuje soubor a svůj DŘÍVĚJŠÍ generovaný blok (podle doxygen komentáře
+   `@brief This function handles Hard fault interrupt.` + jména funkce) **aktivně
+   odstraní**, když ho přestane potřebovat. Přesně to se stalo 2026-09-13 při prvním
+   pokusu — flag byl vypnutý a CubeMX HardFault_Handler přesto smazal celý.
+2. **Tělo funkce do `USER CODE BEGIN 1` / `END 1`** (soubor-scope blok v `stm32h7xx_it.c`,
+   NE per-IRQ `USER CODE BEGIN HardFault_IRQn 0/1` — ten CubeMX bez zapnutého generování
+   handleru vůbec nevytváří). Do USER CODE regen nikdy nesahá, bez ohledu na obsah.
+3. **Prototyp do `USER CODE BEGIN EFP` / `END EFP`** v `stm32h7xx_it.h` — regen zahodí
+   i tohle (bez zapnutého generování handleru netuší, že prototyp má zůstat), takže by
+   bez ruční obnovy hlásil `-Wmissing-prototypes`.
+
+⚠️ **`naked` sám o sobě zůstává nezbytný** (sedí na hlavičce, kterou by normální regen
+přepsal) — ale díky bodu 2 se hlavička už s regenem nikdy nesetká, protože regen do
+`USER CODE` bloku nevidí a nezasahuje.
+
+### Hodnoty, které MUSÍ být v `.ioc` (ne jen v generovaném řádku)
+
+Poučení z `FMC.ReadPipeDelay1`: hodnota žila jen v `fmc.c` (commit `48b9420` neměnil
+`.ioc`), takže ji první regenerace přepsala na `_DELAY_0` — a to je přesně stav před
+opravou #237 (3 338 207 chybných bitů, problikávání, černý displej po power-cyklu).
+**Když měníš generovaný řádek, zkontroluj, že odpovídající klíč je v `.ioc`.**
+Ověřeno 2026-09-12, že v `.ioc` **jsou**: `I2C4.Timing=0x70303AEE`, `QUADSPI.FlashSize=25`,
+`SDMMC1.HardwareFlowControl=ENABLE`, `SDMMC1.ClockDiv=1`, 4-bit přes `PC10/PC11.Mode`,
+`ADC3.ClockPrescalerADC3=DIV8`, `RCC.HSE_VALUE=25000000`, `DSIHOST.Mode=DSI_VID_MODE_BURST`,
+`PB12.PinState=GPIO_PIN_SET`, `FMC.ReadPipeDelay1=FMC_SDRAM_RPIPE_DELAY_1`.
+⚠️ `DSI ColorCoding` v `.ioc` **není** (odvozuje se nejspíš z `LTDC.PixelFormat_L0=RGB565`);
+po regeneraci ověř, že `dsihost.c` má pořád `DSI_RGB565`.
