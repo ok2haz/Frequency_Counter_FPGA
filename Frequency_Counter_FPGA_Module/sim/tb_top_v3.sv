@@ -44,10 +44,15 @@
 `ifndef TB_NFR
 `define TB_NFR 14
 `endif
+// #369 krok 1d (2026-11-17): posun startu clk100 [ps]; nabezna clk100 je (TB_PH_PS + TB_THALF_PS) mod 10 ns po nabezne clk10
+// (hodiny koherentni jako na desce bez APP_OSC). Vychozi 2300 = dosavadni stav testu (7,3 ns); sweep `sim/sweep_phase_v3.py`.
+`ifndef TB_PH_PS
+`define TB_PH_PS 2300
+`endif
 module tb_top_v3;
     reg clk10 = 0, clk100 = 0;
     always #50000 clk10 = ~clk10;
-    initial begin #2300; forever #(`TB_THALF_PS) clk100 = ~clk100; end
+    initial begin #(`TB_PH_PS); forever #(`TB_THALF_PS) clk100 = ~clk100; end
     real FA, FB, HA, HB, PA, PB, WA;
     reg ch_a = 0, ch_b = 0, pps = 0;
     initial begin

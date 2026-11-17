@@ -1964,3 +1964,21 @@ nejistoty HOLD).
   zamerne nezahrnuje (`meas_present.h:197`) -> teplotni clen az s tempco z #311. Kod beze zmeny.
 - Vedlejsi: `status` `DAC OCXO: readback 24963` celou noc (hodnota z obnovy po startu) pri kodu serva 24964 -> 24970,
   `readback nesedi 0` -> potvrzuje STATUS #388.
+
+### 2026-11-17 09:15 -> 09:35 — jednorazove deje na desce: `fpga pw cal`, sirka pulzu, interval A->B (STM v0.45.21, FPGA flash 0x050A appOscS6)
+
+Cteno pres UART (`fpga pw cal|on|off`, `fpga ab on`, `gen`, `fpga v3`), smycka GPSDO v LOCK, nic se nezapisovalo do desky mimo parovani FPGA
+(SET_CONFIG 0x09). A = externi GPSDO 10 MHz (predelicka 1/1), B = generator Si5356 CLK4 150 MHz (predelicka 1/16, ochrana proti presluchu P 16).
+
+- **Kalibrace zpozdeni B-A (`fpga pw cal`, B = pin A):** 531 vzorku, **-1,033 ns**, sigma 96,2 ps (min -1,301 ns, max -0,834 ns); po opakovani
+  450 vzorku **-0,947 ns**, sigma 43,3 ps (min -1,066, max -0,823). Nastroj funguje; nesmyslna cisla z t392 dala jina sestaveni (APP_DIV / chOffS6).
+  Rozdil -1 ns = cesta A pres predelicku `pin_cnt3` proti B primo (`top_v3.v`), proto plati jen pro sirku pulzu (L-0295).
+- **Sirka pulzu A (`fpga pw on`):** 534 vzorku, stredni 39,067 ns (BEZ odecteneho zpozdeni; sirka nezname, pulz z GPSDO), sigma 342 ps. Podle faze startu
+  v periode taktu: promile 125 n 247 sigma 332 ps, ostatni faze n 26-84 sigma 120-146 ps; odchylka stredu podle faze az +546 / -396 ps
+  (chyba podle faze e(phi) pri koherentnim pulzu stalou fazi, viz #366 / #369).
+- **Interval A->B (`fpga ab on`, B 150 MHz / P 16): `zahozenych startu 531`**, zadny interval, 538 zaznamu A i B, mezery prijmu 0, intervalu zahozenych kvuli CS 0.
+  Pricina nalezena v `fpga_v3_ab_feed` (stop ze souhrnu B, L-0294), opraveno v v0.45.23 (host test).
+- **Stav FPGA (`fpga v3`):** ramcu 807 727, zaznamu 3 230 980, mezer 0, oken s vadnym segmentem A 2 665 / B 0, ochrana proti presluchu ZAP
+  (P 16 nastaveno A 0x, B 1x), "nemereny kanal VYPNUT (P 7, CAPS bit25 ne -> jen P 16)" -> ve flash chybi FW 0x050B.
+- **K otazce "ma smysl vypinat nemereny kanal?":** ano (z drivejsich mereni v SRAM, STATUS #382): t390 presluch z B (150 MHz / 16) ~260 ps rms na znackach A, B vypnut 123 ps;
+  t391 B 137 MHz: A P 1 175,2 ps, A P 16 122,6 ps, A VYP 105,6 / 111,3 ps. Vyzaduje FW 0x050B, ktery ve flash neni.

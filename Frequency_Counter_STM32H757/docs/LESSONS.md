@@ -6510,3 +6510,39 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   dvě různé chvíle.
 - **Detekce:** `dac` / `status` → `readback ... (pred N s)` pod 60 s, `kontrol za behu` roste 1×/min, `readback nesedi 0`.
 - **Stav:** ✅ v kódu, ⬜ neověřeno na HW
+
+### L-0294 — Stop intervalu A->B ze souhrnu kanálu B nesmí předpokládat, že T0 je první hrana pinu
+
+- **Datum:** 2026-11-17
+- **Oblast:** `fpga_v3_ab_feed` (`fpga_v3.c`), parovani A->B, predelicka kanalu, STATUS #369 / #389
+- **Symptom:** `fpga ab on` na desce (A 10 MHz z GPSDO, B 150 MHz generator, predelicka B 1/16): `zahozenych startu 531` z 531, zadny
+  interval. Hlavni obrazovka funkce INTERVAL A-B ukazovala "zadny par A->B".
+- **Priciny (dve, obe v souhrnu B, N >= 3):** (a) stop se bral jen kdyz start lezel do JEDNE periody za prvni casovanou hranou
+  (T0); dal za ni se start zahodil, i kdyz byl stop mezi hranami souhrnu spocitatelny; (b) s predelickou P je casovana jen KAZDA
+  P-ta hrana pinu, takze prvni hrana pinu po startu muze lezet az o P - 1 period PRED T0 -- kod pocital stop az na T0.
+- **Oprava:** `ab_burst` (v0.45.23, `4f8686d`): stop = prvni hrana pinu po startu, k = floor((start - T0) / perioda) + 1, omezeno na
+  1 - P <= k <= N - 1; ochrana GUARD jen na predchozi hranu pinu. Host test (interpolace, P 16 pred i za T0, za koncem souhrnu) +
+  10 mutaci v `mut_fpga_v3.py`. Upozorneni: moje prvni verze zahazovala i stop o desitky ps hned za startem (GUARD na stop), coz
+  host test "B = A: interval" okamzite zachytil -- stary kod ho bral.
+- **Pravidlo:** u vzorkovane / delene veliciny rikej pro kazdy odvozeny cas, KTERE hrany skutecne existuji (kazda P-ta je casovana,
+  ostatni jen pocitane) a kam az sahaji; pri zmene pravidla stop/start projdi vsechny scenare existujiciho testu, ne jen ten novy.
+- **Detekce:** `fpga ab` -> `zahozenych startu` blizko poctu startu = pravidlo zahazuje nejaky bezny pripad; na desce `fpga ab on`
+  s B nad ~40 MHz (predelicka) musi davat intervaly.
+- **Stav:** ✅ v kodu (host test + mutace), ⬜ neovereno na HW (flash + `fpga ab on`)
+
+### L-0295 — Kalibrace zpozdeni plati jen pro cestu, na ktere se merila
+
+- **Datum:** 2026-11-17
+- **Oblast:** `fpga pw cal`, `FPGA_EVP_SKEW`, odecet zpozdeni B-A (`fpga_freq_pw_skew`), `top_v3.v` (`sig_b = (bs2[0] ? ch_a : div_b) ^ bs2[1]`)
+- **Symptom:** FUNKCE.md pocitala s "odectem kalibrace B = pin A" i od intervalu A-B; zadani 2026-11-17 chtelo odecet zpozdeni mezi kanaly.
+  Kalibrace na desce dala B-A = -1,03 ns (sigma 96 ps), -0,95 ns (sigma 43 ps).
+- **Priciny:** pri B = pin A jde A pres `pin_cnt3` (predelicka, `div_a`) a B primo z pinu (`ch_a`) -- cesty se lisi o ~1 ns. Pri
+  skutecnem intervalu A-B jdou OBA piny pres `pin_cnt3` (`div_a`, `div_b`), takze toto zpozdeni tam neexistuje a jeho odecet by
+  zkreslil interval o ~1 ns. Pri sirce pulzu (B = pin A invertovany) cesty odpovidaji kalibraci, odecet platny.
+- **Oprava:** ulozene zpozdeni (`fpga_freq_pw_skew`) se odecita JEN od sirky pulzu / stridy; pro interval A-B je NULA (`fpga_freq_ti_offset`,
+  `fpga ab zero`): stredni interval pri tomtez signalu na oba vstupy. Ulozeni mimo `s3e_pr` (jeho statistika se pri prepnuti parovani
+  nuluje -- `fpga_v3_pr_init` pri OFF -> ON).
+- **Pravidlo:** kalibrace zpozdeni nese jen zpozdeni cest, kterymi se merila. Pred odectem porovnej cestu kalibrace s cestou mereni v RTL
+  (`top_v3.v`), ne podle nazvu ("zpozdeni A/B").
+- **Detekce:** `fpga ab zero` pri spolecnem signalu na A i B dava hodnotu radu ~100 ps (STA ~90 ps + kabely), ne ~1 ns.
+- **Stav:** ✅ v kodu, ⬜ neovereno na HW
