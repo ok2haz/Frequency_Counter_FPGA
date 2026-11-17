@@ -1,0 +1,15 @@
+10 MHz na A i B (rozbocovac), 20000 segmentu po 25 ms, fpga_v3_ab_feed z CM7/Core/Src/fpga_v3.c
+delta    +500 ps  sigma znacky   70 ps | prijato 20000 (u nuly 20000, u periody     0), zahozeno     0 | NULA = stredni      499.4 ps, sigma      98.9 ps
+delta    +200 ps  sigma znacky   70 ps | prijato 19574 (u nuly 19574, u periody     0), zahozeno   426 | NULA = stredni      205.7 ps, sigma      93.2 ps
+delta      +0 ps  sigma znacky   70 ps | prijato 10060 (u nuly 10027, u periody    33), zahozeno  9940 | NULA = stredni      405.6 ps, sigma    5694.8 ps
+delta     -90 ps  sigma znacky   70 ps | prijato  3983 (u nuly  3646, u periody   337), zahozeno 16017 | NULA = stredni     8482.1 ps, sigma   27728.5 ps
+delta    -200 ps  sigma znacky   70 ps | prijato  3296 (u nuly   408, u periody  2888), zahozeno 16704 | NULA = stredni    87315.2 ps, sigma   32810.4 ps
+delta    -500 ps  sigma znacky   70 ps | prijato 19503 (u nuly     0, u periody 19503), zahozeno   497 | NULA = stredni    99494.5 ps, sigma      93.1 ps
+delta   -1000 ps  sigma znacky   70 ps | prijato 20000 (u nuly     0, u periody 20000), zahozeno     0 | NULA = stredni    99000.2 ps, sigma      98.6 ps
+delta    +500 ps  sigma znacky  250 ps | prijato 18666 (u nuly 18454, u periody   212), zahozeno  1334 | NULA = stredni     1679.9 ps, sigma   10497.5 ps
+delta    +200 ps  sigma znacky  250 ps | prijato 15746 (u nuly 14211, u periody  1535), zahozeno  4254 | NULA = stredni    10037.0 ps, sigma   29416.9 ps
+delta      +0 ps  sigma znacky  250 ps | prijato 13853 (u nuly 10025, u periody  3828), zahozeno  6147 | NULA = stredni    27698.6 ps, sigma   44371.0 ps
+delta     -90 ps  sigma znacky  250 ps | prijato 13338 (u nuly  7915, u periody  5423), zahozeno  6662 | NULA = stredni    40596.3 ps, sigma   48743.0 ps
+delta    -200 ps  sigma znacky  250 ps | prijato 13559 (u nuly  5843, u periody  7716), zahozeno  6441 | NULA = stredni    56686.7 ps, sigma   49140.5 ps
+delta    -500 ps  sigma znacky  250 ps | prijato 15765 (u nuly  1579, u periody 14186), zahozeno  4235 | NULA = stredni    89399.2 ps, sigma   29774.8 ps
+delta   -1000 ps  sigma znacky  250 ps | prijato 19571 (u nuly    50, u periody 19521), zahozeno   429 | NULA = stredni    98729.4 ps, sigma    5002.0 ps
