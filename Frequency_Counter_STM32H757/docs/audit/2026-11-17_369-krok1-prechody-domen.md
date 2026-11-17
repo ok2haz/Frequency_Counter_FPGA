@@ -53,7 +53,7 @@ pevná fáze může trvale poškozovat jen hlavičku (čas 1PPS, maxtap, histogr
 
 ## d) Simulace s pevnou fází 10/100 MHz (`sim/sweep_phase_v3.py`, test `topv3pw`: šířka pulzu a zpoždění A/B, bez APP_OSC)
 
-Sweep 	opv3pw bez APP_OSC, fáze 100 MHz proti 10 MHz 0 / 2,5 / 5,0 / 7,5 ns (python sim/sweep_phase_v3.py topv3pw 2500 4, ~40 min): **všechny 4 fáze PASS**, chyba šířky pulzu 19 / 23 / 57 / 25 ps, rozdíl zpoždění A/B 32 / 34 / 24 / 7 ps, žádný skok o periodu. Nejhorší je fáze 0 ns (shodné hrany taktů, 57 ps). RTL simulace nemá metastabilitu ani zpoždění vedení, takže nevylučuje chybu na křemíku, ale funkční závislost na pevné fázi ukazuje nulovou. Hrubý krok 2,5 ns neprokazuje, že neexistuje úzké okno.
+Sweep `topv3pw` bez APP_OSC, fáze 100 MHz proti 10 MHz 0 / 2,5 / 5,0 / 7,5 ns (`python sim/sweep_phase_v3.py topv3pw 2500 4`, ~40 min): **všechny 4 fáze PASS**, chyba šířky pulzu 19 / 23 / 57 / 25 ps, rozdíl zpoždění A/B 32 / 34 / 24 / 7 ps, žádný skok o periodu. Nejhorší je fáze 0 ns (shodné hrany taktů, 57 ps). RTL simulace nemá metastabilitu ani zpoždění vedení, takže nevylučuje chybu na křemíku, ale funkční závislost na pevné fázi ukazuje nulovou. Hrubý krok 2,5 ns neprokazuje, že neexistuje úzké okno.
 
 ## Závěr kroku 1
 
