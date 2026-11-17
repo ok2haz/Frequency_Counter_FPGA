@@ -1982,3 +1982,15 @@ Cteno pres UART (`fpga pw cal|on|off`, `fpga ab on`, `gen`, `fpga v3`), smycka G
   (P 16 nastaveno A 0x, B 1x), "nemereny kanal VYPNUT (P 7, CAPS bit25 ne -> jen P 16)" -> ve flash chybi FW 0x050B.
 - **K otazce "ma smysl vypinat nemereny kanal?":** ano (z drivejsich mereni v SRAM, STATUS #382): t390 presluch z B (150 MHz / 16) ~260 ps rms na znackach A, B vypnut 123 ps;
   t391 B 137 MHz: A P 1 175,2 ps, A P 16 122,6 ps, A VYP 105,6 / 111,3 ps. Vyzaduje FW 0x050B, ktery ve flash neni.
+
+### 2026-11-17 15:15 -> 16:20 — overeni STM v0.45.23 po flashi a power-cyklu; bitstream BEZ APP_OSC v SRAM
+- **Start:** reset po zapnuti napajeni, SCPI/HTTP selftest CM4 PASS, GPSDO FLL 1PPS prijato 9 / odmitnuto 0, `VREFBUF: CSR=0x09 VRR ok`, DAC readback 24966 cerstvy
+  (kontrol za behu roste), obnova kodu z flash zapsana a overena.
+- **Interval A->B (`fpga ab on`, A 10 MHz, B 150 MHz, P 16), FW 0x050A APP_OSC z flash:** 602 intervalu, zahozenych startu 51 (v0.45.22: 531 z 531), stredni 4,119 ns,
+  sigma 1,98 ns (v rovnomernem rozdeleni v periode B 6,67 ns je sigma 1,93 ns -> A a B nejsou vazane, presnost z toho neplyne).
+- **Stejne na FW 0x050A BEZ APP_OSC (`TEST_FW_0x050A_v3_base_noAppOsc_s6`, SRAM, `programmer_cli --cable-index 1 --run 2`):** 935 intervalu, 120 zahozenych,
+  rozsah 0,018-6,3 ns, sigma 2,41 ns, zadne skoky o periody. `FPGA BUILD` je u seedu 6 shodny s dalsimi sestavenimi, identita jen podle FW 0x050A.
+  ⚠️ `SPI ERR` 54 chyb MAGIC/VER v jedne serii po prepnuti konfigurace FPGA, nove nepribyvaji.
+- **`SENS:FREQ:DUAL`:** SET a dotaz pres USB funguje, `scpi ipc` SHODA. Ulozene zpozdeni B-A -0,966 ns (451 vz., sigma 56 ps) se odecita u sirky pulzu
+  (39,07 ns -> 38,84 ns, sigma 458 ps). `programmer_cli` v prostredi s `PYTHONIOENCODING=utf-8:surrogateescape` spadne ("unknown encoding"): promennou pred spustenim smazat.
+- **Zbyva:** sigma intervalu se SPOLECNYM signalem na A i B a NULA A-B (`fpga ab zero`), okna UDALOSTI/SPOJITE na displeji, web prepinac A + B.
