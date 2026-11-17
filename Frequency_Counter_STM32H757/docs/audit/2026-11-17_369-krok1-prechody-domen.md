@@ -53,10 +53,10 @@ pevná fáze může trvale poškozovat jen hlavičku (čas 1PPS, maxtap, histogr
 
 ## d) Simulace s pevnou fází 10/100 MHz (`sim/sweep_phase_v3.py`, test `topv3pw`: šířka pulzu a zpoždění A/B, bez APP_OSC)
 
-⬜ **Sweep nedoběhl** (běh 20 fází × 	opv3pw přerušen po ~30 min CPU na fázi; Icarus je pro tento test příliš pomalý na 20 paralelních běhů). Připraveno: parametr TB_PH_PS v sim/tb_top_v3.sv (výchozí 2300 ps = dosavadní stav) a python sim/sweep_phase_v3.py topv3pw <krok_ps> <paralelně> (z adresáře FPGA modulu). Doporučení: krok 2500 ps (4 fáze), nebo kratší test 	opv3 místo 	opv3pw. RTL simulace navíc nemá metastabilitu ani zpoždění vedení, takže najde jen funkční závislost na fázi.
+Sweep 	opv3pw bez APP_OSC, fáze 100 MHz proti 10 MHz 0 / 2,5 / 5,0 / 7,5 ns (python sim/sweep_phase_v3.py topv3pw 2500 4, ~40 min): **všechny 4 fáze PASS**, chyba šířky pulzu 19 / 23 / 57 / 25 ps, rozdíl zpoždění A/B 32 / 34 / 24 / 7 ps, žádný skok o periodu. Nejhorší je fáze 0 ns (shodné hrany taktů, 57 ps). RTL simulace nemá metastabilitu ani zpoždění vedení, takže nevylučuje chybu na křemíku, ale funkční závislost na pevné fázi ukazuje nulovou. Hrubý krok 2,5 ns neprokazuje, že neexistuje úzké okno.
 
 ## Závěr kroku 1
 
 1. **Přechody domén (b) a STA (c) hypotézu plánu (kap. 2) nepodporují:** data A/B jdou jen přes BSRAM + přepínací bit s 3 FF, povely mají data 300 ns před přepínacím bitem; porušené cesty STA jsou jen v hlavičce (čas 1PPS, maxtap, histogram) a v asynchronních synchronizátorech.
 2. **Pravděpodobnější příčina rozbitého A→B bez APP_OSC je v obsluze souhrnu B, ne v hodinách:** v0.45.22 zahazoval každý start s předděličkou (deska 2026-11-17: 531 z 531), opraveno v v0.45.23 (L-0294). Zda stejná chyba vysvětluje i t386/t387 (tam B bez předděličky), nejde z dat říct — ověřit po flashi bitstreamu bez APP_OSC.
-3. Zbývá: sweep fáze (d) a změřit interval A→B s v0.45.23 na APP_OSC i bez něj.
+3. Sweep fáze (d) nenašel funkční závislost. Zbývá změřit interval A→B s v0.45.23 na APP_OSC i bez něj (bitstream bez APP_OSC do SRAM).
