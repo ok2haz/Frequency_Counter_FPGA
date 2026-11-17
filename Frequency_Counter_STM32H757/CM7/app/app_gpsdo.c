@@ -3128,7 +3128,7 @@ static void btnreg_observer(const prim_rect_t *r)
 }
 
 /* ── PAMET FOKUSU PER OKNO (zadani UI §7 „menu si pamatuje posledni volbu") ── */
-#define S_VIEW_MAX 58   /* 0..57; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR, 53 = NASTAVENI GPS, 54 = ADRET FAZE, 55 = UDALOSTI, 56 = SPOJITE, 57 = AUTOKALIBRACE */
+#define S_VIEW_MAX 59   /* 0..57; 49 = FUNKCE, 50 = NAPOVEDA, 51 = CHYBY, 52 = GENERATOR, 53 = NASTAVENI GPS, 54 = ADRET FAZE, 55 = UDALOSTI, 56 = SPOJITE, 57 = AUTOKALIBRACE, 58 = PRUVODCE KALIBRACE */
 static int8_t s_focus_of[S_VIEW_MAX];
 static int8_t s_focus;                        /* fokus AKTUALNIHO okna */
 /* Okno, ve kterem uz je znacka fokusu vykreslena (0xFF = zadne). Prvni otoceni
@@ -4628,8 +4628,7 @@ static void app_gpsdo_render_contin(void)
  *    a tlacitka otevrou okno UDALOSTI v prislusnem rezimu (ZPET se vrati sem).
  * Radky kv_row_live: hodnota <= 34 znaku (F-0301); prvni radek az na y 116, aby mazaci box nezasahl hlavicku karty. */
 static const prim_rect_t AK_RUN_RECT  = {  18, 417, 200, 61 };
-static const prim_rect_t AK_SKEW_RECT = { 228, 417, 200, 61 };
-static const prim_rect_t AK_NULL_RECT = { 438, 417, 202, 61 };
+static const prim_rect_t AK_WZ_RECT   = { 228, 417, 220, 61 };   /* PRUVODCE > (v0.45.27 nahradil ZPOZDENI > a NULA A-B >) */
 static uint8_t  s_ak_req;            /* 1 = SPUSTIT ceka na vysledek kalibrace TDC */
 static uint8_t  s_ak_res;            /* posledni SPUSTIT: 0 zadny, 1 hotovo, 2 selhala, 3 bez odezvy, 4 nelze spustit */
 static uint32_t s_ak_t0, s_ak_runs0, s_ak_fails0;
@@ -4652,6 +4651,48 @@ static void ak_volt(char *b, size_t n, const sensor_stat_t *s, ac_result_t r)
     snprintf(b, n, "%s V  %s", v, ak_verdict(r));
 }
 
+/* Stav kalibrace TDC pro radek okna (AUTOKALIBRACE i PRUVODCE): z posledniho ramce (bity v2 i pro protokol v3) + prubeh posledniho
+ * SPUSTIT / START. Hotovo = pribyl beh STM kalibrace (FW >= 0x0427), nebo po 3 s FPGA nekalibruje a ma obe tabulky; bez odezvy po
+ * 15 s. Meni s_ak_req / s_ak_res (vola jen UiTask). b <= 34 znaku (kv_row_live), ci: 0 OK, 1 bezi, 2 chyba, 3 neutralni. */
+static void ak_tdc_state(char *b, size_t n, uint8_t *ci)
+{
+    fpga_meas_t fr;
+    const int have = fpga_freq_get_frame(&fr) && fpga_freq_link_ok();
+    const uint8_t st = have ? fr.tdc_status : 0u;
+    const uint8_t both = (uint8_t)(FPGA_TDC_CAL_A | FPGA_TDC_CAL_B);
+    fpga_tdccal_info_t ti;
+    fpga_freq_tdccal_info(&ti);
+    const uint32_t el = HAL_GetTick() - s_ak_t0;
+    const int rc = fpga_freq_tdc_cal_rc();
+    if (s_ak_req) {
+        if (rc == 0)                               { s_ak_req = 0u; s_ak_res = 4u; }
+        else if (rc == 1 && ti.fails != s_ak_fails0) { s_ak_req = 0u; s_ak_res = 2u; }
+        else if (rc == 1 && (ti.runs != s_ak_runs0 ||
+                             (el > 3000u && !(st & FPGA_TDC_CAL_BUSY) && (st & both) == both))) { s_ak_req = 0u; s_ak_res = 1u; }
+        else if (el > 15000u)                      { s_ak_req = 0u; s_ak_res = 3u; }
+    }
+    if (s_ak_req)               { snprintf(b, n, "%s", (rc == 127) ? "ceka na FPGA" : "BEZI (mereni stoji ~1 s)"); *ci = 1u; }
+    else if (s_ak_res == 4u)    { snprintf(b, n, "nelze spustit (emulator?)"); *ci = 2u; }
+    else if (s_ak_res == 3u)    { snprintf(b, n, "bez odezvy FPGA"); *ci = 2u; }
+    else if (s_ak_res == 2u)    { snprintf(b, n, "SELHALA (chyba %u)", (unsigned)ti.last_err); *ci = 2u; }
+    else if (!have)             { snprintf(b, n, "bez spojeni s FPGA"); *ci = 3u; }
+    else if (st & FPGA_TDC_CAL_BUSY) { snprintf(b, n, "BEZI"); *ci = 1u; }
+    else {
+        snprintf(b, n, "%s / %s%s%s", (st & FPGA_TDC_CAL_A) ? "OK" : "NE", (st & FPGA_TDC_CAL_B) ? "OK" : "NE",
+                 (st & FPGA_TDC_CAL_FAIL) ? "  SELHALA" : "", (s_ak_res == 1u) ? "  hotovo" : "");
+        *ci = ((st & both) == both && !(st & FPGA_TDC_CAL_FAIL)) ? 0u : 2u;
+    }
+}
+/* Spusti kalibraci TDC (zadost pro FpgaTask) a nastavi sledovani prubehu; spolecne pro SPUSTIT i START pruvodce. */
+static void ak_tdc_start(void)
+{
+    fpga_tdccal_info_t ti;
+    fpga_freq_tdccal_info(&ti);
+    s_ak_runs0 = ti.runs; s_ak_fails0 = ti.fails; s_ak_t0 = HAL_GetTick();
+    s_ak_req = 1u; s_ak_res = 0u;
+    fpga_freq_tdc_cal_req();
+}
+
 static void app_gpsdo_render_autocal(void)
 {
     int first = window_first(57);
@@ -4663,11 +4704,9 @@ static void app_gpsdo_render_autocal(void)
         ui_card_render_chrome(&cd);
         for (int i = 0; i < 8; i++) c_row[i][0] = '\0';
         ui_button_t b1 = {.rect = AK_RUN_RECT,  .variant = UI_BUTTON_NORMAL, .label = "SPUSTIT"};
-        ui_button_t b2 = {.rect = AK_SKEW_RECT, .variant = UI_BUTTON_NORMAL, .label = "ZPOZDENI >"};
-        ui_button_t b3 = {.rect = AK_NULL_RECT, .variant = UI_BUTTON_NORMAL, .label = "NULA A-B >"};
+        ui_button_t b2 = {.rect = AK_WZ_RECT,   .variant = UI_BUTTON_NORMAL, .label = "PRUVODCE >"};
         ui_button_render(&b1);
         ui_button_render(&b2);
-        ui_button_render(&b3);
     }
     static const char *const LBL[8] = { "VREF+ (2,5 V):", "+3V3:", "+5V:", "VBAT (baterie RTC):",
                                          "TDC kalibrace A / B:", "rezerva retezu A / B:", "zpozdeni B-A:", "nula intervalu A-B:" };
@@ -4684,34 +4723,10 @@ static void app_gpsdo_render_autocal(void)
     else ak_volt(v[3], sizeof v[3], &g_sensors[SENS_VBAT], ac.vbat);
     ci[3] = ak_ci(ac.vbat);
 
-    /* TDC: stav z posledniho ramce (bity v2 i pro protokol v3) + prubeh posledniho SPUSTIT. Hotovo = pribyl beh STM
-     * kalibrace (FW >= 0x0427), nebo po 3 s FPGA nekalibruje a ma obe tabulky; bez odezvy po 15 s. */
-    fpga_meas_t fr;
-    const int have = fpga_freq_get_frame(&fr) && fpga_freq_link_ok();
-    const uint8_t st = have ? fr.tdc_status : 0u;
-    const uint8_t both = (uint8_t)(FPGA_TDC_CAL_A | FPGA_TDC_CAL_B);
+    ak_tdc_state(v[4], sizeof v[4], &ci[4]);
     fpga_tdccal_info_t ti;
     fpga_freq_tdccal_info(&ti);
-    const uint32_t now = HAL_GetTick(), el = now - s_ak_t0;
-    const int rc = fpga_freq_tdc_cal_rc();
-    if (s_ak_req) {
-        if (rc == 0)                               { s_ak_req = 0u; s_ak_res = 4u; }
-        else if (rc == 1 && ti.fails != s_ak_fails0) { s_ak_req = 0u; s_ak_res = 2u; }
-        else if (rc == 1 && (ti.runs != s_ak_runs0 ||
-                             (el > 3000u && !(st & FPGA_TDC_CAL_BUSY) && (st & both) == both))) { s_ak_req = 0u; s_ak_res = 1u; }
-        else if (el > 15000u)                      { s_ak_req = 0u; s_ak_res = 3u; }
-    }
-    if (s_ak_req)               { snprintf(v[4], sizeof v[4], "%s", (rc == 127) ? "ceka na FPGA" : "BEZI (mereni stoji ~1 s)"); ci[4] = 1u; }
-    else if (s_ak_res == 4u)    { snprintf(v[4], sizeof v[4], "nelze spustit (emulator?)"); ci[4] = 2u; }
-    else if (s_ak_res == 3u)    { snprintf(v[4], sizeof v[4], "bez odezvy FPGA"); ci[4] = 2u; }
-    else if (s_ak_res == 2u)    { snprintf(v[4], sizeof v[4], "SELHALA (chyba %u)", (unsigned)ti.last_err); ci[4] = 2u; }
-    else if (!have)             { snprintf(v[4], sizeof v[4], "bez spojeni s FPGA"); ci[4] = 3u; }
-    else if (st & FPGA_TDC_CAL_BUSY) { snprintf(v[4], sizeof v[4], "BEZI"); ci[4] = 1u; }
-    else {
-        snprintf(v[4], sizeof v[4], "%s / %s%s%s", (st & FPGA_TDC_CAL_A) ? "OK" : "NE", (st & FPGA_TDC_CAL_B) ? "OK" : "NE",
-                 (st & FPGA_TDC_CAL_FAIL) ? "  SELHALA" : "", (s_ak_res == 1u) ? "  hotovo" : "");
-        ci[4] = ((st & both) == both && !(st & FPGA_TDC_CAL_FAIL)) ? 0u : 2u;
-    }
+    const uint32_t now = HAL_GetTick();
     {
         fpga_tdc_rez_t rz;
         if (fpga_tdc_rez_get(&rz)) {
@@ -4725,9 +4740,9 @@ static void app_gpsdo_render_autocal(void)
     {
         double ps, sd; uint32_t n; char t[28];
         if (fpga_freq_pw_skew(&ps, &sd, &n)) { ev_time_str(t, sizeof t, ps); snprintf(v[6], sizeof v[6], "%s (%lu vz.)", t, (unsigned long)n); ci[6] = 0u; }
-        else { snprintf(v[6], sizeof v[6], "nezmereno (ZPOZDENI >)"); ci[6] = 3u; }
+        else { snprintf(v[6], sizeof v[6], "nezmereno (PRUVODCE >)"); ci[6] = 3u; }
         if (fpga_freq_ti_offset(&ps)) { ev_time_str(t, sizeof t, ps); snprintf(v[7], sizeof v[7], "%s", t); ci[7] = 0u; }
-        else { snprintf(v[7], sizeof v[7], "nenastavena (NULA A-B >)"); ci[7] = 3u; }
+        else { snprintf(v[7], sizeof v[7], "nenastavena (PRUVODCE >)"); ci[7] = 3u; }
     }
 
     int drew = 0;
@@ -4742,6 +4757,191 @@ static void app_gpsdo_render_autocal(void)
         }
     }
     if (drew) present_now();
+}
+
+/* ── PRUVODCE KALIBRACE (s_view=58, v0.45.27): TDC -> zpozdeni B-A -> nula A-B -> shrnuti ─────────────────────────────────────
+ * Zadani uzivatele 2026-11-17 („pruvodce pro kalibraci TDC, nuly casu apod."). Vstup: AUTOKALIBRACE > PRUVODCE, ZPET vede zpet.
+ * Kazdy krok rika, CO zapojit, START zahaji mereni, a krok se sam vyhodnoti:
+ *  1) TDC: kalibrace tabulky obou kanalu z ring oscilatoru (jako `tdc cal`), bez signalu; stav i rezerva retezu;
+ *  2) zpozdeni B-A: signal na A, B se privede z pinu A (parovani SKEW); po WZ_SKEW_N vzorcich je zpozdeni ulozene
+ *     (fpga_freq_pw_skew) a odecita se u sirky pulzu a stridy;
+ *  3) nula A-B: tentyz signal rozbocovacem na A i B (parovani AB); po WZ_NULL_N startech se nula (znamenkova vzdalenost
+ *     nejblizsi hrany B, F-0297) ulozi jen pri sigma <= 1 ns (fpga_freq_ti_zero_eval), jinak se ODMITNE s duvodem;
+ *  4) shrnuti ulozenych hodnot.
+ * Parovani FPGA drzi okno jen dokud je otevrene (app_gpsdo_tick ho po odchodu vrati podle funkce hlavni obrazovky). Hodnoty
+ * plati do restartu (nepersistuji se, jako v oknech UDALOSTI). Hodnoty radku <= 34 znaku (kv_row_live, F-0301). */
+static const prim_rect_t WZ_START_RECT = {  18, 417, 200, 61 };
+static const prim_rect_t WZ_NEXT_RECT  = { 228, 417, 200, 61 };
+static const prim_rect_t WZ_PREV_RECT  = { 438, 417, 200, 61 };
+#define WZ_SKEW_N   200u         /* vzorku zpozdeni B-A (FPGA vyda ~40/s) */
+#define WZ_NULL_N   400u         /* startu pro nulu A-B (FPGA_TI_ZERO_MIN_N = 100 je dolni mez pouziti) */
+#define WZ_TMO_MS   25000u       /* bez vzorku do tohoto casu = selhani kroku */
+static uint8_t  s_wz_step;       /* 0 TDC, 1 zpozdeni B-A, 2 nula A-B, 3 shrnuti */
+static uint8_t  s_wz_run;        /* kroky: 0 ceka na START, 1 bezi, 2 hotovo, 3 selhalo (krok 0 se odvozuje z s_ak_req / s_ak_res) */
+static uint8_t  s_wz_pair;       /* 1 = pruvodce drzi parovani FPGA */
+static uint32_t s_wz_t0;
+static char     s_wz_why[40];    /* duvod selhani kroku 2 / 3 */
+
+static void wz_btn(prim_rect_t r, const char *label, char *cache, int first, int *drew)
+{
+    char lb[24];
+    snprintf(lb, sizeof lb, "%s", label);
+    if (first || dchg(cache, 24, lb)) {                   /* cache ma 24 B jako lb (invariant dchg) */
+        prim_fill_rect(r, UI_COLOR_BG_0, PRIM_BLEND_REPLACE);
+        if (lb[0]) { ui_button_t b = {.rect = r, .variant = UI_BUTTON_NORMAL, .label = lb}; ui_button_render(&b); }
+        *drew = 1;
+    }
+}
+static prim_color_t wz_col(uint8_t ci)
+{
+    return (ci == 0u) ? UI_COLOR_OK : (ci == 1u) ? UI_COLOR_WARN : (ci == 2u) ? UI_COLOR_BAD : UI_COLOR_INK_3;
+}
+/* "+56.0 ps" -> "56.0 ps" (sigma bez vynuceneho '+') */
+static void wz_sd(char *b, size_t n, double ps)
+{
+    char t[28];
+    ev_time_str(t, sizeof t, ps);
+    snprintf(b, n, "%s", t + (t[0] == '+'));
+}
+
+static void app_gpsdo_render_calwiz(void)
+{
+    int first = window_first(58);
+    static char c_a[48], c_b[48], c_c[48], c_s[24], c_n[24], c_p[24];
+    static const char *const TIT[4] = { "Krok 1 / 4: kalibrace TDC", "Krok 2 / 4: zpozdeni kanalu B-A",
+                                         "Krok 3 / 4: nula intervalu A-B", "Krok 4 / 4: shrnuti" };
+    static const char *const TXT[4][4] = {
+        { "Kalibrace tabulky TDC obou kanalu z ring oscilatoru (jako `tdc cal`).",
+          "Nepotrebuje zadny signal na vstupech.",
+          "Mereni se na ~1 s zastavi. Opakuj po zahrati pristroje a po",
+          "vyrazne zmene teploty." },
+        { "Pripoj signal (napr. 10 MHz, kabel jako pri mereni) na vstup A.",
+          "Vstup B nech volny: FPGA ho pro toto mereni privede z pinu A.",
+          "START zmeri zpozdeni B-A (~200 vzorku) a ulozi ho.",
+          "Odecita se u funkci SIRKA PULZU a STRIDA." },
+        { "Rozdel TENTYZ signal rozbocovacem (stejne kabely) na A i B.",
+          "START zmeri vzdalenost nejblizsi hrany B od hrany A.",
+          "Nula se ulozi jen pri rozptylu do 1 ns (jinak neni na A a B",
+          "tentyz signal) a odecita se od intervalu a faze A-B." },
+        { "Hotovo. Hodnoty se odecitaji hned a plati do restartu",
+          "(neukladaji se do flash).",
+          "Odpoj rozbocovac. ZPET (vpravo dole) vrati do okna",
+          "AUTOKALIBRACE." } };
+    if (first) {
+        view_set(58);
+        window_chrome("PRUVODCE KALIBRACE", WIN_TITLE_Y);
+        ui_card_t cd = {.rect = DG_CARD_FULL_B, .header_label = TIT[s_wz_step]};
+        ui_card_render_chrome(&cd);
+        for (int i = 0; i < 4; i++)
+            prim_draw_text((prim_point_t){DG_LLBL, (int16_t)(124 + 28 * i)}, TXT[s_wz_step][i], &ui_font_sans_18,
+                           UI_COLOR_INK_2, PRIM_ALIGN_LEFT);
+        c_a[0] = c_b[0] = c_c[0] = c_s[0] = c_n[0] = c_p[0] = '\0';
+    }
+    char va[44] = "", vb[44] = "--", vc[44] = "";
+    uint8_t ca = 3u, cb = 3u, cc = 3u;
+    const char *la = "stav:", *lb = "vysledek:", *lc = "";
+    const uint32_t now = HAL_GetTick();
+    const int rc = fpga_freq_ev_pair_rc();
+    /* 1,5 s od START: pri OPAKOVAT FpgaTask statistiku vynuluje az pri dalsim zaznamu, drive by se vyhodnotila stara */
+    const int settled = ((uint32_t)(now - s_wz_t0) > 1500u);
+
+    if (s_wz_step == 0u) {
+        ak_tdc_state(va, sizeof va, &ca);
+        s_wz_run = s_ak_req ? 1u : (s_ak_res == 1u) ? 2u : (s_ak_res >= 2u) ? 3u : 0u;
+        la = "stav TDC (A / B):"; lb = "rezerva retezu A / B:";
+        fpga_tdc_rez_t rz;
+        if (fpga_tdc_rez_get(&rz)) {
+            snprintf(vb, sizeof vb, "%d / %d tapu", (int)rz.rez_tap[0], (int)rz.rez_tap[1]);
+            const uint8_t lv = (rz.lvl[0] > rz.lvl[1]) ? rz.lvl[0] : rz.lvl[1];
+            cb = (lv == FPGA_TDC_REZ_OK) ? 0u : (lv == FPGA_TDC_REZ_POZOR) ? 1u : 2u;
+        }
+    } else if (s_wz_step == 1u) {
+        fpga_ev_info_t ei;
+        fpga_freq_ev_info(&ei);
+        double ps = 0.0, sd = 0.0; uint32_t n = 0u;
+        const int ok = fpga_freq_pw_skew(&ps, &sd, &n);
+        if (s_wz_run == 1u) {
+            if (rc == -2)      { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "jen protokol v3 (FW 0x05xx)"); }
+            else if (rc == -1) { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "FPGA FW bez parovani"); }
+            else if (rc == 0)  { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "SET_CONFIG do FPGA selhal"); }
+            else if (rc != 127 && settled && ok && n >= WZ_SKEW_N) s_wz_run = 2u;
+            else if ((uint32_t)(now - s_wz_t0) > WZ_TMO_MS) { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "malo vzorku: signal na A?"); }
+        }
+        if (s_wz_run == 0u)      { snprintf(va, sizeof va, "ceka na START (signal na A)"); }
+        else if (s_wz_run == 1u) { snprintf(va, sizeof va, "bezi: vzorku %lu / %u", (unsigned long)ei.sk_n, (unsigned)WZ_SKEW_N); ca = 1u; }
+        else if (s_wz_run == 2u) {
+            char t[28], d[28];
+            snprintf(va, sizeof va, "HOTOVO, ulozeno"); ca = 0u;
+            ev_time_str(t, sizeof t, ps); wz_sd(d, sizeof d, sd);
+            snprintf(vb, sizeof vb, "B-A %.12s, sd %.10s", t, d); cb = 0u;
+        } else { snprintf(va, sizeof va, "%s", s_wz_why); ca = 2u; }
+    } else if (s_wz_step == 2u) {
+        double zm = 0.0, zsd = 0.0; uint32_t zn = 0u;
+        const int z = fpga_freq_ti_zero_eval(&zm, &zsd, &zn);
+        if (s_wz_run == 1u) {
+            if (rc == -2)      { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "jen protokol v3 (FW 0x05xx)"); }
+            else if (rc == -1) { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "FPGA FW bez parovani"); }
+            else if (rc == 0)  { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "SET_CONFIG do FPGA selhal"); }
+            else if (rc != 127 && settled && zn >= WZ_NULL_N && z == 1) { fpga_freq_ti_offset_set(zm, 1); s_wz_run = 2u; }
+            else if (rc != 127 && settled && zn >= WZ_NULL_N && z < 0)  { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "sd > 1 ns: ruzne signaly A a B"); }
+            else if ((uint32_t)(now - s_wz_t0) > WZ_TMO_MS)  { s_wz_run = 3u; snprintf(s_wz_why, sizeof s_wz_why, "zadny par A->B: signal na A, B?"); }
+        }
+        if (s_wz_run == 0u)      { snprintf(va, sizeof va, "ceka na START (stejny signal A+B)"); }
+        else if (s_wz_run == 1u) { snprintf(va, sizeof va, "bezi: startu %lu / %u", (unsigned long)zn, (unsigned)WZ_NULL_N); ca = 1u; }
+        else if (s_wz_run == 2u) {
+            double off = 0.0; char t[28], d[28];
+            (void)fpga_freq_ti_offset(&off);
+            snprintf(va, sizeof va, "HOTOVO, ulozeno"); ca = 0u;
+            ev_time_str(t, sizeof t, off); wz_sd(d, sizeof d, zsd);
+            snprintf(vb, sizeof vb, "nula %.12s, sd %.10s", t, d); cb = 0u;
+        } else { snprintf(va, sizeof va, "%s", s_wz_why); ca = 2u; }
+    } else {                                              /* shrnuti */
+        double ps = 0.0, sd = 0.0, off = 0.0; uint32_t n = 0u; char t[28];
+        ak_tdc_state(va, sizeof va, &ca);
+        la = "TDC kalibrace:"; lb = "zpozdeni B-A:"; lc = "nula intervalu A-B:";
+        if (fpga_freq_pw_skew(&ps, &sd, &n)) { ev_time_str(t, sizeof t, ps); snprintf(vb, sizeof vb, "%s (%lu vz.)", t, (unsigned long)n); cb = 0u; }
+        else snprintf(vb, sizeof vb, "nezmereno");
+        if (fpga_freq_ti_offset(&off)) { ev_time_str(t, sizeof t, off); snprintf(vc, sizeof vc, "%s", t); cc = 0u; }
+        else snprintf(vc, sizeof vc, "nenastavena");
+    }
+
+    int drew = 0;
+    char key[48];
+    snprintf(key, sizeof key, "%c%.43s", (char)('0' + ca), va);
+    if (first || dchg(c_a, sizeof c_a, key)) { kv_row_live(262, la, va, wz_col(ca), first); drew = 1; }
+    snprintf(key, sizeof key, "%c%.43s", (char)('0' + cb), vb);
+    if (first || dchg(c_b, sizeof c_b, key)) { kv_row_live(298, lb, vb, wz_col(cb), first); drew = 1; }
+    if (lc[0]) {
+        snprintf(key, sizeof key, "%c%.43s", (char)('0' + cc), vc);
+        if (first || dchg(c_c, sizeof c_c, key)) { kv_row_live(334, lc, vc, wz_col(cc), first); drew = 1; }
+    }
+    wz_btn(WZ_START_RECT, (s_wz_step < 3u) ? ((s_wz_run == 0u) ? "START" : "OPAKOVAT") : "", c_s, first, &drew);
+    wz_btn(WZ_NEXT_RECT,  (s_wz_step < 3u) ? ((s_wz_run == 2u) ? "DALSI >" : "PRESKOCIT >") : "", c_n, first, &drew);
+    wz_btn(WZ_PREV_RECT,  (s_wz_step > 0u) ? "< PREDCH." : "", c_p, first, &drew);
+    if (drew) present_now();
+}
+
+/* START / OPAKOVAT aktualniho kroku (krok 0: kalibrace TDC, kroky 1 a 2: zahajeni parovani FPGA). */
+static void wz_start(void)
+{
+    s_wz_why[0] = '\0';
+    if (s_wz_step == 0u) { ak_tdc_start(); return; }
+    s_wz_t0 = HAL_GetTick();
+    s_wz_run = 1u;
+    s_wz_pair = 1u;
+    if (s_wz_step == 1u) { fpga_freq_pw_skew_clear(); fpga_freq_ev_pair_req(FPGA_EVP_SKEW); }
+    else                 { fpga_freq_ti_offset_set(0.0, 0); fpga_freq_ev_pair_req(FPGA_EVP_AB); }
+}
+
+/* Prechod na krok `step` (0..3) s plnym prekreslenim; krok 0 a shrnuti vraci parovani FPGA podle funkce hlavni obrazovky. */
+static void wz_goto(uint8_t step)
+{
+    s_wz_step = (step > 3u) ? 3u : step;
+    s_wz_run = 0u; s_wz_why[0] = '\0';
+    if (s_wz_step == 0u) { s_ak_req = 0u; s_ak_res = 0u; }
+    if ((s_wz_step == 0u || s_wz_step == 3u) && s_wz_pair) { s_wz_pair = 0u; fpga_freq_ev_pair_req(ev_pair_for_fx()); }
+    s_view = 0xFF;                                        /* vynuti plny render (window_first) */
+    app_gpsdo_render_calwiz();
 }
 
 /* ── ADRET FAZE (s_view=54): fazove porovnani normalu — Δf normalu podle zadani UI ────────────────────────────────────
@@ -8759,6 +8959,7 @@ static void render_view(uint8_t v)
     case 55: app_gpsdo_render_events();    break;
     case 56: app_gpsdo_render_contin();    break;
     case 57: app_gpsdo_render_autocal();   break;
+    case 58: app_gpsdo_render_calwiz();    break;
     /* Modal potvrzeni restartu se po obnove ZAMERNE NEOBNOVUJE: potvrzeni
      * destruktivni akce se nema samo vynorit po udalosti, kterou uzivatel
      * nevyvolal. Vraci se tam, kam vede i tlacitko NE (`CONFIRM_NO`), takze
@@ -9235,10 +9436,12 @@ void app_gpsdo_tick(void)
     {   /* v0.45.20 (STATUS #382, t390): oba kanaly jen kdyz je UI potrebuje (okno DVOJKANAL, funkce A-B);
          * jinak FPGA s CAPS bit25 nemereny kanal vypne -- jeho retez TDC jinak zvysuje sum znacek mereneho kanalu. */
         const int fx = screen_main_mode();
-        fpga_freq_dual_req((uint8_t)(s_view == 46 || s_view == 55 || g_dual_web || fx == SM_FX_TI || fx == SM_FX_PHASE || fx == SM_FX_RATIO ||
+        fpga_freq_dual_req((uint8_t)(s_view == 46 || s_view == 55 || s_view == 58 || g_dual_web || fx == SM_FX_TI || fx == SM_FX_PHASE || fx == SM_FX_RATIO ||
                                      fx == SM_FX_PW || fx == SM_FX_DUTY));
         /* v0.45.23: okno UDALOSTI drzi parovani FPGA jen dokud je otevrene; po odchodu se vrati podle funkce hlavni obrazovky */
         if (s_ev_win && s_view != 55) { s_ev_win = 0u; fpga_freq_ev_pair_req(ev_pair_for_fx()); }
+        /* v0.45.27: PRUVODCE KALIBRACE drzi parovani FPGA jen dokud je otevreny */
+        if (s_wz_pair && s_view != 58) { s_wz_pair = 0u; fpga_freq_ev_pair_req(ev_pair_for_fx()); }
     }
     if (s_view == 1) app_gpsdo_render_diag();     /* live refresh of diagnostics */
     else if (s_view == 2) app_gpsdo_render_gps();     /* live refresh of GPS/GNSS okna */
@@ -9276,6 +9479,7 @@ void app_gpsdo_tick(void)
     else if (s_view == 55) app_gpsdo_render_events();    /* UDALOSTI: interval A-B / sirka pulzu / zpozdeni (zive) */
     else if (s_view == 56) app_gpsdo_render_contin();    /* SPOJITE: totalizace + prijem bez mrtve doby (zive) */
     else if (s_view == 57) app_gpsdo_render_autocal();   /* AUTOKALIBRACE: samokontrola zive, prubeh kalibrace TDC */
+    else if (s_view == 58) app_gpsdo_render_calwiz();    /* PRUVODCE KALIBRACE: prubeh kroku (zive) */
     else if (s_view == 52) gen_tick();                   /* Generator: stav zapisu do Si5356 */
     /* ⚠️ Varovny pruh AZ NA KONCI ticku, aby lezel NAD tim, co prave
      * prekreslila okna vyse — pri plnem re-renderu by ho jinak chrome smazal. */
@@ -10395,25 +10599,22 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
          * (F-0304): odezvou je radek "TDC kalibrace" (ceka / BEZI / hotovo). */
         if (s_view == 57) {
             if (in_rect(x, y, AK_RUN_RECT)) {
-                fpga_tdccal_info_t ti;
-                fpga_freq_tdccal_info(&ti);
                 autocal_run();                             /* souhrn i pro okno KALIBRACE a UART `autocal` */
-                s_ak_runs0 = ti.runs; s_ak_fails0 = ti.fails; s_ak_t0 = HAL_GetTick();
-                s_ak_req = 1u; s_ak_res = 0u;
-                fpga_freq_tdc_cal_req();
+                ak_tdc_start();
                 app_gpsdo_render_autocal();
                 return true;
             }
-            if (in_rect(x, y, AK_SKEW_RECT)) {
-                nav_push(57); s_ev_mode = 2u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_SKEW);
-                app_gpsdo_render_events();
+            if (in_rect(x, y, AK_WZ_RECT)) {               /* PRUVODCE: TDC -> zpozdeni B-A -> nula A-B -> shrnuti */
+                nav_push(57);
+                wz_goto(0u);
                 return true;
             }
-            if (in_rect(x, y, AK_NULL_RECT)) {
-                nav_push(57); s_ev_mode = 0u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_AB);
-                app_gpsdo_render_events();
-                return true;
-            }
+        }
+        /* PRUVODCE KALIBRACE (s_view=58): START / OPAKOVAT zahaji mereni kroku, DALSI > / PRESKOCIT > a < PREDCH. meni krok. */
+        if (s_view == 58) {
+            if (s_wz_step < 3u && in_rect(x, y, WZ_START_RECT)) { wz_start(); app_gpsdo_render_calwiz(); return true; }
+            if (s_wz_step < 3u && in_rect(x, y, WZ_NEXT_RECT))  { wz_goto((uint8_t)(s_wz_step + 1u)); return true; }
+            if (s_wz_step > 0u && in_rect(x, y, WZ_PREV_RECT))  { wz_goto((uint8_t)(s_wz_step - 1u)); return true; }
         }
         /* System Health footer -> "GRAFY" (Diagnostika + Nastaveni jsou
          * dlazdice v Menu, 2026-08-29). */
