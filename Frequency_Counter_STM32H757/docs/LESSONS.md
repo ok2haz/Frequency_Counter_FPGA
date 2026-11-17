@@ -6627,3 +6627,17 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   zpet), ne pozadavek.
 - **Detekce:** u novych UART prikazu vyzkouset hodnotu za mezi typu a neznamou hodnotu (L-0181: obe vetve).
 - **Stav:** ✅ v kodu, ⬜ neovereno na HW
+
+### L-0302 — Kazde tap_flash potrebuje v tez vetvi prekresleni tehoz obdelniku
+
+- **Datum:** 2026-11-17
+- **Oblast:** obsluha doteku oken (`app_gpsdo.c`), `tap_flash`, F-0304 (🔁 pravidlo CLAUDE.md „Flash tlacitek")
+- **Symptom:** tlacitka VYNUL. (UDALOSTI) a NUL totaliz. (SPOJITE) z v0.45.23 volala `tap_flash` a pak jen `return true`; obrys mimo
+  dirty rect by zustal v jednom ze tri framebufferu (na displeji neovereno).
+- **Priciny:** nove tlacitko psane podle vzoru prepinace (ktery se po akci prekresluje), bez kontroly te druhe poloviny vzoru.
+- **Oprava:** `ba50893`: `tap_flash` vypusten; odezvou je zmena hodnot v okne. Nove okno AUTOKALIBRACE `tap_flash` nepouziva.
+- **Pravidlo:** `tap_flash` jen tam, kde tataz vetev obsluhy hned prekresli tentyz obdelnik (`ui_button_render` / redraw funkce); jinak
+  zadny obrys -- odezvou ma byt zmena obsahu.
+- **Detekce:** `grep -n "tap_flash(" CM7/app/app_gpsdo.c` a u kazdeho vyskytu hledat prekresleni tehoz RECT do `return`; kandidati k overeni
+  z L-0081 pruchodu: REF_CLR_RECT, MEMB_RUN_RECT, ACC_TOGGLE_RECT/ACC_NEWPASS_RECT, DL_STORE_RECT.
+- **Stav:** ✅ v kodu (55/56), ⬜ ostatni kandidati neovereni

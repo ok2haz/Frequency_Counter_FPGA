@@ -155,6 +155,20 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Vztah k lekcím:** L-0181 (parametr za prefixem ověřit, obě větve vyzkoušet).
 - **Stav:** opraveno 2026-11-17 v `8b99c39`: `view` nad 255 odmitne, hlasi skutecne vykreslene okno (`g_shot_view_got`); `help` doplnen. Neovereno na HW
 
+### F-0304 [S4] VYNUL. (UDÁLOSTI) a NUL totaliz. (SPOJITÉ) volají `tap_flash` bez překreslení tlačítka
+
+- **Místo:** `CM7/app/app_gpsdo.c` obsluha doteku okna 55 (`EV_RST_RECT`) a 56 (`CT_NUL_RECT`), v0.45.23; `tap_flash_r` `app_gpsdo.c:147-154`.
+- **Popis:** `tap_flash` kreslí 2px obrys přímo do framebufferu (rohy přes `prim_internal_blend_px` mimo dirty rect) a podle CLAUDE.md
+  (animace, „Flash tlačítek“) se smí volat jen u prvku, který se po akci hned překreslí. Obě tlačítka se po akci nepřekreslují.
+- **Důkaz:** obsluha končí `return true` bez `ui_button_render` daného obdélníku; nalezeno při psaní okna AUTOKALIBRACE (F5 tohoto přezkumu).
+- **Dopad:** obrys může zůstat v jednom ze tří framebufferů a při jeho střídání problikávat (**HYPOTÉZA** – na displeji neověřeno).
+- **Návrh opravy:** `tap_flash` vypustit (odezvou je změna hodnot v okně), nebo tlačítko po akci překreslit.
+- **Riziko opravy:** nízké.
+- **Vztah k lekcím:** pravidlo CLAUDE.md o `tap_flash`; L-0081 (stejný vzor jinde): `tap_flash` bez okamžitého překreslení mají i
+  starší `REF_CLR_RECT` (Reference), `MEMB_RUN_RECT` (Benchmark), `ACC_TOGGLE_RECT`/`ACC_NEWPASS_RECT` (Přístup) a `DL_STORE_RECT`
+  (Datalog) – mimo rozsah přezkumu, neověřeno, zda je překreslí jiná cesta (kandidáti k ověření, ne nález).
+- **Stav:** opraveno 2026-11-17 v `ba50893` (`tap_flash` vypuštěn), lekce L-0302. Neověřeno na displeji
+
 ---
 
 ## Co bylo zkontrolováno a je v pořádku
@@ -201,6 +215,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 | F-0300 + F-0301 texty oken | `5f8f09e` | `.text` → 801208, nové řetězce v ELF |
 | F-0302 SPA K | `6c3c044` | `tools/spa/check.py` vše OK, `SPA_HTML` v nm 197258 = extrakce + 1, CM4 0 varování |
 | F-0303 `view` + `help` | `8b99c39` | `.text` → 801424, nové řetězce v ELF |
+| F-0304 `tap_flash` bez překreslení (nalezeno při F5) | `ba50893` | build 0 varování |
 | F-0297 nula A–B + v0.45.25 | `6cc9cd3` (tag `v0.45.25`) | host test `t_fpga_v3` PASS, `mut_fpga_v3.py` všechny mutace zachyceny (5 nových), `.text` → 802312, `audit.py` 97/0/2 |
 
 Host test F-0297 (10 MHz na A i B, B = A + δ, šum ±120 ps, 4000 segmentů): nejbližší hrana dává −500,5 / −90,3 / −0,6 / +88,5 /
@@ -210,3 +225,8 @@ indexu nejbližší hrany (`kn >= -P`), hlídá to mutace „dosah podle k“.
 ⬜ **Na desce:** flash v0.45.25 (CM7; CM4 kvůli SPA), power-cyklus; rozbočovač na A i B → `fpga ab on`, `fpga ab` (řádek
 „nejblizsi hrana B - start … -> nula lze nastavit“), `fpga ab zero`, okno UDÁLOSTI (řádek „korekce“), `view 55` / `view 56` +
 `screenshot`, ZRUŠIT KAL. po kalibraci, AUTO-CAL.
+
+**Navazující zadání téhož dne (v0.45.26, `4266fb7`, tag):** okno **AUTOKALIBRACE** (s_view=57, MĚŘENÍ 15. dlaždice) – samokontrola
+VREF+/+3V3/+5V/VBAT živě (`autocal_eval`, `g_autocal` beze změny), SPUSTIT = AUTO-CAL + kalibrace TDC obou kanálů
+(`fpga_freq_tdc_cal_req`, SET_CONFIG posílá FpgaTask), stav TDC a rezerva řetězu, uložené zpoždění B–A a nula A–B s tlačítky do okna
+UDÁLOSTI. Build 0 varování, `.text` 802312 → 804392, `audit.py` 97/0/2. ⬜ neověřeno na HW.

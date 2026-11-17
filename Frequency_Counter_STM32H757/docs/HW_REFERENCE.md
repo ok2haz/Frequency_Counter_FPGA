@@ -445,4 +445,4 @@ Driver `w25q_init` přebíjí prescaler na `W25Q_SCK_PRESCALER=3` → SCLK 60 MH
 `47`=Odchylka ×N (ADRET 4110 styl — df·N + ppb/ppm), `48`=NÁSTROJE (pod Diagnostikou —
 blok.schéma/paměť/selftest/benchmark/SD/reference), `49`=FUNKCE, `50`=NÁPOVĚDA, `51`=CHYBY,
 `52`=GENERÁTOR (výstupy Si5356 CLK2/3, CLK4/5, CLK6/7; Nastavení → 10. dlaždice),
-`53`=NASTAVENÍ GPS (antenní koax → `antCableDelay`; Nastavení → 11. dlaždice `GPS >`), `54`=ADRET: FÁZE (fázový graf z 1 s vzorků; z okna 47 tlačítko `FAZE >`).
+`53`=NASTAVENÍ GPS (antenní koax → `antCableDelay`; Nastavení → 11. dlaždice `GPS >`), `54`=ADRET: FÁZE (fázový graf z 1 s vzorků; z okna 47 tlačítko `FAZE >`), `55`=UDÁLOSTI (interval A–B / šířka pulzu / kalibrace zpoždění), `56`=SPOJITÉ MĚŘENÍ (totalizace A, příjem bez mrtvé doby), `57`=AUTOKALIBRACE (samokontrola, kalibrace TDC, zpoždění B–A, nula A–B; MĚŘENÍ 15. dlaždice).
