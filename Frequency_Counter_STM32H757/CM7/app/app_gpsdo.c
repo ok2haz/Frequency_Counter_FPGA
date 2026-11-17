@@ -10218,7 +10218,10 @@ bool app_gpsdo_handle_touch(int16_t x, int16_t y)
                 } else if (s_ev_mode == 1u) {
                     s_ev_mode = 2u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_SKEW);   /* zmerit zpozdeni B-A (B = pin A) */
                 } else {
+                    /* ZRUSIT KAL. (F-0299): zpozdeni zrusit a kalibraci ukoncit -> zpet na SIRKU PULZU (bez korekce). Ulozeni
+                     * z jeste bezici statistiky SKEW blokuje fpga_freq_pw_skew_clear, takze zadny zavod s FpgaTaskem. */
                     fpga_freq_pw_skew_clear();
+                    s_ev_mode = 1u; s_ev_win = 1u; fpga_freq_ev_pair_req(FPGA_EVP_PW);
                 }
                 app_gpsdo_render_events();
                 return true;

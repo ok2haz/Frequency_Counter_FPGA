@@ -892,6 +892,8 @@ int  fpga_freq_ev_pair_rc(void);
  * (stejne cesty jako pri kalibraci); pro interval A-B z dvou ruznych pinu NEPLATI -- tam slouzi nula intervalu
  * (`fpga_freq_ti_offset_set`: oba vstupy na tentyz signal, nastavi se stredni interval). @return 1 = zkalibrovano */
 int  fpga_freq_pw_skew(double *ps, double *sd, uint32_t *n);
+/* F-0299: zrusi ulozene zpozdeni a az do dalsiho startu kalibrace (`fpga pw cal`, KALIBROVAT) ho z bezici statistiky SKEW
+ * znovu neulozi (drive ho FpgaTask do 25 ms obnovil, takze ZRUSIT KAL. behem kalibrace nic nezrusilo). */
 void fpga_freq_pw_skew_clear(void);
 void fpga_freq_ti_offset_set(double ps, int ok);
 int  fpga_freq_ti_offset(double *ps);

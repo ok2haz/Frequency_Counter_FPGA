@@ -1354,6 +1354,9 @@ static uint8_t        s3e_bsrc = 0u;    /* posledni odeslany SET_CONFIG 0x09 */
 #define SKEW_MIN_N 50u
 static double          s_pw_skew_ps, s_pw_skew_sd;
 static uint32_t        s_pw_skew_n;
+/* F-0299: 1 = ulozene zpozdeni zruseno (fpga_freq_pw_skew_clear) -> s3e_rec ho z BEZICI statistiky znovu neulozi, dokud se
+ * statistika SKEW nespusti znovu (s3e_gen[2], tj. `fpga pw cal` / KALIBROVAT). Bez toho FpgaTask hodnotu do 25 ms obnovil. */
+static volatile uint8_t s_pw_skew_blk;
 static double          s_ti_off_ps;
 static uint8_t         s_ti_off_ok;
 
@@ -1395,7 +1398,7 @@ static void s3e_apply(uint32_t clk)
     }
     if (s3e_gen[2] != s3e_seen[2]) {
         s3e_seen[2] = s3e_gen[2];
-        pm = __get_PRIMASK(); __disable_irq(); fpga_v3_stat_init(&s3e_pr.sk); __set_PRIMASK(pm);
+        pm = __get_PRIMASK(); __disable_irq(); fpga_v3_stat_init(&s3e_pr.sk); s_pw_skew_blk = 0u; __set_PRIMASK(pm);   /* F-0299 */
     }
     if (s3e_gen[3] != s3e_seen[3]) {
         s3e_seen[3] = s3e_gen[3];
@@ -1466,7 +1469,7 @@ static void s3e_rec(const fpga_v3_rec_t *r, uint32_t clk, uint32_t now)
         s3e_abph[s3e_abw % S3E_AB][0] = ph0; s3e_abph[s3e_abw % S3E_AB][1] = ph1;
         s3e_ab[s3e_abw % S3E_AB] = ps; s3e_abw++;
     }
-    if (pr == FPGA_EVP_SKEW && s3e_pr.sk.n >= SKEW_MIN_N) {          /* v0.45.23: ulozit vysledek kalibrace zpozdeni */
+    if (pr == FPGA_EVP_SKEW && s3e_pr.sk.n >= SKEW_MIN_N && !s_pw_skew_blk) {   /* v0.45.23: ulozit vysledek kalibrace (F-0299: ne po zruseni) */
         s_pw_skew_ps = fpga_v3_stat_mean(&s3e_pr.sk); s_pw_skew_sd = fpga_v3_stat_sd(&s3e_pr.sk); s_pw_skew_n = s3e_pr.sk.n;
     }
     __set_PRIMASK(pm);
@@ -3504,6 +3507,7 @@ void fpga_freq_pw_skew_clear(void)
     const uint32_t pm = __get_PRIMASK();
     __disable_irq();
     s_pw_skew_n = 0u; s_pw_skew_ps = 0.0; s_pw_skew_sd = 0.0;
+    s_pw_skew_blk = 1u;                                 /* F-0299: bezici statistika SKEW uz hodnotu znovu neulozi */
     __set_PRIMASK(pm);
 }
 
