@@ -6546,3 +6546,84 @@ bitstream 0x0420 (ab_test/) + Si5356 CLK0/1 zpet na 100 MHz (REGMAP z HEAD). Ved
   (`top_v3.v`), ne podle nazvu ("zpozdeni A/B").
 - **Detekce:** `fpga ab zero` pri spolecnem signalu na A i B dava hodnotu radu ~100 ps (STA ~90 ps + kabely), ne ~1 ns.
 - **Stav:** ✅ v kodu, ⬜ neovereno na HW
+
+### L-0296 — Nula z veliciny s periodickou nespojitosti se pocita z veliciny bez skoku, a pred filtrem podle hodnoty
+
+- **Datum:** 2026-11-17
+- **Oblast:** NULA intervalu A-B (`fpga_freq_ti_zero_eval`, `ab_burst` v `fpga_v3.c`), F-0297
+- **Symptom:** simulace nad skutecnym `fpga_v3_ab_feed`: tentyz signal 10 MHz na A i B, nula (prumer intervalu) vysla 0,4 / 8,5 / 87 /
+  99,5 ns pro zpozdeni B-A 0 / -90 / -200 / -500 ps; ukladala se bez kontroly rozptylu.
+- **Priciny:** (a) interval "prvni hrana B po A" lezi v (0, T] -- pro zaporne zpozdeni dava T - |delta|, kolem nuly smes ~0 a ~T; (b) ochrana
+  soucasnych hran (305 ps) vyrazuje starty s hranou B tesne pred nimi, takze i po prevodu do (-T/2, T/2] ma rozdeleni diru -305..0 ps
+  a prumer je o desitky az ~120 ps vychyleny (proto navrh z nalezu nestacil).
+- **Oprava:** `6cc9cd3` (v0.45.25): v `ab_burst` pred ochranou znamenkova vzdalenost NEJBLIZSI hrany pinu B (`fpga_v3_ab_t.nr`),
+  nula = prumer pri n >= 100 a sigma <= 1 ns. Moje prvni verze omezila vzorky podminkou na `k` a sum podle ni vyradil 3 ze 4000 startu --
+  host test to zachytil (pocet), podminka je ted na indexu nejblizsi hrany.
+- **Pravidlo:** kalibrace / nula se pocita z veliciny, ktera je v okoli ocekavane hodnoty spojita (vzdalenost k nejblizsi hrane, kruhovy
+  prumer), a z VSECH vzorku -- ne az za filtrem, ktery vzorky vyrazuje podle jejich hodnoty nebo sumu; a uklada se jen s kontrolou rozptylu.
+- **Detekce:** host test `t_fpga_v3` (scenar "nula A-B", delta -500..+500 ps, kontrola i POCTU vzorku) + mutace; na desce `fpga ab` vypisuje
+  kandidata nuly vedle prumeru intervalu.
+- **Stav:** ✅ v kodu (host test + mutace), ⬜ neovereno na HW
+
+### L-0297 — Kdyz se mez promita do platnosti senzoru, diagnostika z platnosti nesmi udelat "nevim"
+
+- **Datum:** 2026-11-17
+- **Oblast:** AUTO-CAL (`autocal.c`), `sensor_fail` pri VREF+ mimo meze (#385), F-0298
+- **Symptom:** pri VREF+ mimo 2400-2600 mV ukazal AUTO-CAL "VREF --" a celkove zelene OK.
+- **Priciny:** #385 (v0.45.22) oznacil VREF za neplatnou prave pri hodnote mimo pasmo; `check()` z neplatne udelal AC_NA a souhrn NA preskakuje.
+  Pasmo platnosti bylo presne pasmo PASS, takze kazda hodnota, kterou mel AUTO-CAL hodnotit WARN/FAIL, zmizela driv, nez ji videl.
+- **Oprava:** `77e1512`: VREF mimo meze se v AUTO-CAL hodnoti z `last` (ac_verdict); "--" jen pro nezmereno a chybu cteni.
+- **Pravidlo:** kdyz zacnes oznacovat hodnotu za neplatnou kvuli jeji velikosti, projdi vsechny konzumenty priznaku `valid` -- kdo neplatnou
+  bere jako "nevim", musi ji pro diagnostiku dostat jako nalez (FAIL/WARN), jinak samokontrola zezelena prave pri poruse.
+- **Detekce:** `grep -n "valid) return AC_NA\|!s->valid" CM7/Core/Src/autocal.c` + revize konzumentu pri kazde nove podmince `sensor_fail`.
+- **Stav:** ✅ v kodu, ⬜ neovereno na HW
+
+### L-0298 — Zruseni hodnoty, kterou jiny task prubezne prepocitava, musi zastavit i prepocet
+
+- **Datum:** 2026-11-17
+- **Oblast:** ulozene zpozdeni B-A (`fpga_freq_pw_skew_clear`, `s3e_rec`), tlacitko ZRUSIT KAL., F-0299
+- **Symptom:** ZRUSIT KAL. v okne UDALOSTI (i `fpga pw clear`) behem kalibrace nic nezrusilo, korekce se do 0,5 s objevila znovu.
+- **Priciny:** FpgaTask ukladal hodnotu z BEZICI statistiky SKEW pri kazdem zaznamu (sk.n >= 50); UiTask vynuloval jen kopii.
+- **Oprava:** `c587cae`: priznak `s_pw_skew_blk` (PRIMASK) -- clear ho nastavi, az restart statistiky SKEW ho shodi; tlacitko navic kalibraci
+  ukonci (parovani PW).
+- **Pravidlo:** kdyz rusis hodnotu, kterou jiny task odvozuje z bezici akumulace, zablokuj odvozeni do restartu akumulace (nebo ji vynuluj
+  ve stejnem kontextu) -- nulovani vysledku bez zdroje je L-0101 z druhe strany.
+- **Detekce:** u kazde funkce `*_clear` najdi zapisovatele te hodnoty (`grep` prirazeni) a over, ze po clear nemuze znovu zapsat ze stareho stavu.
+- **Stav:** ✅ v kodu, ⬜ neovereno na HW
+
+### L-0299 — Novy text v okne: sada znaku fontu a sirka proti mazacimu boxu, i pro rostouci cisla
+
+- **Datum:** 2026-11-17
+- **Oblast:** okna UDALOSTI / SPOJITE (`app_gpsdo.c`), `kv_row_live`, F-0300 + F-0301 (🔁 L-0178)
+- **Symptom:** "BEZ DAT" ve fontu `mono_30` neviditelne; radek "zaznamy / mezery" v okne SPOJITE od 10 000 zaznamu (~2 min) delsi nez
+  mazaci box (380 px = 34 znaku `mono_18`), konec se nemazal; text "korekce" 38 znaku.
+- **Priciny:** novy retezec bez kontroly sady fontu (L-0178 znovu) a bez prepoctu sirky; u pocitadla se sirka testovala jen na zacatku behu.
+- **Oprava:** `5f8f09e`: `mono_25`, radek rozdelen, texty zkraceny na <= 34 znaku.
+- **Pravidlo:** u kazdeho noveho textu v okne over sadu znaku fontu a sirku proti mazacimu boxu -- u hodnot, ktere rostou (pocitadla,
+  casy), pro NEJDELSI realistickou hodnotu, ne pro tu z prvniho spusteni.
+- **Detekce:** `status` -> `FONTY` po otevreni okna; pro `kv_row_live` delka hodnoty <= 34 znaku (snimek `view <n>` + `screenshot`).
+- **Stav:** ✅ v kodu, ⬜ neovereno na displeji
+
+### L-0300 — Cislo zobrazene uzivateli, ktere uz nese protokol, se bere z dat, ne opisem
+
+- **Datum:** 2026-11-17
+- **Oblast:** web SPA (`httpd_min.c`, popis grafu Vc), F-0302 (🔁 L-0180, L-0191)
+- **Symptom:** web uvadel "1 LSB = cca 3,4e-11 relativne" po zmene vychoziho K na 3,85e-11 (F-0293).
+- **Priciny:** konstanta opsana do textu SPA; pri zmene K se grepovaly zdroje firmwaru, ne retezce webu.
+- **Oprava:** `6c3c044`: strmost z `/api/state` `gpsdo.kdac_e13`.
+- **Pravidlo:** kdyz cislo, ktere chces ukazat, uz posila protokol (JSON, snapshot), zobraz ho z dat; opis do textu je duplicitni fakt,
+  ktery se pri dalsi zmene rozejde.
+- **Detekce:** pri zmene konstanty `grep -rn "<stara hodnota>"` i v `CM4/LWIP/App/httpd_min.c` (L-0180).
+- **Stav:** ✅ v kodu, ⬜ neovereno v prohlizeci
+
+### L-0301 — Parametr prevadeny na uzsi typ se omezi pred prevodem a vypis hlasi, co se skutecne stalo
+
+- **Datum:** 2026-11-17
+- **Oblast:** UART `view <n>` (`freertos_task_uart.c`, `app_gpsdo_render_view_for_shot`), F-0303
+- **Symptom:** `view 300` vykreslilo okno 44 (uint8_t) a hlasilo "VIEW 300: vykresleno"; neznamy cislo tise hlavni obrazovka.
+- **Priciny:** cislo okna se prevadelo na uint8_t bez meze a vypis opakoval pozadavek misto vysledku.
+- **Oprava:** `8b99c39`: nad 255 odmitnuto, vypis z `g_shot_view_got` (skutecne `s_view`).
+- **Pravidlo:** diagnosticky prikaz, ktery neco nastavuje, omezi parametr pred prevodem na uzsi typ a vypise skutecny vysledek (precteny
+  zpet), ne pozadavek.
+- **Detekce:** u novych UART prikazu vyzkouset hodnotu za mezi typu a neznamou hodnotu (L-0181: obe vetve).
+- **Stav:** ✅ v kodu, ⬜ neovereno na HW

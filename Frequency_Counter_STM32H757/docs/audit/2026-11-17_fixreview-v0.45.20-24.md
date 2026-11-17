@@ -18,7 +18,7 @@ intervalu, okna UDÁLOSTI a SPOJITÉ, web DUAL) a příkaz `view`. Většina zm�
 **Nejzávažnější nález F-0297 [S2]:** NULA intervalu A–B (tlačítko i `fpga ab zero`) bere průměr intervalů „první hrana B po A“,
 který je při zpoždění B–A kolem nuly nebo záporném dvojznačný o celou periodu; simulace nad skutečným `fpga_v3_ab_feed` dává
 nulu 0,4 ns až 99,5 ns místo zpoždění, a uloží se bez kontroly rozptylu. Dále AUTO-CAL ukáže při vadné VREF+ zelené „OK“ (F-0298),
-tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt: podmíněně funkční** (nula A–B a AUTO-CAL VREF).
+tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt: podmíněně funkční** (nula A–B a AUTO-CAL VREF). **Fáze oprav proběhla téhož dne (v0.45.25), viz konec zápisu.**
 
 ---
 
@@ -61,7 +61,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Riziko opravy:** nízké (jen cesta nastavení nuly; měření intervalu se nemění).
 - **Vztah k lekcím:** L-0271 (fáze je periodická, veličina nad ní není spojitá), L-0295 (kalibrace jen pro cestu měření),
   L-0193 (scénáře testu z rozsahu přístroje – host test `ab_burst` nemá scénář B = A ± šum přes hranice segmentu).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `6cc9cd3` (v0.45.25), **jinak, nez nalez navrhoval**: misto prevodu intervalu do (-T/2, T/2] (prevedene intervaly maji diru -305..0 ps od ochrany; pri delta -90 ps by nula vysla ~+30 ps) se v `ab_burst` PRED ochranou pocita znamenkova vzdalenost nejblizsi hrany B (`fpga_v3_ab_t.nr`), nula = jeji prumer pri n >= 100 a sigma <= 1 ns (`fpga_freq_ti_zero_eval`, jedno misto pro tlacitko i UART); host test (delta -500..+500 ps) + 5 mutaci. Zneplatneni nuly pri zmene predelicky (HYPOTEZA) neprovedeno. Neovereno na HW
 
 ### F-0298 [S3] AUTO-CAL při VREF+ mimo meze hlásí „VREF --“ a celkově zelené OK
 
@@ -81,7 +81,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0291 (hodnota proti referenci platná až po ověření reference – oprava byla správná pro odvozené
   veličiny, ne pro samotnou referenci), L-0017 (tichý přeskok jen s počítadlem / viditelně).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `77e1512`, tak jak nalez navrhoval (VREF+ mimo meze se hodnoti z `last`). Neovereno na HW
 
 ### F-0299 [S3] ZRUŠIT KAL. (okno UDÁLOSTI) a `fpga pw clear` během kalibrace uložené zpoždění nezruší
 
@@ -98,7 +98,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
   párování mimo SKEW; případně ukládat jen při odchodu z režimu kalibrace.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0101 (když nuluješ stav, který plní jiný task, vyprázdni i to, z čeho se plní).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `c587cae`: priznak `s_pw_skew_blk` blokuje ulozeni az do restartu statistiky SKEW; navic tlacitko ZRUSIT KAL. kalibraci ukonci a vrati okno na SIRKU PULZU. Neovereno na HW
 
 ### F-0300 [S4] „BEZ DAT“ v okně UDÁLOSTI kreslené fontem `mono_30`, který nemá písmena ani mezeru
 
@@ -112,7 +112,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Návrh opravy:** `sans_18` / `mono_22` (plná sada), nebo „--“ v `mono_30`.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0178 (před řetězcem ve fontu `mono_25/30/52/75`, `sans_32` ověř sadu).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `5f8f09e` (`mono_25`, ma velka pismena i mezeru). Neovereno na HW
 
 ### F-0301 [S4] Hodnoty `kv_row_live` v nových oknech jsou delší než mazací box (ocas textu se nemaže)
 
@@ -129,7 +129,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Návrh opravy:** kratší text (např. `N / mezer G (M), prer. R`), nebo širší mazací box pro tato okna.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0284 (partial redraw musí zahrnout vše, co kreslí), CLAUDE.md „Každý partial redraw MUSÍ začít clear“.
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `5f8f09e`: SPOJITE radek rozdelen na `zaznamy:` a `mezery / preruseni:` (log SDRAM o radek niz, `VYPNUT %.26s`), UDALOSTI `zadna (NULA A-B, spolecny signal)` (33 znaku). Neovereno na displeji
 
 ### F-0302 [S4] Webový popis kódu DAC uvádí starou strmost „cca 3,4e-11“
 
@@ -141,7 +141,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Návrh opravy:** text bez čísla (odkaz na K ze smyčky), nebo 3,85e-11; `docs/`/SPA řetězec, logika beze změny.
 - **Riziko opravy:** nízké (SPA → `tools/spa/check.py`).
 - **Vztah k lekcím:** L-0180 (při změně výchozí hodnoty grep staré hodnoty), L-0191 (i řetězce zobrazené uživateli).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `6c3c044`: strmost z `/api/state` `gpsdo.kdac_e13` (K smycky), ne pevne cislo. Neovereno v prohlizeci
 
 ### F-0303 [S4] `view <n>` bez kontroly rozsahu a nové příkazy chybí v `help`
 
@@ -153,7 +153,7 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
 - **Návrh opravy:** odmítnout `v >= S_VIEW_MAX` (nebo vypsat skutečně vykreslené okno), doplnit `help`.
 - **Riziko opravy:** nízké.
 - **Vztah k lekcím:** L-0181 (parametr za prefixem ověřit, obě větve vyzkoušet).
-- **Stav:** otevřeno
+- **Stav:** opraveno 2026-11-17 v `8b99c39`: `view` nad 255 odmitne, hlasi skutecne vykreslene okno (`g_shot_view_got`); `help` doplnen. Neovereno na HW
 
 ---
 
@@ -189,3 +189,24 @@ tlačítko ZRUŠIT KAL. nic nezruší (F-0299) a čtyři drobnosti S4. **Verdikt
   s ascentem 14 (`mono_14` nebo `sans_14`), a `FORMAT: omezenych desetin 19`. Nové řetězce v0.45.20–24 jsou ASCII a `fmt_fixed`
   nepoužívají, takže jde o starší kód; doporučeno samostatné hledání (kandidáti: řetězce s „—“ v `app_gpsdo.c`).
 - **Znaménko a velikost δ (B − A) při rozbočovači** na dnešní desce – neměřeno (F-0297).
+
+---
+
+## Fáze oprav (F5) 2026-11-17 — na pokyn uživatele („oprav věci, co jsi psal hned“ + F-0297 „počítej nulu, jak jsi navrhoval“)
+
+| nález | commit | ověření |
+|---|---|---|
+| F-0298 AUTO-CAL VREF | `77e1512` | build 0 varování, `.text` 801040 → 801104 |
+| F-0299 ZRUŠIT KAL. | `c587cae` | `.text` → 801128, `s_pw_skew_blk` v ELF |
+| F-0300 + F-0301 texty oken | `5f8f09e` | `.text` → 801208, nové řetězce v ELF |
+| F-0302 SPA K | `6c3c044` | `tools/spa/check.py` vše OK, `SPA_HTML` v nm 197258 = extrakce + 1, CM4 0 varování |
+| F-0303 `view` + `help` | `8b99c39` | `.text` → 801424, nové řetězce v ELF |
+| F-0297 nula A–B + v0.45.25 | `6cc9cd3` (tag `v0.45.25`) | host test `t_fpga_v3` PASS, `mut_fpga_v3.py` všechny mutace zachyceny (5 nových), `.text` → 802312, `audit.py` 97/0/2 |
+
+Host test F-0297 (10 MHz na A i B, B = A + δ, šum ±120 ps, 4000 segmentů): nejbližší hrana dává −500,5 / −90,3 / −0,6 / +88,5 /
++501,7 ps pro δ = −500 / −90 / 0 / +90 / +500 ps, kdežto dřívější průměr intervalů +99 496 / +4 509 / +82 / +126 / +502 ps.
+⚠️ První verze měla podmínku na `k` (start nejvýš P period před T0) a šum podle ní vyřadil 3 ze 4000 startů; podmínka je teď na
+indexu nejbližší hrany (`kn >= -P`), hlídá to mutace „dosah podle k“.
+⬜ **Na desce:** flash v0.45.25 (CM7; CM4 kvůli SPA), power-cyklus; rozbočovač na A i B → `fpga ab on`, `fpga ab` (řádek
+„nejblizsi hrana B - start … -> nula lze nastavit“), `fpga ab zero`, okno UDÁLOSTI (řádek „korekce“), `view 55` / `view 56` +
+`screenshot`, ZRUŠIT KAL. po kalibraci, AUTO-CAL.

@@ -51,7 +51,8 @@ python tools/audit.py
 #   FPGA (FW 0x0503; auto = podle sondy /16, kap. 10.7); v0.39.0 `fpga raw a|b deep <N> [dump]` = hluboky RAW do PSRAM
 #   FPGA (FW 0x0505, az 699 050 znacek, kap. 10.9)
 # jednorazove deje (v0.36.0 + FW 0x0501, docs/PROTOKOL_V3.md kap. 10.5): `fpga ev on|off|<n>` (casy hran, 1PPS),
-#   `fpga ab on|off|<n>` (interval A->B), `fpga pw cal|on|off|<n>` (sirka pulzu, SET_CONFIG 0x09), `fpga raw a|b [dump]`
+#   `fpga ab on|off|zero|clear|<n>` (interval A->B; zero = nula z nejblizsi hrany B, v0.45.25), `fpga pw cal|on|off|clear|<n>`
+#   (sirka pulzu, SET_CONFIG 0x09), `fpga raw a|b [dump]`; `view <n>` (v0.45.24) vykresli okno pro `screenshot` pres UART
 # FPGA v3: projekt Frequency_Counter_FPGA_Module/v3/Counter_FPGA_v3.gprj (gw_sh v3/build_v3.tcl, Windows);
 #   simulace sim/run.ps1 topv3 | topv3ovf | topv3cal | topv3pw (nebo python3 sim/run_sim.py <modul> topv3 ...),
 #   mutace python3 sim/mut_top_v3.py <modul> <vystup>; v2 (top.v, Counter_FPGA.gprj) beze zmeny
