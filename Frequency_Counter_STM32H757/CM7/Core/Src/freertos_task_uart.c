@@ -2291,6 +2291,24 @@ void UartTask_run(void *argument)
 				   * ze dvou framu. Spolehlivejsi je `screenshot sd`. */
 				  screenshot_emit_bmp();
 			  }
+			  /* view <cislo> — vykresli okno `render_view()` na panel (kresli UiTask, stejny
+			   * vzor jako `screenshot all`); pak ho jde stahnout UART `screenshot`
+			   * (tools/screenshot_uart.py). Bez SD, bez doteku. Cislo okna: docs/HW_REFERENCE.md. */
+			  else if (strncmp(RxBuffer, "view ", 5) == 0) {
+				  const char *p = RxBuffer + 5;
+				  while (*p == ' ') p++;
+				  if (*p >= '0' && *p <= '9') {
+					  unsigned v = 0;
+					  while (*p >= '0' && *p <= '9' && v < 1000u) { v = v * 10u + (unsigned)(*p - '0'); p++; }
+					  uint32_t before = g_shot_view_done;
+					  g_shot_view_req = (int16_t)v;
+					  uint32_t t0 = HAL_GetTick();
+					  while (g_shot_view_done == before && (HAL_GetTick() - t0) < 2000u) osDelay(5);
+					  printf(g_shot_view_done == before ? "VIEW %u: UiTask nestihl\n" : "VIEW %u: vykresleno\n", v);
+				  } else {
+					  printf("VIEW: pouziti `view <cislo okna>`, pak `screenshot`\n");
+				  }
+			  }
 			  else if (strncmp(RxBuffer, "screenshot all", 14) == 0) {
 				  /* Export VSECH oken na SD, kazde jako V<nn>.BMP (mapa cisel ->
 				   * nazvy oken: docs/HW_REFERENCE.md „Okna UI"). Jen ZAKLADNI stav
@@ -2307,7 +2325,7 @@ void UartTask_run(void *argument)
 					  0,1,2,3,4,5,6,7,9,10,12,
 					  14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,
 					  30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,
-					  46,47,48,49,50,51,
+					  46,47,48,49,50,51,52,53,54,55,56,
 				  };
 				  unsigned n = (unsigned)(sizeof SHOT_VIEWS / sizeof SHOT_VIEWS[0]);
 				  const char *p = RxBuffer + 14;
