@@ -29,7 +29,16 @@ static ac_result_t check(sensor_id_t id, float nom, float tol_frac)
 
 void autocal_run(void)
 {
-    g_autocal.vref   = check(SENS_VDDA, 2500.0f, 0.04f);   /* VREFBUF ~2,5 V ±4 % */
+    /* VREFBUF ~2,5 V ±4 %. F-0298: VREF+ mimo VREF_OK_MIN..MAX_MV (= presne pasmo PASS) oznaci SensorsTask za NEPLATNOU
+     * (#385: teplota jadra a VBAT by staly na spatne referenci) a `check()` by z toho udelal "--" -- souhrn i barva tlacitka
+     * AUTO-CAL by pak byly zelene prave pri teto poruse. Pro samokontrolu je to nalez: posledni hodnota mimo meze (zustava
+     * v `last`) se hodnoti jako WARN / FAIL. "--" zustava jen pro nezmereno a pro chybu cteni ADC s hodnotou v mezich. */
+    {
+        const sensor_stat_t *v = &g_sensors[SENS_VDDA];
+        g_autocal.vref = (v->samples && !v->valid &&
+                          (v->last < (float)VREF_OK_MIN_MV || v->last > (float)VREF_OK_MAX_MV))
+                         ? ac_verdict(v->last, 2500.0f, 0.04f) : check(SENS_VDDA, 2500.0f, 0.04f);
+    }
     /* 🔴 2026-10-02: AIN2 je fyzicky +3V3, ne 12V (overeno netlistem
      * FPGA_Module_2_1, viz calib.c pro plne zduvodneni). Pole `rail12`
      * zustava jako historicky nazev. */
